@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codelore"
+version = "0.1.2"
+description = "Project memory for coding agents, kept in your repo: faults, readings, decisions and plan items as JSONL records in git, with hybrid search and one CLI that checks and commits every entry."
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "WhiteWh" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Software Development",
+]
+
+[project.urls]
+Homepage = "https://github.com/WhiteWh/CodeLore"
+
+[project.scripts]
+lore = "codelore.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+codelore = ["guide.md"]
