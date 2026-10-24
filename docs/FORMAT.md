@@ -68,7 +68,8 @@ points at it.
 
 `status`: `live` (can still happen), `cured` (the code no longer allows it; the
 record stays, so a search for the old symptom finds the answer), `obsolete` (the
-thing it is about is gone).
+thing it is about is gone), `superseded` (the same fault was recorded twice and
+folded into the other record, which `superseded_by` names).
 
 ### reading - a measured number that a change is judged against
 

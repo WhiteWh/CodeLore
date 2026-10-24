@@ -108,6 +108,9 @@ def _put(patch: dict, base: dict, key: str, val, append: bool) -> None:
         return
     if append:
         cur = patch.get(key, base.get(key)) or []
+        if isinstance(cur, str):
+            raise LoreError(f"`-s {key}+=...`: `{key}` is text, and += appends to a list - "
+                            f"give the whole new text with `-s {key}=...`")
         patch[key] = list(cur) + [val]
     else:
         patch[key] = val

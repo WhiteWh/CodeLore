@@ -37,13 +37,14 @@ COMMON = {
 
 KINDS: dict[str, dict] = {
     "fault": {
-        "statuses": ("live", "cured", "obsolete"),
+        "statuses": ("live", "cured", "obsolete", "superseded"),
         "fields": {
             "symptom": Field(STR, 600, required=True),
             "signals": Field(LIST, 200),
             "cause": Field(STR, 600, required=True),
             "fix": Field(STR, 800, required=True),
             "check": Field(STR, 300, required=True),
+            "superseded_by": Field(STR, 64, when=("superseded",)),
         },
     },
     "reading": {

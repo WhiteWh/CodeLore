@@ -80,6 +80,15 @@ duplicates (0.69-0.85) from different faults (0.87-0.88) and word overlap did
 (different records at most 0.32): similarity names, only strong evidence
 refuses (DESIGN.md §4). **Left**: a PyPI release.
 
+## 0.2.1 - retiring a duplicate
+
+- a fault recorded twice is folded into its twin and keeps its line: status
+  `superseded`, `superseded_by` the twin; a search hides it like any retired
+  record. An amendment to format version 2 (one more status), made the day the
+  version was published, before any other reader existed.
+- `-s field+=value` on a text field refuses by name and says to give the whole
+  text; += appends to lists only.
+
 ## 0.2.0 - topics and recipes
 
 - two kinds for the knowledge that is not a fault or a number: `topic`, how
