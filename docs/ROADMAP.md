@@ -80,6 +80,16 @@ duplicates (0.69-0.85) from different faults (0.87-0.88) and word overlap did
 (different records at most 0.32): similarity names, only strong evidence
 refuses (DESIGN.md §4). **Left**: a PyPI release.
 
+## 0.2.0 - topics and recipes
+
+- two kinds for the knowledge that is not a fault or a number: `topic`, how
+  something works now (up to 3000 characters, the present only), and
+  `recipe`, a procedure (`when`, `steps`, `check`). A project's whole
+  documentation can now be records, not only its troubleshooting.
+- format version 2: version 1 records stay valid as written and take version 2
+  when next written; a topic or recipe needs version 2.
+- an embedding reads the first 1 500 characters of a long main text.
+
 ## 0.1.2 - a copied phrase
 
 - a query of 16 characters or more found word for word in a record's text puts

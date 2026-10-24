@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass
 from datetime import date
 
-from codelore import FORMAT_VERSION, LoreError
+from codelore import FORMAT_VERSION, READS, LoreError
 
 ID = re.compile(r"^[a-z0-9][a-z0-9-]{1,47}$")
 ITEM_ID = re.compile(r"^([a-z0-9][a-z0-9-]{1,47})#([1-9][0-9]{0,5})$")
@@ -67,6 +67,22 @@ KINDS: dict[str, dict] = {
             "reversed_by": Field(STR, 64, when=("reversed",)),
         },
     },
+    "topic": {
+        "statuses": ("current", "superseded"),
+        "fields": {
+            "body": Field(STR, 3000, required=True),
+            "superseded_by": Field(STR, 64, when=("superseded",)),
+        },
+    },
+    "recipe": {
+        "statuses": ("current", "superseded"),
+        "fields": {
+            "when": Field(STR, 300, required=True),
+            "steps": Field(LIST, 400, required=True),
+            "check": Field(STR, 300, required=True),
+            "superseded_by": Field(STR, 64, when=("superseded",)),
+        },
+    },
     "plan": {
         "statuses": ("draft", "live", "paused", "closed"),
         "fields": {
@@ -90,7 +106,9 @@ KINDS: dict[str, dict] = {
     },
 }
 
-KNOWLEDGE = ("fault", "reading", "decision")
+KNOWLEDGE = ("fault", "reading", "decision", "topic", "recipe")
+#: The format version a kind first appears in.
+KIND_SINCE = {"topic": 2, "recipe": 2}
 PLAN_KINDS = ("plan", "item")
 REF_KEYS = ("commits", "files", "symbols", "links", "records")
 
@@ -138,11 +156,13 @@ def validate(r: dict, areas: list[str], limits: dict[str, int] | None = None) ->
     who = f"{kind} {rid!r}" if rid else kind
 
     v = r.get("v")
-    if v != FORMAT_VERSION:
-        if isinstance(v, int) and v > FORMAT_VERSION:
+    if v not in READS:
+        if isinstance(v, int) and not isinstance(v, bool) and v > FORMAT_VERSION:
             errs.append(f"{who}: format version {v} is newer than this lore reads ({FORMAT_VERSION}) - upgrade lore")
         else:
-            errs.append(f"{who}: `v` must be {FORMAT_VERSION}")
+            errs.append(f"{who}: `v` must be one of {', '.join(map(str, READS))}")
+    elif v < KIND_SINCE.get(kind, 1):
+        errs.append(f"{who}: a {kind} needs format version {KIND_SINCE[kind]} or later, not {v}")
 
     status = r.get("status")
     fields = {**COMMON, **spec["fields"]}
@@ -263,7 +283,7 @@ def item_number(item_id: str) -> int:
 
 def main_text(r: dict) -> str:
     """The sentence a record is about, for display and for its embedding."""
-    for k in ("symptom", "what", "question", "goal", "description"):
+    for k in ("symptom", "what", "question", "when", "goal", "body", "description"):
         if r.get(k):
             return r[k]
     return ""

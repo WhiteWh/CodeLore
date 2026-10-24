@@ -1,7 +1,9 @@
 """CodeLore - project memory for coding agents, kept in the repository."""
 
-__version__ = "0.1.2"
-FORMAT_VERSION = 1
+__version__ = "0.2.0"
+FORMAT_VERSION = 2
+#: Record versions this lore reads; a record keeps the version it was written at.
+READS = (1, 2)
 
 
 class LoreError(Exception):

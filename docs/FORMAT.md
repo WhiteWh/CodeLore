@@ -1,4 +1,4 @@
-# The CodeLore format, version 1
+# The CodeLore format, version 2
 
 This is the contract between a repository's lore and any program that reads or
 writes it. `lore` is one such program; nothing here depends on it.
@@ -7,7 +7,7 @@ writes it. `lore` is one such program; nothing here depends on it.
 
 ```
 lore.toml                    the project's configuration (§6)
-lore/<area>.jsonl            knowledge: fault, reading, decision records
+lore/<area>.jsonl            knowledge: fault, reading, decision, topic, recipe records
 lore/plans/<plan-id>.jsonl   one plan: its plan record, then its items
 ```
 
@@ -35,9 +35,9 @@ not repair.
 
 | field | type | rule |
 |---|---|---|
-| `v` | int | the format version; `1` |
+| `v` | int | the format version the record was written at: `1` or `2` (topic and recipe need `2`) |
 | `id` | string | unique in the repository; `[a-z0-9][a-z0-9-]{1,47}`; an item's is `<plan-id>#<n>` |
-| `kind` | string | `fault`, `reading`, `decision`, `plan`, `item` |
+| `kind` | string | `fault`, `reading`, `decision`, `topic`, `recipe`, `plan`, `item` |
 | `area` | string | one of `lore.toml`'s areas; for `plan` and `item` it is `plans` |
 | `title` | string | 1-120 characters, says what the record is about |
 | `status` | string | one of the kind's statuses (§4) |
@@ -93,6 +93,27 @@ it; `superseded_by` names it).
 | `decided_by` | required | who had the authority |
 
 `status`: `active`, `reversed` (`reversed_by` names the decision that replaced it).
+
+### topic - how something works now
+
+| field | | |
+|---|---|---|
+| `body` | required, <= 3000 | what is true now: how the thing works, what it holds, what it is for |
+
+`status`: `current`, `superseded` (`superseded_by` names the topic that replaced
+it). A topic describes the present only - its history is in the commits and in
+whatever archive the project keeps. A subject longer than one topic is several
+topics, each with its own title, linked by `refs.records`.
+
+### recipe - a procedure done more than once
+
+| field | | |
+|---|---|---|
+| `when` | required, <= 300 | the situation it is for |
+| `steps` | required, list of strings, each <= 400 | what to do, in order |
+| `check` | required, <= 300 | how to see that it worked |
+
+`status`: `current`, `superseded` (`superseded_by` names its replacement).
 
 ### plan - a goal and the items that reach it
 
@@ -173,4 +194,7 @@ Unknown keys are refused, so a typo is not silently ignored.
 
 `v` is per record. A reader handles every version it knows and refuses a newer
 one by name. A change that only adds an optional field keeps the version; any
-other change raises it, and `lore migrate` rewrites the files.
+other change raises it. A record keeps the version it was written at until it is
+next written, when it takes the current one: version 2 added the `topic` and
+`recipe` kinds and changed nothing else, so a version 1 file is a valid version
+2 file.

@@ -34,6 +34,11 @@ refuses a record that is past it.
 - **fault**: `symptom`, `signals`, `cause`, `fix`, `check`; status `live` / `cured` / `obsolete`.
 - **reading**: `what`, `command`, `value`, `measured_at` (a commit); status `current` / `superseded`.
 - **decision**: `question`, `choice`, `reason`, `decided_by`; status `active` / `reversed`.
+- **topic**: `body` (up to 3000 characters) - how something works now, never its history; status `current` / `superseded`. A longer subject is several topics.
+- **recipe**: `when`, `steps` (a list), `check` - a procedure done more than once; status `current` / `superseded`.
+
+Before you change how something works, `lore find` its topic; after, update the
+topic in the same piece of work, so the next reader meets the present.
 
 lore searches for a duplicate before it writes. On strong evidence - a signal
 another record carries, near-identical text - it refuses and names the record:

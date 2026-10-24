@@ -97,8 +97,12 @@ def columns(r: dict) -> tuple[str, str, str, str, str]:
     return signals, title, main, body, terms
 
 
+#: An embedding reads the start of a long text; the model's window is not the point.
+EMBED_MAIN = 1500
+
+
 def embed_text(r: dict) -> str:
-    parts = [r.get("title", ""), main_text(r)]
+    parts = [r.get("title", ""), main_text(r)[:EMBED_MAIN]]
     if r.get("cause"):
         parts.append(r["cause"])
     if r.get("signals"):

@@ -76,7 +76,7 @@ class Schema(unittest.TestCase):
             (fault(signals=["a", "a"]), "duplicates"),
             (fault(created="2026-13-01"), "must be a date"),
             (fault(created="2026-10-25"), "`updated` is before `created`"),
-            (fault(v=2), "newer than this lore reads"),
+            (fault(v=3), "newer than this lore reads"),
             (fault(refs={"files": ["C:\\x"]}), "paths are relative"),
             (fault(refs={"commits": ["zz"]}), "not a hash"),
             (fault(refs={"other": ["x"]}), "is not one of"),

@@ -5,7 +5,7 @@ fixes, measured readings, decisions, and plan items that never disappear
 silently. JSONL in git, hybrid full-text + semantic search, one CLI - `lore` -
 that checks and commits every entry.
 
-> Status: **0.1.2.** Every command below works and is tested;
+> Status: **0.2.0.** Every command below works and is tested;
 > the search's ranking and the duplicate threshold are still to be measured on a
 > large real lore ([docs/ROADMAP.md](docs/ROADMAP.md)). The format is in
 > [docs/FORMAT.md](docs/FORMAT.md), the design in [docs/DESIGN.md](docs/DESIGN.md).
@@ -60,7 +60,9 @@ entry must say.
 - **Knowledge is records, not prose.** A fault is *symptom, the exact strings
   it shows, cause, fix, and the check that sees it* - a few lines, not a page.
   A reading is *what is measured, by which command, the value, at which commit*.
-  A decision is *the question, the choice, the reason, who decided*.
+  A decision is *the question, the choice, the reason, who decided*. A topic
+  is *how something works now*, a page-sized piece; a recipe is *when, the
+  steps, and how to see it worked*.
 - **Plans are records too.** A plan has a goal and items; an item ends **done**
   (with its commits), **dropped** (with a reason and who decided),
   **superseded** or **deferred** - never just forgotten. A plan cannot close

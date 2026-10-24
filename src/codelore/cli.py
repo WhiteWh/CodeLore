@@ -49,6 +49,11 @@ def fmt_record(r: dict, score: float | None = None, via: list[str] | None = None
             v = ", ".join(f"{d['item']}" + ("" if d["kind"] == "hard" else " (soft)") for d in v)
         elif k == "signals":
             v = "  |  ".join(v)
+        elif k == "steps":
+            lines.append("  steps:")
+            lines.extend(textwrap.fill(f"{n}. {s}", WIDTH, initial_indent="    ", subsequent_indent="       ")
+                         for n, s in enumerate(v, 1))
+            continue
         elif isinstance(v, list):
             v = "; ".join(v)
         lines.append(textwrap.fill(f"{k}: {v}", WIDTH, initial_indent="  ", subsequent_indent="      "))
