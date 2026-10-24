@@ -13,6 +13,8 @@ DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 SHA = re.compile(r"^[0-9a-f]{4,64}$")
 
 STR, LIST, DEPS, INT = "str", "list", "deps", "int"
+#: One record's id; a list of them; a source's ledger of parts.
+REF, IDS, PARTS = "ref", "ids", "parts"
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,8 @@ class Field:
     max: int | None = None          # characters for STR, per element for LIST
     required: bool = False
     when: tuple[str, ...] = ()      # required only under these statuses
+    only: tuple[str, ...] = ()      # allowed only under these statuses (`when` implies it)
+    hint: str = ""                  # said when given under a status it does not belong to
 
 
 COMMON = {
@@ -44,7 +48,7 @@ KINDS: dict[str, dict] = {
             "cause": Field(STR, 600, required=True),
             "fix": Field(STR, 800, required=True),
             "check": Field(STR, 300, required=True),
-            "superseded_by": Field(STR, 64, when=("superseded",)),
+            "superseded_by": Field(REF, when=("superseded",)),
         },
     },
     "reading": {
@@ -55,24 +59,25 @@ KINDS: dict[str, dict] = {
             "value": Field(STR, 200, required=True),
             "tolerance": Field(STR, 200),
             "measured_at": Field(STR, 64, required=True),
-            "superseded_by": Field(STR, 64, when=("superseded",)),
+            "superseded_by": Field(REF, when=("superseded",)),
         },
     },
     "decision": {
-        "statuses": ("active", "reversed"),
+        "statuses": ("active", "reversed", "superseded"),
         "fields": {
             "question": Field(STR, 300, required=True),
             "choice": Field(STR, 600, required=True),
             "reason": Field(STR, 800, required=True),
             "decided_by": Field(STR, 120, required=True),
-            "reversed_by": Field(STR, 64, when=("reversed",)),
+            "reversed_by": Field(REF, when=("reversed",)),
+            "superseded_by": Field(REF, when=("superseded",)),
         },
     },
     "topic": {
         "statuses": ("current", "superseded"),
         "fields": {
             "body": Field(STR, 3000, required=True),
-            "superseded_by": Field(STR, 64, when=("superseded",)),
+            "superseded_by": Field(REF, when=("superseded",)),
         },
     },
     "recipe": {
@@ -81,7 +86,7 @@ KINDS: dict[str, dict] = {
             "when": Field(STR, 300, required=True),
             "steps": Field(LIST, 400, required=True),
             "check": Field(STR, 300, required=True),
-            "superseded_by": Field(STR, 64, when=("superseded",)),
+            "superseded_by": Field(REF, when=("superseded",)),
         },
     },
     "plan": {
@@ -99,18 +104,34 @@ KINDS: dict[str, dict] = {
             "description": Field(STR, 2000),
             "criteria": Field(LIST, 300),
             "deps": Field(DEPS),
-            "commits": Field(LIST, 64, when=("done",)),
+            "commits": Field(LIST, 64, when=("done",),
+                             hint="the commits of an item still being built go in `refs.commits` "
+                                  "(`-s refs.commits+=<sha>`); `lore item done --commit` closes it with them"),
             "reason": Field(STR, 600, when=("dropped", "deferred")),
             "decided_by": Field(STR, 120, when=("dropped",)),
-            "superseded_by": Field(STR, 64, when=("superseded",)),
+            "superseded_by": Field(REF, when=("superseded",)),
+            "outcome": Field(STR, 1000, only=("done", "dropped", "superseded")),
+        },
+    },
+    "source": {
+        "statuses": ("open", "covered", "history"),
+        "fields": {
+            "path": Field(STR, 300, required=True),
+            "reason": Field(STR, 600, when=("history",)),
+            "records": Field(IDS),
+            "parts": Field(PARTS),
         },
     },
 }
 
 KNOWLEDGE = ("fault", "reading", "decision", "topic", "recipe")
 #: The format version a kind first appears in.
-KIND_SINCE = {"topic": 2, "recipe": 2}
+KIND_SINCE = {"topic": 2, "recipe": 2, "source": 3}
+#: The format version a kind's status first appears in.
+STATUS_SINCE = {("decision", "superseded"): 3}
 PLAN_KINDS = ("plan", "item")
+#: Kinds that live outside the knowledge areas, and the area they name.
+AREA_OF = {"plan": "plans", "item": "plans", "source": "sources"}
 REF_KEYS = ("commits", "files", "symbols", "links", "records")
 
 #: Statuses a search hides unless asked for everything.
@@ -164,6 +185,9 @@ def validate(r: dict, areas: list[str], limits: dict[str, int] | None = None) ->
             errs.append(f"{who}: `v` must be one of {', '.join(map(str, READS))}")
     elif v < KIND_SINCE.get(kind, 1):
         errs.append(f"{who}: a {kind} needs format version {KIND_SINCE[kind]} or later, not {v}")
+    elif v < STATUS_SINCE.get((kind, r.get("status")), 1):
+        errs.append(f"{who}: a {r.get('status')} {kind} needs format version "
+                    f"{STATUS_SINCE[(kind, r.get('status'))]} or later, not {v}")
 
     status = r.get("status")
     fields = {**COMMON, **spec["fields"]}
@@ -175,8 +199,10 @@ def validate(r: dict, areas: list[str], limits: dict[str, int] | None = None) ->
                 cond = f" when `{status}`" if f.when else ""
                 errs.append(f"{who}: `{name}` is required{cond}")
             continue
-        if f.when and status not in f.when:
-            errs.append(f"{who}: `{name}` belongs to status {'/'.join(f.when)}, not `{status}`")
+        allowed = f.only or f.when
+        if allowed and status not in allowed:
+            errs.append(f"{who}: `{name}` belongs to status {'/'.join(allowed)}, not `{status}`"
+                        + (f" - {f.hint}" if f.hint else ""))
         lim = _limit(kind, name, f, limits)
         if f.type == INT:
             if not isinstance(val, int) or isinstance(val, bool):
@@ -198,6 +224,16 @@ def validate(r: dict, areas: list[str], limits: dict[str, int] | None = None) ->
                         errs.append(f"{who}: an element of `{name}` is {len(x)} characters, the limit is {lim}")
                 if len(set(val)) != len(val):
                     errs.append(f"{who}: `{name}` has duplicates")
+        elif f.type == REF:
+            if not is_id(val):
+                errs.append(f"{who}: `{name}` names one record by its id, and {val!r} is not an id")
+        elif f.type == IDS:
+            if not isinstance(val, list) or not all(is_id(x) for x in val):
+                errs.append(f"{who}: `{name}` must be a list of record ids")
+            elif len(set(val)) != len(val):
+                errs.append(f"{who}: `{name}` has duplicates")
+        elif f.type == PARTS:
+            errs.extend(f"{who}: {e}" for e in parts_errors(val))
         elif f.type == DEPS:
             if not isinstance(val, list):
                 errs.append(f"{who}: `deps` must be a list")
@@ -229,9 +265,9 @@ def validate(r: dict, areas: list[str], limits: dict[str, int] | None = None) ->
             errs.append(f"{who}: `id` must match {ID.pattern}")
 
     area = r.get("area")
-    if kind in PLAN_KINDS:
-        if area != "plans":
-            errs.append(f"{who}: a {kind}'s `area` is `plans`")
+    if kind in AREA_OF:
+        if area != AREA_OF[kind]:
+            errs.append(f"{who}: a {kind}'s `area` is `{AREA_OF[kind]}`")
     elif area not in areas:
         errs.append(f"{who}: area {area!r} is not one of lore.toml's areas ({', '.join(areas) or 'none declared'})")
 
@@ -267,6 +303,48 @@ def validate(r: dict, areas: list[str], limits: dict[str, int] | None = None) ->
     return errs
 
 
+def is_id(s) -> bool:
+    return isinstance(s, str) and bool(ID.match(s) or ITEM_ID.match(s))
+
+
+#: The keys of one entry in a source's ledger.
+PART_KEYS = {"part", "records", "skip"}
+
+
+def part_key(text: str) -> str:
+    """A part's name as compared: case and runs of whitespace folded."""
+    return " ".join(text.split()).casefold()
+
+
+def parts_errors(val) -> list[str]:
+    """A source's ledger: each entry names one part of the document and says
+    which records hold it, or why it is skipped, or both."""
+    if not isinstance(val, list):
+        return ['`parts` must be a list of {"part", "records", "skip"} entries']
+    errs, seen = [], set()
+    for e in val:
+        if (not isinstance(e, dict) or not isinstance(e.get("part"), str) or not e["part"].strip()
+                or set(e) - PART_KEYS):
+            errs.append('each entry of `parts` is {"part": "<name>", "records": [<id>...], '
+                        f'"skip": "<why>"}}, not {e!r}')
+            continue
+        p = e["part"]
+        if len(p) > 300:
+            errs.append(f"part {p[:40]!r}...: the name is {len(p)} characters, the limit is 300")
+        recs, skip = e.get("records"), e.get("skip")
+        if recs is not None and (not isinstance(recs, list) or not recs or not all(is_id(x) for x in recs)):
+            errs.append(f"part {p!r}: `records` must be a non-empty list of record ids")
+        if skip is not None and (not isinstance(skip, str) or not skip.strip() or len(skip) > 300):
+            errs.append(f"part {p!r}: `skip` is why it holds nothing current, 1-300 characters")
+        if recs is None and skip is None:
+            errs.append(f"part {p!r}: says neither which records hold it nor why it is skipped")
+        k = part_key(p)
+        if k in seen:
+            errs.append(f"part {p!r} is in `parts` twice")
+        seen.add(k)
+    return errs
+
+
 def _is_date(s) -> bool:
     if not isinstance(s, str) or not DATE.match(s):
         return False
@@ -275,6 +353,19 @@ def _is_date(s) -> bool:
         return True
     except ValueError:
         return False
+
+
+#: A bare exception or error class name: printed by every fault of its kind.
+_BARE_CLASS = re.compile(r"^[A-Za-z_][\w.]*(Error|Exception|Warning|Failure|Fault)$")
+_ONE_WORD = re.compile(r"^[A-Za-z]+$")
+
+
+def generic_signal(s: str) -> bool:
+    """A signal that would match every fault of a family, not this one:
+    `AttributeError`, `System.IO.IOException`, `error`, `Traceback`. A code
+    (`ERR_DEVICE_LOST`, `0x80070005`, `E_FAIL`) or a whole message is not."""
+    s = s.strip()
+    return bool(_BARE_CLASS.match(s) or _ONE_WORD.match(s))
 
 
 def item_number(item_id: str) -> int:

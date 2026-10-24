@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import sys
@@ -11,8 +12,8 @@ from pathlib import Path
 
 from codelore import LoreError, __version__
 from codelore import config as configmod
-from codelore import dedupe, embed, gitio, ops, plans, search
-from codelore.index import cache_dir, open_index, repo_key
+from codelore import cover, dedupe, embed, gitio, ops, plans, search
+from codelore.index import open_index
 from codelore.schema import KINDS, KNOWLEDGE, SHOWN, UNDECIDED, check_limits, item_number, validate
 from codelore.store import canonical, check_placement, is_lore_file, serialize, sort_key
 
@@ -53,6 +54,12 @@ def fmt_record(r: dict, score: float | None = None, via: list[str] | None = None
             lines.append("  steps:")
             lines.extend(textwrap.fill(f"{n}. {s}", WIDTH, initial_indent="    ", subsequent_indent="       ")
                          for n, s in enumerate(v, 1))
+            continue
+        elif k == "parts":
+            lines.append(f"  parts: {len(v)}")
+            lines.extend(textwrap.fill(f"{e.get('part')} -> " + "; ".join(
+                filter(None, [", ".join(e.get("records") or []), e.get("skip") and f"skip: {e['skip']}"])),
+                WIDTH, initial_indent="    ", subsequent_indent="        ") for e in v if isinstance(e, dict))
             continue
         elif isinstance(v, list):
             v = "; ".join(v)
@@ -178,7 +185,23 @@ class Ctx:
     def idx(self):
         if self._idx is None:
             self._idx = open_index(self.cfg)
+            if self._idx.place_note:
+                progress(f"note: {self._idx.place_note}")
         return self._idx
+
+    def record(self, rid: str) -> tuple[dict | None, str | None]:
+        """A record by id, live: the index (the working tree), and when the
+        working tree does not have it, the branch the next write builds on -
+        another session's commit that has not reached this working tree yet."""
+        r = self.idx.get(rid)
+        if r is not None:
+            return r, None
+        rev = gitio.ref(self.cfg.root, f"refs/heads/{self.cfg.branch}") if self.cfg.commit_mode == "shared-tree" \
+            else gitio.head(self.cfg.root)
+        if rev is None:
+            return None, None
+        r = ops.load_rev(self.cfg, rev).by_id().get(rid)
+        return r, (rev if r is not None else None)
 
     def provider(self):
         if getattr(self.args, "text_only", False):
@@ -192,11 +215,20 @@ class Ctx:
         out = ops.apply(self.cfg, build, self.by(), subject=subject,
                         trailers=self.args.trailer, mode=self.args.mode)
         out.notes = list(notes or []) + out.notes
-        if self.args.json:
-            emit_json({"commit": out.commit, "records": out.records, "notes": out.notes})
-            return 0
+        where = f"{self.cfg.remote}/{self.cfg.branch}"
+        line = None
         if out.commit:
-            say(f"committed {out.commit[:10]}")
+            line = {None: f"committed {out.commit[:10]}",
+                    True: f"committed {out.commit[:10]}, pushed to {where}",
+                    False: f"committed {out.commit[:10]} locally, push to {where} failed: {out.push_error}; "
+                           "the next write's push carries it"}[out.pushed]
+        if self.args.json:
+            emit_json({"commit": out.commit, "records": out.records,
+                       "notes": out.notes + ([line] if out.pushed is False else []),
+                       **({"pushed": out.pushed, "push_error": out.push_error} if out.pushed is not None else {})})
+            return 0
+        if line:
+            say(line)
         for r in out.records:
             say(f"  {r['kind']} {r['id']}  [{r['status']}]  {r.get('title', '')}")
         for n in out.notes:
@@ -292,17 +324,34 @@ def cmd_for(ctx: Ctx) -> int:
 
 
 def cmd_show(ctx: Ctx) -> int:
-    r = ctx.idx.get(ctx.args.id)
+    r, rev = ctx.record(ctx.args.id)
     if r is None:
         raise LoreError(f"{ctx.args.id!r} does not exist")
     if ctx.args.json:
         emit_json(r)
     else:
+        if rev:
+            note(f"not in the working tree yet; shown as committed at {rev[:10]}")
         say(fmt_record(r))
         if r.get("kind") == "plan":
             say("")
             _show_items(ctx, plans.items_of(ctx.idx.all(), r["id"]))
     return 0
+
+
+def cmd_exists(ctx: Ctx) -> int:
+    """Which of these ids are records now - read live, never from a copy."""
+    res = {}
+    for rid in ctx.args.ids:
+        r, _ = ctx.record(rid)
+        res[rid] = None if r is None else {"kind": r.get("kind"), "status": r.get("status"),
+                                           "title": r.get("title", "")}
+    if ctx.args.json:
+        emit_json(res)
+    else:
+        for rid, r in res.items():
+            say(f"{rid}  " + ("MISSING" if r is None else f"{r['kind']} [{r['status']}]  {r['title']}"))
+    return 0 if all(res.values()) else 1
 
 
 def _new_from_args(ctx: Ctx, kind: str) -> list[dict]:
@@ -333,16 +382,37 @@ def cmd_add(ctx: Ctx) -> int:
     recs = _new_from_args(ctx, a.kind)
     found = dedupe.candidates(ctx.cfg, ctx.idx, recs, ctx.provider())
     blocking = {i: ms for i, ms in found.items() if any(m.blocking for m in ms)}
+
+    def named(i: int) -> str:
+        r = recs[i]
+        return (f"#{i + 1} " if len(recs) > 1 else "") + (f"{r['id']} " if r.get("id") else "") \
+            + repr(r.get("title", "?"))
+
+    def matches(ms) -> str:
+        return "; ".join(f"{m.id} ({m.how} {m.similarity})" for m in ms if m.blocking)
+
+    skipped = []
     if blocking and not a.new:
-        lines = [f"{recs[i].get('title', '?')!r} is: "
-                 + "; ".join(f"{m.id} ({m.how} {m.similarity})" for m in ms if m.blocking)
-                 for i, ms in sorted(blocking.items())]
-        raise LoreError("refused: a record of this fault exists - improve it with `lore update <id>`, "
-                        "or repeat with --new if yours is a different fault", lines)
+        if not a.skip_duplicates:
+            lines = [f"{named(i)} is: {matches(ms)}" for i, ms in sorted(blocking.items())]
+            rest = len(recs) - len(blocking)
+            how = ("improve the existing record with `lore update <id>`, or repeat with --new if yours is "
+                   "a different one")
+            if rest:
+                how += f"; --skip-duplicates writes the other {rest} and leaves these out"
+            raise LoreError(f"refused, nothing was written: {len(blocking)} of {len(recs)} record(s) "
+                            f"already exist - {how}", lines)
+        skipped = [f"left out {named(i)}: it is {matches(ms)}" for i, ms in sorted(blocking.items())]
+        keep = [i for i in range(len(recs)) if i not in blocking]
+        if not keep:
+            raise LoreError("nothing to write: every record is a duplicate", skipped)
+        found = {keep.index(i): ms for i, ms in found.items() if i in keep}
+        recs = [recs[i] for i in keep]
+        blocking = {}
     near = [f"{recs[i].get('title', '?')!r} is near " + ", ".join(f"{m.id} ({m.how} {m.similarity})" for m in ms)
-            + " - if one is the same fault, merge into it with `lore update`"
+            + " - if one says the same, merge into it with `lore update`"
             for i, ms in sorted(found.items()) if i not in blocking]
-    return ctx.write(ops.adder(recs), notes=near)
+    return ctx.write(ops.adder(recs), notes=skipped + near)
 
 
 def cmd_update(ctx: Ctx) -> int:
@@ -355,13 +425,24 @@ def cmd_update(ctx: Ctx) -> int:
             if not isinstance(p.get("id"), str):
                 raise LoreError(f"stdin line {n}: a batch patch names its record by `id`")
         return ctx.write(ops.updater_many(patches))
+    if a.json_in:
+        if a.set:
+            raise LoreError("--json-in reads the patch from stdin: give no -s")
+        patch = read_stdin_json()
+        if isinstance(patch, list):
+            raise LoreError("stdin holds a list; several patches go through `lore update --batch` (JSONL)")
+        if not isinstance(patch, dict):
+            raise LoreError("the patch on stdin must be a JSON object")
+        rid = a.id or patch.get("id")
+        if not isinstance(rid, str) or not rid:
+            raise LoreError("which record? give `lore update <id> --json-in`, or `id` in the patch")
+        if a.id and patch.get("id") not in (None, a.id):
+            raise LoreError(f"the command names {a.id!r} and the patch names {patch['id']!r}")
+        return ctx.write(ops.updater(rid, patch))
     if not a.id:
-        raise LoreError("which record? `lore update <id>`, or --batch")
-    base = ctx.idx.get(a.id) or {}
-    patch = read_stdin_json() if a.json_in else parse_sets(a.set, base)
-    if not isinstance(patch, dict):
-        raise LoreError("the patch on stdin must be a JSON object")
-    return ctx.write(ops.updater(a.id, patch))
+        raise LoreError("which record? `lore update <id>`, or --json-in with `id` in the patch, or --batch")
+    sets = a.set
+    return ctx.write(ops.updater(a.id, lambda cur: parse_sets(sets, cur)))
 
 
 def cmd_check(ctx_args) -> int:
@@ -390,22 +471,39 @@ def cmd_check(ctx_args) -> int:
                 warns.append(f"{rel} is not a lore file and is ignored")
     from codelore.store import Snapshot
     snap = Snapshot(files)
+    n = sum(len(v) for v in files.values())
+    if not ctx_args.json:
+        progress(f"checking {n} record(s) in {len(files)} file(s)...")
     errs.extend(ops.check_all(cfg, snap))
     head = gitio.head(cfg.root)
-    for _, r in snap.records():
-        refs = r.get("refs") or {}
-        commits = set(refs.get("commits", [])) | set(r.get("commits") or [])
-        if r.get("measured_at"):
-            commits.add(r["measured_at"])
-        for c in sorted(commits):
-            if not gitio.commit_exists(cfg.root, c):
+    records = [r for _, r in snap.records()]
+    # Every reference in one git process each: one per reference took minutes.
+    have_c = gitio.commits_exist(cfg.root, sorted({c for r in records for c in ops.commits_of(r)}))
+    live = [r for r in records if r.get("status") not in ("obsolete", "superseded", "reversed")]
+    have_f = gitio.files_at(cfg.root, head, sorted({p.rstrip("/") for r in live
+                                                     for p in (r.get("refs") or {}).get("files", [])}))
+    for r in records:
+        for c in sorted(ops.commits_of(r)):
+            if not have_c.get(c):
                 errs.append(f"{r.get('id')}: commit {c} is not in this repository")
-        if r.get("status") in ("obsolete", "superseded", "reversed"):
-            continue
-        for p in refs.get("files", []):
-            if head and not gitio.file_at(cfg.root, head, p.rstrip("/")):
-                warns.append(f"{r.get('id')}: file {p!r} is gone from HEAD - is the record obsolete?")
-    n = sum(len(v) for v in files.values())
+    if head:
+        for r in live:
+            for p in (r.get("refs") or {}).get("files", []):
+                if not have_f.get(p.rstrip("/")):
+                    warns.append(f"{r.get('id')}: file {p!r} is gone from HEAD - is the record obsolete?")
+    for r in records:
+        if r.get("kind") == "source" and r.get("status") == "covered":
+            data = cover.read_doc(cfg, r["path"]) if isinstance(r.get("path"), str) else None
+            if data is not None:
+                cov = cover.coverage(cover.parts_of(cover.doc_text(data)), r.get("parts") or [])
+                if cov.uncovered or cov.unknown:
+                    warns.append(f"{r['id']}: {r['path']} changed since it was covered - {len(cov.uncovered)} "
+                                 f"part(s) unaccounted for, {len(cov.unknown)} entry(ies) naming no part; "
+                                 f"`lore cover {r['path']}`")
+    if ctx_args.evidence:
+        errs.extend(evidence(cfg, records, have_c))
+    if not ctx_args.json:
+        progress("...done")
     if ctx_args.json:
         emit_json({"records": n, "files": len(files), "errors": errs, "warnings": warns})
     else:
@@ -416,6 +514,152 @@ def cmd_check(ctx_args) -> int:
         say(f"{n} record(s) in {len(files)} file(s): "
             + ("ok" if not errs else f"{len(errs)} failure(s)"))
     return 1 if errs else 0
+
+
+def evidence(cfg, records: list[dict], have_c: dict[str, bool]) -> list[str]:
+    """A cited commit is evidence when it touches a file the record cites, or
+    when its hash is written in a source document whose ledger names the
+    record. A commit that exists and does neither may be cited by mistake -
+    existence alone passes any real hash."""
+    sources: dict[str, list[str]] = {}
+    for r in records:
+        if r.get("kind") == "source" and isinstance(r.get("path"), str):
+            for t in set(r.get("records") or []) | {x for e in r.get("parts") or [] if isinstance(e, dict)
+                                                    for x in e.get("records") or []}:
+                sources.setdefault(t, []).append(r["path"])
+    texts: dict[str, str] = {}
+
+    def doc(path: str) -> str:
+        if path not in texts:
+            data = cover.read_doc(cfg, path)
+            texts[path] = cover.doc_text(data).lower() if data else ""
+        return texts[path]
+
+    cited = {}
+    for r in records:
+        files = [p.rstrip("/") for p in (r.get("refs") or {}).get("files", [])]
+        commits = [c for c in set((r.get("refs") or {}).get("commits", [])) | set(r.get("commits") or [])
+                   if have_c.get(c)]
+        if commits and (files or r.get("id") in sources):
+            cited[r["id"]] = (r, files, commits)
+    touched = gitio.files_touched(cfg.root, sorted({c for _, _, cs in cited.values() for c in cs}))
+    errs = []
+    for rid, (r, files, commits) in sorted(cited.items()):
+        for c in sorted(commits):
+            paths = touched.get(c, set())
+            if any(p == f or p.startswith(f + "/") for p in paths for f in files):
+                continue
+            if any(c.lower()[:7] in doc(s) for s in sources.get(rid, [])):
+                continue
+            where = f"touches none of {', '.join(files)}" if files else "touches no file the record cites"
+            errs.append(f"{rid}: commit {c} {where}"
+                        + (f", and no source of it ({', '.join(sources[rid])}) mentions it" if rid in sources else "")
+                        + " - is it the right commit?")
+    return errs
+
+
+def _doc_path(ctx: Ctx, arg: str) -> str:
+    """A document named on the command line, as a path from the repository root."""
+    root = ctx.cfg.root.resolve()
+    p = Path(arg)
+    for cand in ([p] if p.is_absolute() else [Path.cwd() / p, root / p]):
+        try:
+            return cand.resolve().relative_to(root).as_posix()
+        except ValueError:
+            continue
+    raise LoreError(f"{arg} is not inside the repository")
+
+
+def _source_of(snap_records, path: str) -> dict | None:
+    return next((r for r in snap_records if r.get("kind") == "source" and r.get("path") == path), None)
+
+
+def cmd_cover(ctx: Ctx) -> int:
+    a = ctx.args
+    path = _doc_path(ctx, a.doc)
+    if a.add or a.history:
+        return _cover_write(ctx, path)
+    src = _source_of(ops.base_snapshot(ctx.cfg).by_id().values(), path)
+    data = cover.read_doc(ctx.cfg, path)
+    if data is None:
+        if src is None:
+            raise LoreError(f"{path} is not in the working tree or HEAD, and no source record names it")
+        parts, cov = [], None
+    else:
+        parts = cover.parts_of(cover.doc_text(data))
+        cov = cover.coverage(parts, (src or {}).get("parts") or [])
+    history = src is not None and src.get("status") == "history"
+    entries = {cover.part_key(e["part"]): e for e in (src or {}).get("parts") or []}
+    uncovered = [] if history or cov is None else cov.uncovered
+    if a.json:
+        emit_json({"path": path, "source": src, "parts": len(parts),
+                   "uncovered": [{"part": p.name, "kind": p.kind, "line": p.line} for p in uncovered],
+                   "unknown": [] if cov is None else cov.unknown,
+                   "complete": history or (cov is not None and not uncovered)})
+        return 0 if history or (cov is not None and not uncovered) else 1
+    if src is None:
+        say(f"{path}: no source record yet; {len(parts)} part(s), none accounted for")
+    elif history:
+        say(f"{path}: history ({src['id']}) - {src.get('reason')}")
+        if src.get("records"):
+            say("  what still stands is in: " + ", ".join(src["records"]))
+    else:
+        say(f"{path}: {src['id']} [{src['status']}] - {len(parts) - len(uncovered)} of {len(parts)} "
+            f"part(s) accounted for")
+    if a.list:
+        lost = {id(p) for p in uncovered}
+        for p in parts:
+            e = entries.get(cover.part_key(p.name))
+            what = ("  " + ", ".join(e.get("records") or []) + (f"  skip: {e['skip']}" if e.get("skip") else "")) if e \
+                else ("  UNACCOUNTED" if id(p) in lost else "")
+            say(f"  {p.line:>5} {p.kind:7} {p.name}{what}")
+    elif uncovered:
+        say("unaccounted for (name each in the ledger: `lore cover <doc> --add`):")
+        for p in uncovered:
+            say(f"  {p.line:>5} {p.kind:7} {p.name}")
+    for u in [] if cov is None else cov.unknown:
+        say(f"  ledger entry {u!r} names no part of the document now")
+    return 0 if history or (cov is not None and not uncovered) else 1
+
+
+def _cover_write(ctx: Ctx, path: str) -> int:
+    a = ctx.args
+    entries = read_stdin_jsonl() if a.add else []
+    for n, e in enumerate(entries, 1):
+        if not isinstance(e.get("part"), str):
+            raise LoreError(f"stdin line {n}: a ledger entry is {{\"part\": ..., \"records\": [...], \"skip\": ...}}")
+    cfg = ctx.cfg
+
+    def build(snap) -> list[ops.Change]:
+        cur = _source_of(snap.by_id().values(), path)
+        r = copy.deepcopy(cur) if cur else {"kind": "source", "area": "sources", "path": path,
+                                            "title": (a.title or f"source: {path}")[:120], "status": "open"}
+        ledger = {cover.part_key(e["part"]): e for e in r.get("parts") or []}
+        for e in entries:
+            k = cover.part_key(e["part"])
+            if set(e) == {"part"}:
+                ledger.pop(k, None)  # an entry that names only its part takes it out
+            else:
+                ledger[k] = {x: e[x] for x in ("part", "records", "skip") if e.get(x) is not None}
+        r["parts"] = list(ledger.values()) or None
+        if a.history:
+            r["status"], r["reason"] = "history", a.reason
+            if a.record:
+                r["records"] = list(dict.fromkeys((r.get("records") or []) + a.record))
+        elif r.get("status") != "history":
+            data = cover.read_doc(cfg, path)
+            done = data is not None and not cover.coverage(cover.parts_of(cover.doc_text(data)),
+                                                           r.get("parts") or []).uncovered
+            r["status"] = "covered" if done else "open"
+        if a.title:
+            r["title"] = a.title
+        if cur:
+            return [ops.Change(r, False)]
+        return [ops.Change(x, True) for x in ops.fill_ids([r], snap)]
+
+    if a.history and not a.reason:
+        raise LoreError("--history needs --reason: why nothing in the document is current")
+    return ctx.write(build)
 
 
 def cmd_fmt(args) -> int:
@@ -447,10 +691,9 @@ def cmd_fmt(args) -> int:
 def cmd_index(ctx: Ctx) -> int:
     a = ctx.args
     if a.rebuild:
-        p = cache_dir() / repo_key(ctx.cfg.root) / "index.sqlite"
-        if ctx._idx:
-            ctx._idx.close()
-            ctx._idx = None
+        p = ctx.idx.path
+        ctx._idx.close()
+        ctx._idx = None
         for suffix in ("", "-wal", "-shm", "-journal"):
             q = Path(str(p) + suffix)
             if q.exists():
@@ -551,11 +794,15 @@ def cmd_plan_new(ctx: Ctx) -> int:
 
 def cmd_plan_set(ctx: Ctx) -> int:
     a = ctx.args
-    patch = parse_sets(a.set, ctx.idx.get(a.id) or {})
-    if a.status:
-        if a.status == "closed":
-            raise LoreError("a plan closes with `lore plan close <id> --outcome ...`")
-        patch["status"] = a.status
+    if a.status == "closed":
+        raise LoreError("a plan closes with `lore plan close <id> --outcome ...`")
+    sets, status = a.set, a.status
+
+    def patch(cur: dict) -> dict:
+        p = parse_sets(sets, cur)
+        if status:
+            p["status"] = status
+        return p
     return ctx.write(ops.updater(a.id, patch))
 
 
@@ -579,12 +826,13 @@ def cmd_item_add(ctx: Ctx) -> int:
 
 #: Fields that only some item statuses carry; a move clears the ones it leaves.
 CONDITIONAL = {"commits": ("done",), "reason": ("dropped", "deferred"),
-               "decided_by": ("dropped",), "superseded_by": ("superseded",)}
+               "decided_by": ("dropped",), "superseded_by": ("superseded",),
+               "outcome": ("done", "dropped", "superseded")}
 
 
 def _move(ctx: Ctx, rid: str, status: str, fields: dict, reopen_reason: str | None = None) -> int:
     patch = {k: None for k, sts in CONDITIONAL.items() if status not in sts}
-    patch.update(fields)
+    patch.update({k: v for k, v in fields.items() if v is not None or k not in ("outcome",)})
     patch["status"] = status
     subject = None
     if reopen_reason:
@@ -594,16 +842,16 @@ def _move(ctx: Ctx, rid: str, status: str, fields: dict, reopen_reason: str | No
 
 
 def cmd_item_done(ctx: Ctx) -> int:
-    return _move(ctx, ctx.args.id, "done", {"commits": ctx.args.commit})
+    return _move(ctx, ctx.args.id, "done", {"commits": ctx.args.commit, "outcome": ctx.args.outcome})
 
 
 def cmd_item_drop(ctx: Ctx) -> int:
     a = ctx.args
-    return _move(ctx, a.id, "dropped", {"reason": a.reason, "decided_by": a.decided_by})
+    return _move(ctx, a.id, "dropped", {"reason": a.reason, "decided_by": a.decided_by, "outcome": a.outcome})
 
 
 def cmd_item_supersede(ctx: Ctx) -> int:
-    return _move(ctx, ctx.args.id, "superseded", {"superseded_by": ctx.args.with_})
+    return _move(ctx, ctx.args.id, "superseded", {"superseded_by": ctx.args.with_, "outcome": ctx.args.outcome})
 
 
 def cmd_item_defer(ctx: Ctx) -> int:
@@ -652,7 +900,9 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--branch")
     cmd("guide", cmd_guide, "print the instructions for agents")
     cmd("areas", cmd_areas, "list the knowledge areas and their record counts")
-    cmd("check", cmd_check, "the gate: every file, record, reference and plan rule")
+    sp = cmd("check", cmd_check, "the gate: every file, record, reference and plan rule")
+    sp.add_argument("--evidence", action="store_true",
+                    help="also fail a cited commit that touches none of the record's files")
     cmd("fmt", cmd_fmt, "rewrite hand-edited files canonically")
     sp = cmd("index", cmd_index, "build the index and embeddings now; report")
     sp.add_argument("--rebuild", action="store_true")
@@ -674,6 +924,17 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--all", action="store_true")
     sp = cmd("show", cmd_show, "one record by id")
     sp.add_argument("id")
+    sp = cmd("exists", cmd_exists, "whether each id is a record now; exit 1 if one is not")
+    sp.add_argument("ids", nargs="+", metavar="id")
+    sp = cmd("cover", cmd_cover, "a source document's coverage: which parts records hold, which are skipped")
+    sp.add_argument("doc", help="the document, a path in the repository")
+    sp.add_argument("--list", action="store_true", help="every part, with what accounts for it")
+    sp.add_argument("--add", action="store_true",
+                    help="merge ledger entries from stdin (JSONL: part, records, skip); one commit")
+    sp.add_argument("--history", action="store_true", help="the whole document is history, nothing current")
+    sp.add_argument("--reason", help="with --history: why")
+    sp.add_argument("--record", action="append", help="with --history: a record holding what still stands")
+    sp.add_argument("--title", help="the source record's title")
 
     writes = argparse.ArgumentParser(add_help=False)
     writes.add_argument("-s", "--set", action="append", default=[], metavar="KEY=VALUE",
@@ -686,6 +947,8 @@ def build_parser() -> argparse.ArgumentParser:
                     help="read one record (or a list) as JSON from stdin")
     sp.add_argument("--batch", action="store_true", help="read JSONL from stdin, one commit")
     sp.add_argument("--new", action="store_true", help="write even if a similar record exists")
+    sp.add_argument("--skip-duplicates", action="store_true",
+                    help="leave out the records refused as duplicates and write the rest")
     sp = sub.add_parser("update", help="change fields of a record, or of many with --batch",
                         parents=[common, writes])
     sp.set_defaults(func=cmd_update)
@@ -737,15 +1000,18 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_item_done)
     sp.add_argument("id")
     sp.add_argument("--commit", action="append", required=True)
+    sp.add_argument("--outcome", help="what this item built or settled, and what it got wrong")
     sp = ip.add_parser("drop", parents=[common], help="dropped, with the reason and who decided")
     sp.set_defaults(func=cmd_item_drop)
     sp.add_argument("id")
     sp.add_argument("--reason", required=True)
     sp.add_argument("--decided-by", required=True)
+    sp.add_argument("--outcome", help="what this item built or settled, and what it got wrong")
     sp = ip.add_parser("supersede", parents=[common], help="replaced by another item")
     sp.set_defaults(func=cmd_item_supersede)
     sp.add_argument("id")
     sp.add_argument("--with", dest="with_", required=True)
+    sp.add_argument("--outcome", help="what this item built or settled, and what it got wrong")
     sp = ip.add_parser("defer", parents=[common], help="deferred, with the condition")
     sp.set_defaults(func=cmd_item_defer)
     sp.add_argument("id")

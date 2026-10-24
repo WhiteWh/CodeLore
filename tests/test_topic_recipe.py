@@ -3,6 +3,7 @@ import unittest
 
 from helpers import RepoCase
 
+from codelore import FORMAT_VERSION
 from codelore.schema import validate
 
 AREAS = ["git", "build"]
@@ -42,7 +43,7 @@ class Kinds(unittest.TestCase):
             (recipe(steps=["x" * 401]), "the limit is 400"),
             (recipe(when=None), "`when` is required"),
             (recipe(check=None), "`check` is required"),
-            (topic(v=3), "newer than this lore reads"),
+            (topic(v=FORMAT_VERSION + 1), "newer than this lore reads"),
         ]
         for rec, words in cases:
             with self.subTest(words=words):
@@ -63,7 +64,7 @@ class Cli(RepoCase):
             "body": "The frame draws the ground first, then the props, then the post chain, in that order."}))
         rid = out["records"][0]["id"]
         rec = self.lore_json("show", rid)
-        self.assertEqual((rec["v"], rec["status"]), (2, "current"))
+        self.assertEqual((rec["v"], rec["status"]), (FORMAT_VERSION, "current"))
         self.assertEqual(self.lore_json("find", "in what order is the frame drawn")["results"][0]["record"]["id"], rid)
         self.lore("add", "recipe", "--stdin", stdin=json.dumps({
             "area": "build", "title": "Cutting a release", "when": "a version is to be handed out",
@@ -77,7 +78,7 @@ class Cli(RepoCase):
         self.assertEqual(self.lore_json("find", "release", "--kind", "recipe")["results"][0]["record"]["id"],
                          "cutting-a-release")
 
-    def test_old_record_updated_moves_to_v2(self):
+    def test_old_record_updated_takes_the_current_version(self):
         self.add(self.fault("a fault"))
         p = self.root / "lore" / "git.jsonl"
         from codelore.store import parse, serialize
@@ -86,7 +87,7 @@ class Cli(RepoCase):
         p.write_bytes(serialize(recs))
         self.assertIn("ok", self.lore("check"))
         self.lore("update", "a-fault", "-s", "fix=a better fix")
-        self.assertEqual(self.lore_json("show", "a-fault")["v"], 2)
+        self.assertEqual(self.lore_json("show", "a-fault")["v"], FORMAT_VERSION)
 
 
 if __name__ == "__main__":

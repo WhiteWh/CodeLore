@@ -91,8 +91,8 @@ def parse(data: dict, root: Path, where: str = CONFIG_NAME) -> Config:
         for a in areas:
             if not SLUG.match(a):
                 bad.append(f"area `{a}` must match {SLUG.pattern}")
-            if a == "plans":
-                bad.append("`plans` is reserved for plan files and is not an area")
+            if a in ("plans", "sources"):
+                bad.append(f"`{a}` is reserved for {a[:-1]} records and is not an area")
         if len(set(areas)) != len(areas):
             bad.append("`areas` has duplicates")
         cfg.areas = list(areas)

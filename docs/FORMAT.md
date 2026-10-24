@@ -1,4 +1,4 @@
-# The CodeLore format, version 2
+# The CodeLore format, version 3
 
 This is the contract between a repository's lore and any program that reads or
 writes it. `lore` is one such program; nothing here depends on it.
@@ -9,11 +9,13 @@ writes it. `lore` is one such program; nothing here depends on it.
 lore.toml                    the project's configuration (§6)
 lore/<area>.jsonl            knowledge: fault, reading, decision, topic, recipe records
 lore/plans/<plan-id>.jsonl   one plan: its plan record, then its items
+lore/sources.jsonl           source records: what became of each document moved into lore
 ```
 
 `lore/` is the default and `lore.toml` can move it (`dir = "docs/lore"`). Areas
 are the project's own words - `git`, `render`, `build` - declared in
-`lore.toml`; a record's `area` names the file it lives in.
+`lore.toml`; a record's `area` names the file it lives in. `plans` and
+`sources` are not areas.
 
 ## 2. Encoding
 
@@ -35,10 +37,10 @@ not repair.
 
 | field | type | rule |
 |---|---|---|
-| `v` | int | the format version the record was written at: `1` or `2` (topic and recipe need `2`) |
+| `v` | int | the format version the record was written at: `1`, `2` or `3` (topic and recipe need `2`; source, and a superseded decision, need `3`) |
 | `id` | string | unique in the repository; `[a-z0-9][a-z0-9-]{1,47}`; an item's is `<plan-id>#<n>` |
-| `kind` | string | `fault`, `reading`, `decision`, `topic`, `recipe`, `plan`, `item` |
-| `area` | string | one of `lore.toml`'s areas; for `plan` and `item` it is `plans` |
+| `kind` | string | `fault`, `reading`, `decision`, `topic`, `recipe`, `plan`, `item`, `source` |
+| `area` | string | one of `lore.toml`'s areas; for `plan` and `item` it is `plans`, for `source` it is `sources` |
 | `title` | string | 1-120 characters, says what the record is about |
 | `status` | string | one of the kind's statuses (§4) |
 | `created` | string | ISO date, `YYYY-MM-DD` |
@@ -93,7 +95,9 @@ it; `superseded_by` names it).
 | `reason` | required, <= 800 | |
 | `decided_by` | required | who had the authority |
 
-`status`: `active`, `reversed` (`reversed_by` names the decision that replaced it).
+`status`: `active`, `reversed` (the choice was undone; `reversed_by` names the decision
+that replaced it), `superseded` (the same decision was recorded twice and folded
+into the other record, which `superseded_by` names).
 
 ### topic - how something works now
 
@@ -139,6 +143,7 @@ of its items is `open` or `deferred`, and a closed plan takes no new items.
 | `reason` | required when `dropped` or `deferred`, <= 600 | why - "the current state is enough" is a reason |
 | `decided_by` | required when `dropped` | who decided to drop it |
 | `superseded_by` | required when `superseded` | the item that replaced it |
+| `outcome` | optional when `done`, `dropped` or `superseded`, <= 1000 | what this item built or settled, and what it got wrong |
 
 `status`: `open`, `done`, `dropped`, `superseded`, `deferred`. There is no
 "in progress": who is working on what right now is runtime state and belongs to
@@ -146,7 +151,36 @@ whoever runs the work. `open` and `deferred` may move to any status; `done`,
 `dropped` and `superseded` move only back to `open`, and only with a stated
 reason (`lore item reopen`). A move removes the fields the old status carried.
 
-Dependencies must not form a cycle, and must name items that exist.
+Dependencies must not form a cycle, and must name items that exist. The commits
+of an item still being built go in its `refs.commits`; `commits` is the closing
+list of a `done` item. A plan's `outcome` is its summary; each item's own
+`outcome` holds the verdict on that piece.
+
+### source - what became of a document moved into lore
+
+| field | | |
+|---|---|---|
+| `path` | required, <= 300 | the document's path from the repository root |
+| `parts` | list of entries | the ledger, below |
+| `records` | list of ids | the records that hold what still stands of it |
+| `reason` | required when `history`, <= 600 | why nothing in it is current |
+
+`status`: `open` (parts are still unaccounted for), `covered` (every part is),
+`history` (the document holds nothing current; `records` names what still
+stands). There is one source record for a path.
+
+A Markdown document's **parts** are its headings (named by their text after the
+`#`s), its table rows (`<heading> | <first cell>`), its numbered list items
+(`<heading> / <n>. <first words>`) and, for a heading that also has parts under
+it, what the heading says itself (`<heading> / text`). Headings in code fences
+are not headings; a repeated name takes ` (2)`, ` (3)` in order of appearance;
+names compare without regard to case or runs of whitespace.
+
+Each entry of `parts` is `{"part": "<name>", "records": [<id>...], "skip":
+"<why>"}` with `records`, `skip` (<= 300) or both. An entry for a heading
+accounts for everything under it; a heading without one is accounted for when
+everything under it is. A writer refuses an entry that names no part of the
+document as it is, and `covered` while a part is unaccounted for.
 
 ## 5. `refs`
 
@@ -198,4 +232,7 @@ one by name. A change that only adds an optional field keeps the version; any
 other change raises it. A record keeps the version it was written at until it is
 next written, when it takes the current one: version 2 added the `topic` and
 `recipe` kinds and changed nothing else, so a version 1 file is a valid version
-2 file.
+2 file. Version 3 added the `source` kind, the decision's `superseded` status and
+the item's optional `outcome`, and made `superseded_by` and `reversed_by` record
+ids rather than strings of up to 64 characters; every version 2 file is a valid
+version 3 file.

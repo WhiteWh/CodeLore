@@ -76,6 +76,55 @@ def file_at(root: Path, rev: str | None, path: str) -> bool:
     return git(root, "cat-file", "-e", f"{rev}:{path}", check=False).returncode == 0
 
 
+def resolve(root: Path, specs: list[str]) -> dict[str, str | None]:
+    """Each object name (`<sha>^{commit}`, `<rev>:<path>`) to the full hash it
+    names, or None - one `git cat-file` for all of them, where one process per
+    name costs minutes on a lore of thousands of references."""
+    specs = list(dict.fromkeys(s for s in specs if "\n" not in s))
+    if not specs:
+        return {}
+    p = git(root, "cat-file", "--batch-check=%(objectname)", input="".join(s + "\n" for s in specs).encode("utf-8"),
+            check=False)
+    lines = p.stdout.decode("utf-8", "replace").splitlines()
+    res: dict[str, str | None] = {}
+    for s, line in zip(specs, lines):
+        res[s] = None if " " in line.strip() else line.strip()  # "<name> missing" / "<name> ambiguous"
+    for s in specs[len(lines):]:
+        res[s] = None
+    return res
+
+
+def commits_exist(root: Path, shas) -> dict[str, bool]:
+    got = resolve(root, [f"{c}^{{commit}}" for c in shas])
+    return {c: bool(got.get(f"{c}^{{commit}}")) for c in shas}
+
+
+def files_at(root: Path, rev: str | None, paths) -> dict[str, bool]:
+    if rev is None:
+        return {p: False for p in paths}
+    got = resolve(root, [f"{rev}:{p}" for p in paths])
+    return {p: bool(got.get(f"{rev}:{p}")) for p in paths}
+
+
+def files_touched(root: Path, shas) -> dict[str, set[str]]:
+    """The paths each commit changed against its parents (all of them for a
+    root commit), by the hash as given. Commits that do not exist are absent."""
+    names = resolve(root, [f"{c}^{{commit}}" for c in shas])
+    full = {c: names.get(f"{c}^{{commit}}") for c in shas}
+    wanted = sorted({h for h in full.values() if h})
+    touched: dict[str, set[str]] = {h: set() for h in wanted}
+    if wanted:
+        p = git(root, "diff-tree", "--stdin", "-r", "-m", "--root", "--name-only", "--no-renames",
+                input="".join(h + "\n" for h in wanted).encode(), check=False)
+        cur = None
+        for line in p.stdout.decode("utf-8", "replace").splitlines():
+            if line in touched:
+                cur = line
+            elif line and cur:
+                touched[cur].add(line)
+    return {c: touched[h] for c, h in full.items() if h}
+
+
 def user_name(root: Path) -> str:
     return out(root, "config", "user.name", check=False)
 

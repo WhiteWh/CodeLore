@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sqlite3
+import subprocess
 import sys
 from array import array
 from pathlib import Path
@@ -113,14 +114,42 @@ def embed_text(r: dict) -> str:
     return "\n".join(p for p in parts if p)
 
 
+def index_dirs(cfg) -> list[Path]:
+    """Where the index may live, in order: `LORE_CACHE` or the user cache,
+    then the repository's own git directory - never tracked, and writable
+    wherever the repository is, as in a sandbox that cannot reach the user's
+    cache folder."""
+    dirs = [cache_dir() / repo_key(cfg.root)]
+    p = subprocess.run(["git", "-C", str(cfg.root), "rev-parse", "--git-path", "codelore"],
+                       capture_output=True)
+    if p.returncode == 0 and p.stdout.strip():
+        g = Path(p.stdout.decode("utf-8", "replace").strip())
+        dirs.append(g if g.is_absolute() else cfg.root / g)
+    return dirs
+
+
 class Index:
     def __init__(self, cfg):
         self.cfg = cfg
-        d = cache_dir() / repo_key(cfg.root)
-        d.mkdir(parents=True, exist_ok=True)
-        self.path = d / "index.sqlite"
-        self.db = self._open()
         self.semantic_note: str | None = None
+        self.place_note: str | None = None
+        tried = []
+        for d in index_dirs(cfg):
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+                self.path = d / "index.sqlite"
+                self.db = self._open()
+                break
+            except (OSError, sqlite3.OperationalError) as e:
+                if "fts5" in str(e).lower():
+                    raise
+                tried.append(f"{d}: {e}")
+        else:
+            raise LoreError("no folder the index can be written to - set LORE_CACHE to a writable folder",
+                            tried)
+        if tried:
+            self.place_note = (f"the index is in {self.path.parent}, since {tried[0]}; "
+                               "set LORE_CACHE to choose the folder")
 
     def _open(self) -> sqlite3.Connection:
         db = self._connect()

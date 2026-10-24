@@ -5,7 +5,7 @@ fixes, measured readings, decisions, and plan items that never disappear
 silently. JSONL in git, hybrid full-text + semantic search, one CLI - `lore` -
 that checks and commits every entry.
 
-> Status: **0.2.0.** Every command below works and is tested;
+> Status: **0.3.0.** Every command below works and is tested;
 > the search's ranking and the duplicate threshold are still to be measured on a
 > large real lore ([docs/ROADMAP.md](docs/ROADMAP.md)). The format is in
 > [docs/FORMAT.md](docs/FORMAT.md), the design in [docs/DESIGN.md](docs/DESIGN.md).
@@ -62,7 +62,8 @@ entry must say.
   A reading is *what is measured, by which command, the value, at which commit*.
   A decision is *the question, the choice, the reason, who decided*. A topic
   is *how something works now*, a page-sized piece; a recipe is *when, the
-  steps, and how to see it worked*.
+  steps, and how to see it worked*. A source records what became of a document
+  moved in: which records hold each of its parts, which were skipped and why.
 - **Plans are records too.** A plan has a goal and items; an item ends **done**
   (with its commits), **dropped** (with a reason and who decided),
   **superseded** or **deferred** - never just forgotten. A plan cannot close
@@ -94,6 +95,7 @@ lore stale --days 14                 # open items nobody touched
 lore item drop api-v2#4 --reason "the v1 endpoint is enough for now"
 lore plan close api-v2 --outcome "..."
 lore check                           # the gate: schema, refs, dependency cycles
+lore cover docs/old-handbook.md      # moving docs in: which parts no record or skip accounts for
 ```
 
 ## For agents

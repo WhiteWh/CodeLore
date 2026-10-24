@@ -18,6 +18,7 @@ src/codelore/
  ├─ embed.py    providers: ollama | none
  ├─ search.py   find / for: exact signals, BM25 x2, cosine, reciprocal rank fusion
  ├─ plans.py    counts, layers, readiness, stale
+ ├─ cover.py    a source document's parts and what accounts for each
  └─ guide.md    the agent instructions, printed by `lore guide`
 ```
 
@@ -32,11 +33,14 @@ one entry point.
 |---|---|---|
 | records | `<repo>/lore/*.jsonl` | yes - the only source of truth |
 | configuration | `<repo>/lore.toml` | yes |
-| index | user cache: `%LOCALAPPDATA%\codelore\<repo-key>\index.sqlite`, `~/.cache/codelore/<repo-key>/` | no |
+| index | `$LORE_CACHE/<repo-key>/`, else the user cache: `%LOCALAPPDATA%\codelore\<repo-key>\index.sqlite`, `~/.cache/codelore/<repo-key>/`; where that cannot be written, `.git/codelore/` | no |
 | embedding cache | beside the index, keyed by model and content hash | no |
 
 `<repo-key>` is a hash of the repository's absolute path. Deleting the cache
-costs one rebuild and nothing else.
+costs one rebuild and nothing else. A sandboxed agent may be unable to create a
+folder in the user cache while it can write the repository; the index then goes
+to the repository's git directory - never tracked, never committed - and a line
+on stderr says where and why.
 
 ## 3. Reading: the index and the search
 
@@ -75,7 +79,8 @@ change re-embeds once. Cosine similarity against all vectors, top 50.
 meaning lists; a whole phrase adds half a point, an exact signal a full point,
 longest match first. Filters (`--kind`, `--area`, `--status`, `--plan`) apply before ranking;
 the default hides `obsolete`, `superseded`, `reversed` and closed plans' items
-unless `--all`.
+unless `--all`, and source records - ledgers of documents, not knowledge -
+unless `--kind source`.
 
 **No model.** If the provider does not answer, `find` runs on text alone and the
 first line of its output says so. Whether the server is there is decided by a
@@ -88,7 +93,11 @@ chunks of them. `--json` gives the records as stored, with their scores.
 
 `lore for <path|symbol>` is a different question with an exact answer: every
 record whose `refs.files` holds the path (or a path under the directory) or
-whose `refs.symbols` holds the symbol.
+whose `refs.symbols` holds the symbol, and the source record of a document.
+
+`lore show` and `lore exists` read the index, and for an id it lacks, the
+branch the next write builds on: under `shared-tree` another session's commit
+can be in the branch before its line is in this working tree.
 
 `lore find -` reads stdin and keeps the lines that look like errors (exception
 lines, `error:`/`fatal:`, HRESULTs, exit codes) as the query, so a whole
@@ -103,8 +112,12 @@ Every write goes through one path:
 2. **Validate** against the schema: required fields, types, lengths, statuses,
    the transitions an item may make (`open` → anything; a closed item reopens
    only with `--reopen` and a reason).
-3. **Check references**: each commit exists (`git cat-file -e`), each file exists
-   at `HEAD`, each record and dependency exists, dependencies make no cycle.
+3. **Check references**: each commit exists, each file exists at `HEAD` - all of
+   a change's, in one `git cat-file --batch-check` - each record and dependency
+   exists, dependencies make no cycle. A signal the change adds may not be a
+   bare class name or one word (`AttributeError`, `Traceback`): every fault of
+   its family prints it, so it finds them all and makes each next one look like
+   a duplicate.
 4. **Look for duplicates** (new knowledge records only): against every record of
    the same kind, and against the batch's earlier records. The evidence comes in
    two strengths, and only the strong kind refuses. **Strong**: a `signals`
@@ -114,6 +127,16 @@ Every write goes through one path:
    and `lore update <id>` or `--new` asked for. **Near**: cosine at or above
    0.80 (or overlap at or above 0.25 without embeddings) - the write goes
    through and names the three nearest records, so the writer can merge.
+
+   Word overlap does not refuse when each title names something - a quoted
+   or backticked span, a code-like token, a CamelCase word - that the other
+   record never mentions. On the first large migration a family of 18 topics,
+   one per settings object («`BloomSettings` - the bloom's settings»), shared a
+   title template and a vocabulary at 0.5-0.67 overlap and said different
+   things; such a pair is only named.
+
+   A batch is refused whole, and the refusal names each record by its place
+   (`#n`); `--skip-duplicates` writes the others and lists the ones left out.
 
    Why similarity alone does not refuse, measured on the first real lore (37
    records about git in a shared tree, nomic-embed-text): the rows that were
@@ -152,8 +175,11 @@ Refusals are loud: the field, the rule, what to do. Nothing is half-written.
   absent for a new file) - so `git status` stays clean for it. An entry
   somebody staged is left alone, and no other path is touched.
 
-`push = true` pushes the branch after the commit; a failed push is reported and
-the commit stays.
+`push = true` pushes the branch after the commit. A failed push leaves the commit
+where it is and says so in one line - `committed <sha> locally, push to
+<remote>/<branch> failed: <git's reason>; the next write's push carries it` -
+which is true, since a push sends the branch with every commit not yet on the
+remote.
 
 ## 6. Plans
 
@@ -184,6 +210,28 @@ resolve (missing files are reported, not failed - the record may now be
 `obsolete`), dependencies are acyclic, no closed plan has an open item. Exit
 code 1 on any failure. `lore fmt` reads hand-edited files leniently and writes
 them back canonical and sorted - the one repair, and only when asked.
+
+References are checked in one git process for all commits and one for all
+files: one process per reference took 12 minutes 43 seconds over 6 000 records
+on Windows, the batch takes under a second, so there is no incremental mode to
+trust. A `covered` source whose document has since changed is a warning.
+
+`lore check --evidence` asks more of a cited commit than that it exists: that it
+touches one of the record's `refs.files`, or that its hash is written in a
+source document whose ledger names the record. A hash made up by an agent is
+caught by existence; one that happens to exist is caught here.
+
+## 7a. Sources
+
+A project's documents moved into lore leave a `source` record each: which
+records hold each part of the document, which parts were skipped and why. The
+parts are found in the Markdown (headings, table rows, numbered items, and what
+a heading says itself when it has parts under it - FORMAT.md §4), named the way
+they are written so a person can find the place. `lore cover <doc>` lists what
+is unaccounted for, `--add` merges ledger entries, `--history` marks a document
+that holds nothing current with the records that carry what still stands. The
+ledger lives in the store, not beside a migration script, so an archived
+document still says where each of its facts went when no record links it.
 
 ## 8. Agents
 

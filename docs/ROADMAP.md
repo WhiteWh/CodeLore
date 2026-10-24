@@ -80,6 +80,38 @@ duplicates (0.69-0.85) from different faults (0.87-0.88) and word overlap did
 (different records at most 0.32): similarity names, only strong evidence
 refuses (DESIGN.md §4). **Left**: a PyPI release.
 
+## 0.3.0 - what a large migration found
+
+Three agent sessions moved about 350 documents into a lore of 6 200 records in
+100 files. What they met, and what changed:
+
+- `lore check` took 9-15 minutes: one git process per reference. It is one
+  process for all commits and one for all files now - 12 min 43 s to 0.7 s on a
+  scratch lore of 6 000 records - and writes check a batch's references the
+  same way. No incremental mode: nothing is left for it to save.
+- `lore check --evidence`: a cited commit must touch a file the record cites or
+  be named in its source document.
+- format version 3: the `source` kind and `lore cover`, a document's coverage
+  part by part (headings, table rows, numbered items) with skips and their
+  reasons in the store; `--history` for a document that holds nothing current.
+  A decision recorded twice is retired as `superseded`, like every other kind.
+  An item has its own `outcome`, so a plan's 2000 characters summarise rather
+  than hold every piece's verdict.
+- a batch refused for one duplicate names it (`#n`) and `--skip-duplicates`
+  writes the rest; a bare class name (`AttributeError`) is not a signal.
+- a family of records whose titles name different things (one per setting) is
+  not refused on word overlap; it is named.
+- `update --json-in` takes the id from the patch; `commits` on an open item
+  says that its commits go in `refs.commits`; a failed push is one line.
+- the index falls back to the repository's git directory where the user cache
+  cannot be written; `lore show` and the new `lore exists` find a record
+  committed by another session before it reaches this working tree, and `+=`
+  appends to the record the commit is built on.
+- `superseded_by` and `reversed_by` are checked as record ids, and the refusal
+  quotes the value received. Reported: «the pair of ids is measured against 64»;
+  not reproduced with two 48-character ids in either order - if a shell joins
+  the two tokens, the refusal now shows it.
+
 ## 0.2.1 - retiring a duplicate
 
 - a fault recorded twice is folded into its twin and keeps its line: status

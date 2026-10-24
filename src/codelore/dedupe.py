@@ -9,6 +9,13 @@ look. A write is refused only on strong evidence - an exact signal another
 record already carries, near-identical text (cosine >= `dedupe.cosine`,
 0.95), or a word overlap (>= `dedupe.jaccard`, 0.5) no two different records
 reached (their highest was 0.32).
+
+Word overlap does not refuse two records whose titles name different things:
+a family of records, one per setting or per term, shares a title template
+(«`BloomSettings` - the bloom's settings», «`DofSettings` - the depth of
+field's settings») and a vocabulary, and still says different things. When
+each title names something - a quoted or backticked span, a code-like token -
+that the other record never mentions, the overlap only names the neighbour.
 """
 from __future__ import annotations
 
@@ -16,7 +23,7 @@ import re
 from dataclasses import dataclass
 
 from codelore import embed as embedmod
-from codelore.index import Index, embed_text
+from codelore.index import Index, embed_text, terms_of
 from codelore.schema import KNOWLEDGE, main_text
 
 STOP = set("""a an the and or of to in on at for from by with without is are was were be been
@@ -34,6 +41,31 @@ def words(r: dict) -> set[str]:
     return {w for w in re.findall(r"[a-z0-9_]{3,}", text) if w not in STOP}
 
 
+_QUOTED = re.compile(r"`([^`]+)`|«([^»]+)»|\"([^\"]+)\"|(?<!\w)'([^']{2,})'(?!\w)")
+_CAMEL = re.compile(r"[A-Za-z][a-z0-9]+[A-Z][A-Za-z0-9]*")
+
+
+def names(r: dict) -> set[str]:
+    """What a record's title names: quoted spans, code-like tokens, CamelCase words."""
+    t = r.get("title", "")
+    found = {next(g for g in m.groups() if g) for m in _QUOTED.finditer(t)}
+    found |= set(terms_of(t)) | set(_CAMEL.findall(t))
+    return {n.strip().lower() for n in found if len(n.strip()) >= 2}
+
+
+def text_of(r: dict) -> str:
+    return " ".join(str(v) for v in r.values() if isinstance(v, (str, list))).lower()
+
+
+def names_differ(a: dict, b: dict, ta: str | None = None, tb: str | None = None) -> bool:
+    """Each title names something the other record never mentions."""
+    na, nb = names(a), names(b)
+    if not na or not nb:
+        return False
+    ta, tb = ta if ta is not None else text_of(a), tb if tb is not None else text_of(b)
+    return any(n not in tb for n in na) and any(n not in ta for n in nb)
+
+
 def jaccard(a: set[str], b: set[str]) -> float:
     if not a or not b:
         return 0.0
@@ -44,7 +76,7 @@ def jaccard(a: set[str], b: set[str]) -> float:
 class Match:
     id: str
     similarity: float
-    how: str           # "signal", "meaning", "words"
+    how: str           # "signal", "meaning", "words", "words, names differ"
     blocking: bool
 
 
@@ -61,11 +93,19 @@ def candidates(cfg, idx: Index, new: list[dict], prov=None) -> dict[int, list[Ma
             new_vecs = prov.embed([doc_prefix + embed_text(r) for r in new])
         except embedmod.Unavailable:
             use_vec = False
+    # Each existing record's words and text once, not once per new record.
+    memo: dict[int, tuple[set[str], str]] = {}
+
+    def seen(e: dict) -> tuple[set[str], str]:
+        if id(e) not in memo:
+            memo[id(e)] = (words(e), text_of(e))
+        return memo[id(e)]
+
     res: dict[int, list[Match]] = {}
     for i, r in enumerate(new):
         if r.get("kind") not in KNOWLEDGE:
             continue
-        w = words(r)
+        w, tr = seen(r)
         sigs = {s.lower() for s in r.get("signals") or []}
         pool = [(e, vecs.get(e["id"])) for e in existing if e.get("kind") == r.get("kind")]
         pool += [(new[j], new_vecs[j] if use_vec else None) for j in range(i)
@@ -77,12 +117,16 @@ def candidates(cfg, idx: Index, new: list[dict], prov=None) -> dict[int, list[Ma
             if shared:
                 found.append(Match(eid, 1.0, "signal", True))
                 continue
-            j = jaccard(w, words(e))
+            we, te = seen(e)
+            j = jaccard(w, we)
             cos = embedmod.dot(new_vecs[i], ev) if use_vec and ev is not None else None
             if cos is not None and cos >= cfg.dedupe_cosine:
                 found.append(Match(eid, round(cos, 3), "meaning", True))
             elif j >= cfg.dedupe_jaccard:
-                found.append(Match(eid, round(j, 3), "words", True))
+                if names_differ(r, e, tr, te):
+                    found.append(Match(eid, round(j, 3), "words, names differ", False))
+                else:
+                    found.append(Match(eid, round(j, 3), "words", True))
             elif cos is not None and cos >= NEAR_COSINE:
                 found.append(Match(eid, round(cos, 3), "meaning", False))
             elif cos is None and j >= NEAR_JACCARD:

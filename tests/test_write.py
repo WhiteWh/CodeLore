@@ -75,7 +75,7 @@ class Plain(RepoCase):
         text = self.lore("add", "any", "--stdin", stdin=json.dumps(self.fault(
             "git archive piped to tar fails", symptom="extracting the git archive through a pipe fails on each file")),
             ok=False)
-        self.assertIn("a record of this fault exists", text)
+        self.assertIn("1 of 1 record(s) already exist", text)
         self.assertIn("git-archive-piped-into-tar-fails (words", text)
 
     def test_shared_signal_refuses_and_a_neighbour_is_only_named(self):

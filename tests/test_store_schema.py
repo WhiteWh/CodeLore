@@ -2,7 +2,7 @@ import unittest
 
 from helpers import RepoCase  # noqa: F401  (puts src on the path)
 
-from codelore import LoreError
+from codelore import FORMAT_VERSION, LoreError
 from codelore.config import parse as parse_config
 from codelore.schema import check_limits, validate
 from codelore.store import canonical, parse, serialize
@@ -76,7 +76,7 @@ class Schema(unittest.TestCase):
             (fault(signals=["a", "a"]), "duplicates"),
             (fault(created="2026-13-01"), "must be a date"),
             (fault(created="2026-10-25"), "`updated` is before `created`"),
-            (fault(v=3), "newer than this lore reads"),
+            (fault(v=FORMAT_VERSION + 1), "newer than this lore reads"),
             (fault(refs={"files": ["C:\\x"]}), "paths are relative"),
             (fault(refs={"commits": ["zz"]}), "not a hash"),
             (fault(refs={"other": ["x"]}), "is not one of"),

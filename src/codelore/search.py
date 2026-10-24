@@ -29,6 +29,7 @@ class Filters:
     status: str | None = None
     plan: str | None = None
     all: bool = False
+    sources: bool = False           # source records too, without --kind source
 
 
 def _quote(tok: str) -> str:
@@ -43,6 +44,8 @@ def _visible(idx: Index, f: Filters) -> dict[str, dict]:
     for rid, r in recs.items():
         if f.kind and r.get("kind") != f.kind:
             continue
+        if not f.kind and r.get("kind") == "source" and not f.sources:
+            continue  # a ledger of a document, not knowledge: found with --kind source
         if f.area and r.get("area") != f.area:
             continue
         if f.plan and r.get("plan") != f.plan and rid != f.plan:
@@ -197,9 +200,10 @@ def for_target(idx: Index, target: str, f: Filters) -> list[dict]:
     t = t.removeprefix("./")
     d = t.rstrip("/") + "/"
     res = []
+    f = Filters(**{**f.__dict__, "sources": True})
     for r in _visible(idx, f).values():
         refs = r.get("refs") or {}
-        hit = False
+        hit = r.get("kind") == "source" and r.get("path") in (t, t.rstrip("/"))
         for p in refs.get("files", []):
             if p == t or p.startswith(d) or t.startswith(p.rstrip("/") + "/"):
                 hit = True
