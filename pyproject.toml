@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codelore"
-version = "0.2.2"
+version = "0.2.3"
 description = "Project memory for coding agents, kept in your repo: faults, readings, decisions, topics, recipes and plan items as JSONL records in git, with hybrid search and one CLI that checks and commits every entry."
 readme = "README.md"
 license = { text = "MIT" }

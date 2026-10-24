@@ -97,6 +97,9 @@ def columns(r: dict) -> tuple[str, str, str, str, str]:
     return signals, title, main, body, terms
 
 
+#: Seconds a connection waits for another process's write lock before it gives up.
+BUSY_TIMEOUT = 120.0
+
 #: An embedding reads the start of a long text; the model's window is not the point.
 EMBED_MAIN = 1500
 
@@ -120,7 +123,7 @@ class Index:
         self.semantic_note: str | None = None
 
     def _open(self) -> sqlite3.Connection:
-        db = sqlite3.connect(self.path)
+        db = self._connect()
         ver = db.execute("PRAGMA user_version").fetchone()[0]
         if ver != INDEX_VERSION:
             db.close()
@@ -128,8 +131,16 @@ class Index:
                 p = Path(str(self.path) + suffix)
                 if p.exists():
                     p.unlink()
-            db = sqlite3.connect(self.path)
+            db = self._connect()
             self._create(db)
+        return db
+
+    def _connect(self) -> sqlite3.Connection:
+        # Several sessions refresh one index at once, and re-reading a big file holds
+        # the write lock for seconds: wait for it rather than fail at sqlite's 5 s,
+        # and let readers go on while somebody writes.
+        db = sqlite3.connect(self.path, timeout=BUSY_TIMEOUT)
+        db.execute("PRAGMA journal_mode=WAL")
         return db
 
     @staticmethod

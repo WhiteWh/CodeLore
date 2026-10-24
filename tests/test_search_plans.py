@@ -47,6 +47,29 @@ class Search(RepoCase):
             args += [f"--{k}"] if v is True else [f"--{k}", v]
         return [h["record"]["id"] for h in self.lore_json(*args)["results"]]
 
+    def test_a_writer_holding_the_index_is_waited_for(self):
+        import sqlite3
+        import threading
+        from codelore import config
+        from codelore.index import Index
+        path = Index(config.load(self.root)).path
+        held = threading.Event()
+
+        def hold():
+            other = sqlite3.connect(path, isolation_level=None)
+            other.execute("BEGIN IMMEDIATE")
+            held.set()
+            time.sleep(6)  # past sqlite's default 5 s
+            other.execute("ROLLBACK")
+            other.close()
+
+        t = threading.Thread(target=hold)
+        t.start()
+        held.wait()
+        self.add(self.fault("written while another process holds the index"))
+        t.join()
+        self.assertTrue(self.ids("another process holds")[0].startswith("written-while-another-process"))
+
     def test_exact_signal_first(self):
         self.assertEqual(self.ids("whatever", "tar.exe: Damaged tar archive (bad header checksum)", "more")[0],
                          "git-archive-piped-into-tar-fails")
