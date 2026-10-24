@@ -146,6 +146,33 @@ class Shared(RepoCase):
         self.assertEqual(log[:2], ["s", "other session"])
         self.assertEqual(git(self.root, "show", "HEAD:other.txt"), "other")
 
+    def test_live_file_an_older_version_is_brought_up(self):
+        self.add(self.fault("first"))
+        live = self.root / "lore" / "git.jsonl"
+        old = live.read_bytes()
+        self.add(self.fault("second"))
+        # a sync that could not replace the file leaves it, and its index entry, one version behind
+        live.write_bytes(old)
+        git(self.root, "add", "lore/git.jsonl")
+        out = self.add(self.fault("third"))
+        self.assertTrue(any("older version of itself" in n for n in out["notes"]), out["notes"])
+        self.assertEqual(live.read_bytes().decode("utf-8"), git(self.root, "show", "HEAD:lore/git.jsonl") + "\n")
+        self.assertEqual(git(self.root, "status", "--short", "--", "lore"), "")
+
+    def test_held_live_file_leaves_the_commit_and_a_note(self):
+        from unittest import mock
+        self.add(self.fault("first"))
+        live = self.root / "lore" / "git.jsonl"
+        before = live.read_bytes()
+        with mock.patch.object(gitio.os, "replace", side_effect=PermissionError("held")), \
+                mock.patch.object(gitio.time, "sleep"):
+            res = gitio.write_shared(self.root, "main", ["lore/git.jsonl"],
+                                     lambda old, rev: {"lore/git.jsonl": b"line\n"}, "s", "", [])
+        self.assertTrue(res.commit)
+        self.assertTrue(any("another process holds" in n for n in res.notes), res.notes)
+        self.assertEqual(live.read_bytes(), before)
+        self.assertFalse((self.root / "lore" / "git.jsonl.lore-tmp").exists())
+
     def test_two_writers_both_land(self):
         self.add(self.fault("one"))
         self.add(self.fault("two"))

@@ -139,9 +139,13 @@ Refusals are loud: the field, the rule, what to do. Nothing is half-written.
   4. `update-ref refs/heads/<branch> <new> <old>` - if anyone moved the branch
      in between, the update fails, and the write starts again from step 1 on
      the new `HEAD` (three tries, then a refusal);
-  5. bring the live file up to date **only if** it equalled the old `HEAD` blob;
-     otherwise leave it and say so - the user's or another session's edit is
-     in it.
+  5. bring the live file up to date **only if** it equalled the old `HEAD` blob,
+     or a version the file held at an earlier commit - a copy an earlier write
+     could not replace; otherwise leave it and say so - the user's or another
+     session's edit is in it. On Windows a file another process has open
+     cannot be replaced: the replace is retried for about four seconds, and if
+     the file never frees the commit stands, the live file stays as it was, a
+     note says so, and the next write brings it up.
 
   The shared `.git/index` is touched in one case only: the entry for a file
   this write changed, when that entry still held the old `HEAD` blob (or was

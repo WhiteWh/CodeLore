@@ -9,6 +9,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -116,7 +117,7 @@ def write_none(root: Path, paths: list[str], transform: Transform) -> Result:
     old = {p: _read_live(root, p) for p in paths}
     new = transform(old, None)
     for p, data in new.items():
-        _write_live(root, p, data)
+        _write_or_refuse(root, p, data)
     return Result(notes=["written to the working tree; not committed (commit.mode = none)"])
 
 
@@ -127,7 +128,7 @@ def write_plain(root: Path, paths: list[str], transform: Transform, subject: str
     if not new:
         return Result(notes=["nothing changed"])
     for p, data in new.items():
-        _write_live(root, p, data)
+        _write_or_refuse(root, p, data)
     changed = list(new)
     git(root, "add", "--", *changed)
     msg = _message(subject, body, trailers)
@@ -189,30 +190,53 @@ def write_shared(root: Path, branch: str, paths: list[str], transform: Transform
 
 def _sync_live(root: Path, old: dict[str, bytes | None], new: dict[str, bytes]) -> list[str]:
     """Bring each live file, and its entry in the shared index, to the new blob -
-    only where they still held the old one. Anything else is somebody's edit."""
+    only where they still held the old one, or an older version of the same file
+    (a copy an earlier sync could not replace). Anything else is somebody's edit."""
     notes = []
     for p, data in new.items():
         live = _read_live(root, p)
         before = old.get(p)
+        flat = live.replace(b"\r\n", b"\n") if live is not None else None
         same = (live is None and before is None) or (
-            live is not None and before is not None and live.replace(b"\r\n", b"\n") == before)
-        if same:
-            _write_live(root, p, data)
-            _refresh_index_entry(root, p, before, data)
-        else:
+            live is not None and before is not None and flat == before)
+        lagging = not same and flat is not None and _is_past_version(root, p, flat)
+        if not (same or lagging):
             notes.append(f"{p}: the working tree holds an edit that is not in HEAD; left as it was - "
                          "the commit has the change, the live file does not")
+            continue
+        if not _write_live(root, p, data):
+            notes.append(f"{p}: another process holds the live file, so it could not be replaced; "
+                         "the commit has the change, and the next write brings the file up to date")
+            continue
+        _refresh_index_entry(root, p, before, data, also=flat if lagging else None)
+        if lagging:
+            notes.append(f"{p}: the live file was an older version of itself; brought up to date")
     return notes
 
 
-def _refresh_index_entry(root: Path, path: str, before: bytes | None, data: bytes) -> None:
+def _is_past_version(root: Path, path: str, data: bytes, depth: int = 500) -> bool:
+    """Whether `data` is what `path` held at one of its last `depth` commits."""
+    sha = out(root, "hash-object", "--no-filters", "--stdin", input=data)
+    p = git(root, "log", f"-n{depth}", "--format=", "--raw", "--no-abbrev", "HEAD", "--", path,
+            check=False)
+    for line in p.stdout.decode("utf-8", "replace").splitlines():
+        if line.startswith(":"):
+            parts = line.split()
+            if sha in (parts[2], parts[3]):
+                return True
+    return False
+
+
+def _refresh_index_entry(root: Path, path: str, before: bytes | None, data: bytes,
+                         also: bytes | None = None) -> None:
     p = git(root, "ls-files", "-s", "--", path, check=False)
     line = p.stdout.decode().strip()
-    old_sha = None
-    if before is not None:
-        old_sha = out(root, "hash-object", "--no-filters", "--stdin", input=before)
+    ours = {None} if before is None else set()
+    for b in (before, also):
+        if b is not None:
+            ours.add(out(root, "hash-object", "--no-filters", "--stdin", input=b))
     staged = line.split()[1] if line else None
-    if staged != old_sha:
+    if staged not in ours:
         return  # somebody staged something there, or the path is unknown in a way we did not cause
     new_sha = out(root, "hash-object", "--no-filters", "--stdin", input=data)
     git(root, "update-index", "--add", "--cacheinfo", f"100644,{new_sha},{path}", check=False)
@@ -230,13 +254,35 @@ def _read_live(root: Path, rel: str) -> bytes | None:
     return f.read_bytes() if f.is_file() else None
 
 
-def _write_live(root: Path, rel: str, data: bytes) -> None:
+_REPLACE_TRIES = 12  # about four seconds in all
+
+
+def _write_live(root: Path, rel: str, data: bytes) -> bool:
+    """Write a live file whole, through a temporary beside it. On Windows a file
+    another process has open cannot be replaced; that is retried, and if it never
+    frees, the temporary goes and False says the file was left as it was."""
     f = root / rel
     if not data:
         if f.exists():
             f.unlink()
-        return
+        return True
     f.parent.mkdir(parents=True, exist_ok=True)
     tmp = f.with_name(f.name + ".lore-tmp")
     tmp.write_bytes(data)
-    os.replace(tmp, f)
+    for i in range(_REPLACE_TRIES):
+        try:
+            os.replace(tmp, f)
+            return True
+        except PermissionError:
+            time.sleep(0.05 * (i + 1))
+    try:
+        tmp.unlink()
+    except OSError:
+        pass
+    return False
+
+
+def _write_or_refuse(root: Path, rel: str, data: bytes) -> None:
+    if not _write_live(root, rel, data):
+        raise LoreError(f"{rel}: another process holds the file, so it could not be replaced; "
+                        "nothing was committed - try again when it is free")
