@@ -47,6 +47,7 @@ not repair.
 | `updated` | string | ISO date |
 | `by` | string | who wrote the last change: a person's name, or `agent:<model>` |
 | `refs` | object | optional; §5 |
+| `seen` | list of strings | optional, the five knowledge kinds only: the occurrences of the same fault or fact, `<date> <by> <where>`, at most 20 of at most 160 characters, oldest dropped (RustCodeLore's working tier, docs/lore.md 11.10) |
 
 Unknown fields are kept and round-tripped, so a project or a newer program may
 add its own; a reader must not drop them on rewrite. A field this document
@@ -221,6 +222,15 @@ timeout = 2.0                      # seconds to decide the server is not there
 [dedupe]           # optional; when a new record is refused as a duplicate
 cosine = 0.95      # embedding similarity (near-identical text)
 jaccard = 0.5      # word overlap of title, main sentence and cause
+
+[working]          # optional, RustCodeLore only: the working tier's expiry and bounds
+pulse_days = 14    # 1-365; message_days = 7, unread_days = 30, urgent_bound = 10 (minutes, 1-120)
+                   # bounds may be lowered, never raised: pulses_per_team 2000,
+                   # messages_per_team 1000, unread_normal 50, unread_urgent 5,
+                   # brief_versions 20, entries 20000, file_mib 64
+
+[secrets]          # optional, RustCodeLore only
+allow = []         # exact strings the secret scan lets pass (each a literal, never a pattern)
 ```
 
 Unknown keys are refused, so a typo is not silently ignored.
@@ -235,4 +245,5 @@ next written, when it takes the current one: version 2 added the `topic` and
 2 file. Version 3 added the `source` kind, the decision's `superseded` status and
 the item's optional `outcome`, and made `superseded_by` and `reversed_by` record
 ids rather than strings of up to 64 characters; every version 2 file is a valid
-version 3 file.
+version 3 file. The optional `seen` list (§3) only adds an optional field, so it
+keeps version 3, and a reader that does not know it keeps it on rewrite.

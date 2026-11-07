@@ -1,0 +1,10 @@
+{"id": "q-01", "query": "atlas checksum mismatch", "expected": "or-01"}
+{"id": "q-02", "query": "shader cache over budget", "expected": "or-02"}
+{"id": "q-03", "query": "the launcher hides behind the splash and I cannot click it", "expected": "or-03"}
+{"id": "q-04", "query": "textures stream in slowly and the level stutters at first", "expected": "or-04"}
+{"id": "q-05", "query": "database is locked", "expected": "or-13"}
+{"id": "q-06", "query": "the same inbox notice keeps appearing every few minutes", "expected": "or-14"}
+{"id": "q-07", "query": "a second client with the same display name is refused", "expected": "or-25"}
+{"id": "q-08", "query": "429 too many requests", "expected": "or-30"}
+{"id": "q-09", "query": "the report times are shifted by the timezone", "expected": "or-44"}
+{"id": "q-10", "query": "closing the app hangs for a minute", "expected": "or-50"}

@@ -1,0 +1,46 @@
+[package]
+name = "codelore"
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.99"
+license = "MIT"
+description = "CodeLore: project memory for coding agents - records, validation, the canonical JSONL store, hybrid search and the lore command"
+publish = false
+repository = "https://github.com/WhiteWh/CodeLore"
+
+[[bin]]
+name = "lore"
+path = "src/main.rs"
+
+[features]
+# Build with candle's CUDA backend; the device is picked at runtime (see
+# embed::models::device) and reported by `lore model status`.
+cuda = ["candle-core/cuda"]
+
+[dependencies]
+anyhow = "1"
+fs2 = "0.4"
+serde_json = { version = "1", features = ["preserve_order"] }
+regex = "1"
+unicode-normalization = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+toml = "1.1"
+# The disposable FTS5 index (task 143).
+rusqlite = { version = "0.32", features = ["bundled"] }
+sha1 = "0.10"
+# The built-in embeddings (task 146): nomic-embed-text-v1.5 on candle.
+candle-core = "0.11"
+candle-nn = "0.11"
+candle-transformers = "0.11"
+tokenizers = { version = "0.23", default-features = false, features = ["fancy-regex"] }
+sha2 = "0.10"
+thiserror = "2"
+ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.dev.package."*"]
+# The embedding model's forward pass and the test helpers are slow in a debug
+# build; the dependencies are optimized while this crate stays debuggable.
+opt-level = 2

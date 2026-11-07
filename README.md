@@ -5,17 +5,20 @@ fixes, measured readings, decisions, and plan items that never disappear
 silently. JSONL in git, hybrid full-text + semantic search, one CLI - `lore` -
 that checks and commits every entry.
 
-> Status: **0.3.0.** Every command below works and is tested;
-> the search's ranking and the duplicate threshold are still to be measured on a
-> large real lore ([docs/ROADMAP.md](docs/ROADMAP.md)). The format is in
-> [docs/FORMAT.md](docs/FORMAT.md), the design in [docs/DESIGN.md](docs/DESIGN.md).
+> Status: **0.4.0, rewritten in Rust.** CodeLore is now one native binary,
+> `lore`, with the same record format, commands and texts as the Python 0.3.0
+> it replaces (its whole test suite is ported test for test in
+> `tests/python_suite.rs`, and the embeddings are checked against the Python
+> side's vectors in `tests/parity.rs`). The Python package is retired; its last
+> version is the `v0.3.0-python` history on `main` before this change. The format
+> is in [docs/FORMAT.md](docs/FORMAT.md), the design in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Install
 
 ```bash
 git clone https://github.com/WhiteWh/CodeLore.git
-python -m pip install --user -e CodeLore
-python -m codelore --version        # or `lore`, once pip's scripts folder is on PATH
+cargo install --path CodeLore --locked      # puts `lore` on PATH (~/.cargo/bin)
+lore --version
 ```
 
 Then, at a repository's root:
@@ -77,8 +80,10 @@ entry must say.
   never stages a shared file by hand.
 - **Search is hybrid.** SQLite FTS5 for exact strings - an error message, a code,
   a symbol - and embeddings for "something like this", merged by reciprocal rank
-  fusion. Embeddings come from a local model (Ollama by default) and are
-  optional: without one, `lore` searches text and says so.
+  fusion. Embeddings are optional and local: built in
+  (`provider = "builtin"`: nomic-embed-text-v1.5, bge-m3 or multilingual-e5-base
+  run in-process on candle, fetched once with `lore model fetch`), or Ollama
+  (`provider = "ollama"`). Without one, `lore` searches text and says so.
 - **The index is disposable.** It is built from the JSONL into your user cache
   and never committed.
 
@@ -126,17 +131,20 @@ was *learned*, not the source.
 
 ## Requirements
 
-Python 3.11+ (standard library only; SQLite with FTS5, which every current
-CPython ships), git. Optional: an embedding model behind Ollama
-(`ollama pull nomic-embed-text`).
+Rust 1.99+ to build, git at run time. SQLite (with FTS5) is bundled. Optional:
+a built-in embedding model (`lore model fetch [--model bge-m3|e5-base]`, about
+0.5-2 GB in the user cache; `--features cuda` builds the GPU backend) or an
+Ollama model (`ollama pull nomic-embed-text`).
 
 ## Development
 
 ```bash
-python -m unittest discover -s tests -t tests
+cargo test --locked
 ```
 
-The tests build scratch git repositories; they need git and nothing else.
+The tests build scratch git repositories; they need git and nothing else. The
+embedding parity test runs when a model is installed and skips with a note
+otherwise. Search measurements of this version: [docs/RESULTS-rust.md](docs/RESULTS-rust.md).
 
 ## License
 
