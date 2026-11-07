@@ -291,7 +291,10 @@ mod tests {
     fn the_shared_vectors_are_found_or_clean() {
         let vectors: Value = serde_json::from_str(include_str!("../tests/fixtures/secret-scan-vectors.json")).expect("the shared secret vectors");
         for case in vectors["found"].as_array().expect("found vectors") {
-            let text = case["text"].as_str().unwrap();
+            // The file stores secret-shaped samples split by a marker, so the
+            // repository holds no literal in a real token format.
+            let joined = case["text"].as_str().unwrap().replace("<split>", "");
+            let text = joined.as_str();
             let pattern = case["pattern"].as_str().unwrap();
             assert_eq!(scan(text, &[]).first().map(|found| found.pattern), Some(pattern), "{text}");
         }
