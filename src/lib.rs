@@ -1,4 +1,4 @@
-//! RustCodeLore: the port of CodeLore 0.3.0 (github.com/WhiteWh/CodeLore).
+//! CodeLore in Rust: the rewrite of CodeLore 0.3.0 (Python), same format and commands (github.com/WhiteWh/CodeLore).
 //! The record kinds of FORMAT.md v3 with strict validation, the canonical
 //! JSONL store, git's three commit modes, the one write path with its
 //! reference and relation checks, duplicates, plans, sources and the command
@@ -36,7 +36,7 @@ pub use schema::{validate, RecordError};
 pub use store::{canonical, parse, serialize, Store};
 pub use writer::{Duplicates, Writer};
 
-pub const VERSION: &str = "0.3.0";
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const FORMAT_VERSION: u64 = 3;
 /// Record versions this lore reads; a record keeps the version it was written at.
 pub const READS: [u64; 3] = [1, 2, 3];
