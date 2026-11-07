@@ -34,26 +34,30 @@ Corpus and queries are never committed; only this table and the method are.
 
 ## Speed (Python 0.3.0 against Rust 0.4.0)
 
-Method: the same read-only copy of DCB's lore (6113 records in 18 JSONL files),
-each version with its own empty index cache, text-only (no embedding model, so
-the two are compared on their own work, not on Ollama against candle), on one
-Windows machine (32 logical cores) while other builds ran; every command is a
-fresh process, as an agent calls it. `find` is the median and p90 of 40 bench
-queries (`--json find <query> -n 10 --text-only`).
+Method: the same read-only copy of DCB's lore (6773 records in 105 files),
+text only (no embedding model, so the two are compared on their own work),
+every command a fresh process as an agent calls it, each build into an empty
+index cache. Python 0.3.0, Rust before the build fixes and Rust 0.4.0 ran one
+after the other in each of 4 rounds, so machine load hit all three alike;
+medians. `find` is 40 bench queries alternating the binaries.
 
-| | Python 0.3.0 | Rust 0.4.0 |
-|---|---|---|
-| start (`lore --version`) | 192 ms | **15 ms** |
-| `find`, median | 557 ms | **469 ms** |
-| `find`, p90 | 642 ms | 690 ms |
-| `lore check` | 2.55 s | **1.79 s** |
-| text index build (`index --text-only --rebuild`) | **3.5 s** | 10.0 s |
+| | Python 0.3.0 | Rust, first port | Rust 0.4.0 |
+|---|---|---|---|
+| start (`lore --version`) | 192 ms | 15 ms | **15 ms** |
+| text index build (`index --text-only --rebuild`) | 5.4 s | 2.1 s | **1.1 s** |
+| `find`, median | 557 ms | 584 ms | **421 ms** |
+| `lore check` | 2.6-4.6 s | 1.7 s | **1.7 s** |
 
-What it says: the Rust binary starts 13x faster, which is what an agent calling
-`lore` many times a session feels, and `check` is 30% faster. A `find` is
-dominated by reading the 6113 records and the index freshness check in both, so
-it is only about 16% faster at the median. Building the text index from scratch
-is three times slower in Rust - a regression to fix (it happens once per index
-rebuild, not per query). The search quality above is the larger gain: the tuned
-text weights find more on the first hit, and the built-in models need neither
-Ollama nor Python.
+What made the build fast: `--rebuild` used to build the index twice (open,
+delete, build again); records were deep-copied to sort their keys twice per
+record per build; the insert statements were prepared again for every record.
+The index and every search result are unchanged: the rows, the FTS postings
+and the output of 176 bench queries hash equal before and after.
+
+An earlier single run of this table showed the Rust build at 10 s against
+Python's 3.5 s; it did not reproduce (the machine was loaded by other builds at
+the time) and is withdrawn.
+
+What a `find` still spends (about 420 ms) is mostly fixed overhead: reading and
+parsing all records and the freshness check on every call, not the search
+itself (a long query adds ~20 ms). Removing it is the next step.

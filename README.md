@@ -39,12 +39,12 @@ and 71% of paraphrased symptoms** (grep 61% and 7%, the semantic index 39% and
 The method, the table, why, and what the numbers do not say yet:
 [docs/RESULTS.md](docs/RESULTS.md).
 
-**Rust 0.4.0 against Python 0.3.0** on the same 6113-record lore, text only:
-`lore` starts in 15 ms instead of 192 ms, a `find` takes 469 ms instead of
-557 ms (median), `lore check` 1.8 s instead of 2.6 s; building the text index
-from scratch is slower (10 s against 3.5 s, to be fixed). The tuned text search
-finds the right record first more often (exact errors 94.3% against 93.2%,
-paraphrases 40.9% against 31.8%). Details: [docs/RESULTS-rust.md](docs/RESULTS-rust.md).
+**Rust 0.4.0 against Python 0.3.0** on the same 6773-record lore, text only:
+`lore` starts in 15 ms instead of 192 ms, builds its index in 1.1 s instead of
+5.4 s, answers a `find` in 421 ms instead of 557 ms (median) and runs
+`lore check` in 1.7 s instead of 2.6-4.6 s. The tuned text search finds the
+right record first more often (exact errors 94.3% against 93.2%, paraphrases
+40.9% against 31.8%). Details: [docs/RESULTS-rust.md](docs/RESULTS-rust.md).
 
 ## The problem it solves
 

@@ -45,7 +45,7 @@ pub fn path(config: &Config) -> PathBuf {
     if let Some(configured) = std::env::var_os("LORE_STATS_DB").filter(|value| !value.is_empty()) {
         return PathBuf::from(configured);
     }
-    for dir in crate::index::index_dirs(&config.root) {
+    for dir in crate::index::index_dir_candidates(&config.root) {
         if std::fs::create_dir_all(&dir).is_ok() {
             return dir.join("stats.sqlite");
         }
@@ -218,19 +218,23 @@ fn record_find_in(
     at: f64,
 ) -> rusqlite::Result<()> {
     let class = classify(query);
-    conn.execute(
+    // One transaction: a statement of its own is a commit of its own, and a
+    // find writes a dozen rows.
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
         "INSERT INTO finds (at, session, caller, class, tiers, results, latency_ms) VALUES (?1,?2,?3,?4,?5,?6,?7)",
         rusqlite::params![at, session, caller, class, tiers, hits.len() as i64, elapsed.as_secs_f64() * 1000.0],
     )?;
-    let find = conn.last_insert_rowid();
+    let find = tx.last_insert_rowid();
     for (rank, hit) in hits.iter().take(MAX_RESULTS).enumerate() {
         let Some(id) = hit.record.get("id").and_then(Value::as_str) else { continue };
-        conn.execute(
+        tx.execute(
             "INSERT OR REPLACE INTO find_results (find_id, rank, record_id) VALUES (?1,?2,?3)",
             rusqlite::params![find, (rank + 1) as i64, id],
         )?;
     }
-    prune(conn, at)
+    prune(&tx, at)?;
+    tx.commit()
 }
 
 /// Records that a result was opened with `lore show`.

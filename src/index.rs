@@ -5,7 +5,8 @@
 //! version is the conformance reference.
 use crate::config::Config;
 use crate::embed::Embeddings;
-use crate::{parse, LoreError};
+use crate::store::parse_lines;
+use crate::LoreError;
 use regex::Regex;
 use rusqlite::{params, Connection, OptionalExtension, Transaction, TransactionBehavior};
 use serde_json::Value;
@@ -182,21 +183,32 @@ pub fn repo_key(root: &Path) -> String {
     sha1_hex(text.as_bytes())[..16].to_owned()
 }
 
-/// Where the index may live, in order: the user cache, then the repository's
-/// own git directory (never tracked, writable wherever the repository is).
-pub fn index_dirs(root: &Path) -> Vec<PathBuf> {
-    let mut dirs = vec![cache_dir().join(repo_key(root))];
-    let git = std::process::Command::new("git").arg("-C").arg(root).args(["rev-parse", "--git-path", "codelore"]).output();
-    if let Ok(output) = git {
-        if output.status.success() {
-            let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            if !text.is_empty() {
-                let path = PathBuf::from(text);
-                dirs.push(if path.is_absolute() { path } else { root.join(path) });
-            }
-        }
+/// The repository's own git directory for the index (never tracked, writable
+/// wherever the repository is). It costs a `git` process, so it is only asked
+/// for when the user cache could not be used.
+fn git_index_dir(root: &Path) -> Option<PathBuf> {
+    let output = std::process::Command::new("git").arg("-C").arg(root).args(["rev-parse", "--git-path", "codelore"]).output().ok()?;
+    if !output.status.success() {
+        return None;
     }
-    dirs
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    if text.is_empty() {
+        return None;
+    }
+    let path = PathBuf::from(text);
+    Some(if path.is_absolute() { path } else { root.join(path) })
+}
+
+/// Where the index may live, in order: the user cache, then the repository's
+/// own git directory. The second is found only when the iterator reaches it,
+/// so a search that finds the cache usable never starts `git`.
+pub fn index_dir_candidates(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
+    std::iter::once(cache_dir().join(repo_key(root))).chain(std::iter::once_with(move || git_index_dir(root)).flatten())
+}
+
+/// [`index_dir_candidates`] all at once.
+pub fn index_dirs(root: &Path) -> Vec<PathBuf> {
+    index_dir_candidates(root).collect()
 }
 
 /// What one refresh did.
@@ -271,10 +283,25 @@ fn open_db(path: &Path) -> Result<(Connection, bool), LoreError> {
     Ok((db, true))
 }
 
+/// Deletes the index files of the repository at `root` (every place one may
+/// live): the next open builds from nothing. What `lore index --rebuild` starts with.
+pub fn remove_indexes(root: &Path) -> Result<(), LoreError> {
+    for dir in index_dir_candidates(root) {
+        let path = dir.join("index.sqlite");
+        for suffix in ["", "-wal", "-shm", "-journal"] {
+            let file = PathBuf::from(format!("{}{suffix}", path.display()));
+            if file.exists() {
+                std::fs::remove_file(&file).map_err(|error| LoreError::new(format!("{}: {error}", file.display())))?;
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The index of `config`, up to date: what a search starts with.
 pub fn open_index(config: &Config) -> Result<Index, LoreError> {
     let mut tried: Vec<String> = Vec::new();
-    for dir in index_dirs(&config.root) {
+    for dir in index_dir_candidates(&config.root) {
         let attempt = std::fs::create_dir_all(&dir)
             .map_err(|error| LoreError::new(format!("{}: {error}", dir.display())))
             .and_then(|()| Index::open_at(&dir.join("index.sqlite"), &config.root, &config.lore_dir()));
@@ -374,10 +401,10 @@ impl Index {
                 tx.execute("UPDATE files SET size=?1, mtime=?2 WHERE path=?3", params![size, mtime, relative]).map_err(index_error)?;
                 continue;
             }
-            let records = parse(&data, relative)?;
+            let records = parse_lines(&data, relative)?;
             drop_file(&tx, relative)?;
-            for record in &records {
-                if put(&tx, relative, record)? {
+            for (record, line) in &records {
+                if put(&tx, relative, record, line)? {
                     summary.records += 1;
                 }
             }
@@ -511,29 +538,35 @@ fn drop_file(tx: &Connection, relative: &str) -> Result<(), LoreError> {
     Ok(())
 }
 
-fn put(tx: &Connection, relative: &str, record: &Value) -> Result<bool, LoreError> {
+/// One record into the three tables. `line` is the record's canonical line (the
+/// parser accepts nothing else), which is what the `json` column holds. The
+/// statements are prepared once per connection, not once per record.
+fn put(tx: &Connection, relative: &str, record: &Value, line: &str) -> Result<bool, LoreError> {
     let Some(id) = record.get("id").and_then(Value::as_str) else { return Ok(false) };
     let ehash = sha1_hex(embed_text(record).as_bytes());
     let text = |key: &str| record.get(key).and_then(Value::as_str).map(str::to_owned);
-    tx.execute(
-        "INSERT OR REPLACE INTO records VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        params![
-            id,
-            relative,
-            text("kind"),
-            text("area"),
-            text("status"),
-            text("plan"),
-            text("title").unwrap_or_default(),
-            text("updated").unwrap_or_default(),
-            ehash,
-            crate::canonical(record)
-        ],
-    )
-    .map_err(index_error)?;
-    let (signals, title, main, body, terms) = columns(record);
-    tx.execute("INSERT INTO words(id, signals, title, main, body) VALUES(?1,?2,?3,?4,?5)", params![id, signals, title, main, body])
+    tx.prepare_cached("INSERT OR REPLACE INTO records VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)")
+        .and_then(|mut statement| {
+            statement.execute(params![
+                id,
+                relative,
+                text("kind"),
+                text("area"),
+                text("status"),
+                text("plan"),
+                text("title").unwrap_or_default(),
+                text("updated").unwrap_or_default(),
+                ehash,
+                line
+            ])
+        })
         .map_err(index_error)?;
-    tx.execute("INSERT INTO terms(id, toks) VALUES(?1,?2)", params![id, terms]).map_err(index_error)?;
+    let (signals, title, main, body, terms) = columns(record);
+    tx.prepare_cached("INSERT INTO words(id, signals, title, main, body) VALUES(?1,?2,?3,?4,?5)")
+        .and_then(|mut statement| statement.execute(params![id, signals, title, main, body]))
+        .map_err(index_error)?;
+    tx.prepare_cached("INSERT INTO terms(id, toks) VALUES(?1,?2)")
+        .and_then(|mut statement| statement.execute(params![id, terms]))
+        .map_err(index_error)?;
     Ok(true)
 }

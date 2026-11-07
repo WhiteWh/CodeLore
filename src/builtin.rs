@@ -6,7 +6,7 @@ use crate::embed;
 use crate::finder;
 use crate::index;
 use crate::search::{self, Filters, Finder, Found, IndexInfo};
-use crate::{LoreError, Result};
+use crate::Result;
 use serde_json::Value;
 
 /// The search the `lore` binary hands `cli::run`.
@@ -81,19 +81,11 @@ impl Finder for Builtin {
     }
 
     fn index(&self, config: &Config, _records: &[Value], rebuild: bool, text_only: bool) -> Result<IndexInfo> {
-        let mut index = index::open_index(config)?;
         if rebuild {
-            let path = index.path().to_path_buf();
-            drop(index);
-            for suffix in ["", "-wal", "-shm", "-journal"] {
-                let file = std::path::PathBuf::from(format!("{}{suffix}", path.display()));
-                if file.exists() {
-                    std::fs::remove_file(&file)
-                        .map_err(|error| LoreError::new(format!("{}: {error}", file.display())))?;
-                }
-            }
-            index = index::open_index(config)?;
+            // The old file goes first: opening it only to delete it would build it once for nothing.
+            index::remove_indexes(&config.root)?;
         }
+        let index = index::open_index(config)?;
         let (shared, mut notes) = self.semantic(config, text_only);
         let mut vectors = 0;
         let mut semantic = false;

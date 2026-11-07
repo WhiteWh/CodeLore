@@ -12,7 +12,42 @@ use std::path::{Path, PathBuf};
 /// insignificant whitespace, non-ASCII as is - Python's
 /// `json.dumps(r, sort_keys=True, separators=(",", ":"), ensure_ascii=False)`.
 pub fn canonical(record: &Value) -> String {
-    serde_json::to_string(&sorted(record)).unwrap_or_else(|_| "{}".into())
+    let mut out = String::new();
+    write_canonical(record, &mut out);
+    out
+}
+
+/// `canonical` without the sorted copy of the whole value: keys are ordered
+/// by reference and written as they go (the same bytes as serializing
+/// [`sorted`], since a key is escaped and a leaf printed by serde_json itself).
+fn write_canonical(value: &Value, out: &mut String) {
+    match value {
+        Value::Object(map) => {
+            let mut entries: Vec<(&String, &Value)> = map.iter().collect();
+            entries.sort_by(|a, b| a.0.cmp(b.0));
+            out.push('{');
+            for (at, (key, item)) in entries.into_iter().enumerate() {
+                if at > 0 {
+                    out.push(',');
+                }
+                out.push_str(&Value::String(key.clone()).to_string());
+                out.push(':');
+                write_canonical(item, out);
+            }
+            out.push('}');
+        }
+        Value::Array(items) => {
+            out.push('[');
+            for (at, item) in items.iter().enumerate() {
+                if at > 0 {
+                    out.push(',');
+                }
+                write_canonical(item, out);
+            }
+            out.push(']');
+        }
+        other => out.push_str(&other.to_string()),
+    }
 }
 
 /// The value with every object's keys sorted (records keep the order they
@@ -52,6 +87,12 @@ pub fn serialize(records: &[Value]) -> Vec<u8> {
 
 /// Records of one file, or a refusal naming every way it is not canonical.
 pub fn parse(bytes: &[u8], place: &str) -> Result<Vec<Value>> {
+    parse_lines(bytes, place).map(|records| records.into_iter().map(|(record, _)| record).collect())
+}
+
+/// [`parse`] with each record's own line: a line that was accepted is the
+/// record's canonical form, so a caller that stores it need not write it again.
+pub fn parse_lines<'a>(bytes: &'a [u8], place: &str) -> Result<Vec<(Value, &'a str)>> {
     if bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return Err(LoreError::new(format!("{place}: starts with a BOM; lore files are UTF-8 without one")));
     }
@@ -69,7 +110,7 @@ pub fn parse(bytes: &[u8], place: &str) -> Result<Vec<Value>> {
         errs.push("no final newline".to_owned());
     }
     let lines: Vec<&str> = if let Some(body) = text.strip_suffix('\n') { body.split('\n').collect() } else { text.split('\n').collect() };
-    let mut records = Vec::new();
+    let mut records: Vec<(Value, &str)> = Vec::new();
     for (index, line) in lines.iter().enumerate() {
         let number = index + 1;
         if line.trim().is_empty() {
@@ -92,14 +133,14 @@ pub fn parse(bytes: &[u8], place: &str) -> Result<Vec<Value>> {
                 "line {number}: not canonical (keys sorted, no spaces, non-ASCII as is) - the file was edited by hand; `lore fmt` rewrites it"
             ));
         }
-        records.push(value);
+        records.push((value, *line));
     }
-    let keys: Vec<(u8, u64, String)> = records.iter().map(sort_key).collect();
+    let keys: Vec<(u8, u64, String)> = records.iter().map(|(record, _)| sort_key(record)).collect();
     for index in 1..keys.len() {
         if keys[index] < keys[index - 1] {
-            errs.push(format!("line {}: out of order ({} after {})", index + 1, repr_opt(records[index].get("id")), repr_opt(records[index - 1].get("id"))));
+            errs.push(format!("line {}: out of order ({} after {})", index + 1, repr_opt(records[index].0.get("id")), repr_opt(records[index - 1].0.get("id"))));
         } else if keys[index] == keys[index - 1] {
-            errs.push(format!("line {}: id {} twice", index + 1, repr_opt(records[index].get("id"))));
+            errs.push(format!("line {}: id {} twice", index + 1, repr_opt(records[index].0.get("id"))));
         }
     }
     if errs.is_empty() { Ok(records) } else { Err(LoreError::with(format!("{place} is refused"), errs)) }
