@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 use std::collections::BTreeSet;
 use std::path::Path;
 
+pub mod app;
 pub mod builtin;
 pub mod cli;
 pub mod config;
