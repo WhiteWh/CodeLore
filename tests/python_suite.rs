@@ -273,7 +273,8 @@ fn store_schema__Schema__limits_only_lower() {
 fn store_schema__Config__refusals() {
     let data: toml::Value = toml::from_str("version = 2\nareas = [\"Plans\", \"plans\"]\nx = 1\n[commit]\nmode = \"yolo\"\n").unwrap();
     let text = codelore::config::parse(&data, Path::new("."), "lore.toml").unwrap_err().to_string();
-    for words in ["version", "must match", "reserved", "commit.mode", "unknown key `x`"] {
+    // `x`, unknown at the top level, is a warning (a newer lore's key), not a refusal.
+    for words in ["version", "must match", "reserved", "commit.mode"] {
         assert!(text.contains(words), "{words:?} not in {text}");
     }
 }

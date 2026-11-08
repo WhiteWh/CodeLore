@@ -89,8 +89,11 @@ entry must say.
   a symbol - and embeddings for "something like this", merged by reciprocal rank
   fusion. Embeddings are optional and local: built in
   (`provider = "builtin"`: nomic-embed-text-v1.5, bge-m3 or multilingual-e5-base
-  run in-process on candle, fetched once with `lore model fetch`), or Ollama
-  (`provider = "ollama"`). Without one, `lore` searches text and says so.
+  run in-process on candle; `provider = "ollama"` in an older lore.toml means
+  the same built-in model). The `lore` binary fetches the model itself the first
+  time it is needed - `lore init` starts it in the background, `lore index`
+  waits for it - pinned by size and SHA-256; `LORE_MODEL_FETCH=off` stops that.
+  Without a model, `lore` searches text and says so.
 - **The index is disposable.** It is built from the JSONL into your user cache
   and never committed.
 
@@ -138,10 +141,10 @@ was *learned*, not the source.
 
 ## Requirements
 
-Rust 1.99+ to build, git at run time. SQLite (with FTS5) is bundled. Optional:
-a built-in embedding model (`lore model fetch [--model bge-m3|e5-base]`, about
-0.5-2 GB in the user cache; `--features cuda` builds the GPU backend) or an
-Ollama model (`ollama pull nomic-embed-text`).
+Rust 1.99+ to build, git at run time. SQLite (with FTS5) is bundled. The
+built-in embedding model (about 0.5-2 GB in the user cache) is fetched on first
+use, or ahead of time with `lore model fetch [--model bge-m3|e5-base|nomic]`;
+`--features cuda` builds the GPU backend.
 
 ## Development
 

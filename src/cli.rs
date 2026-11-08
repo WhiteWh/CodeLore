@@ -800,6 +800,10 @@ fn dispatch(args: Args, env: &Env, io: &mut Io) -> Result<i32> {
         _ => {}
     }
     let mut ctx = Ctx::new(args, env)?;
+    for warning in &ctx.config.warnings {
+        // stderr: a `--json` reader's stdout stays one document.
+        io.err.push_str(&format!("lore: warning: {warning}\n"));
+    }
     match ctx.args.cmd().as_str() {
         "areas" => cmd_areas(&mut ctx, io),
         "find" => cmd_find(&mut ctx, io),

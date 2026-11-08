@@ -96,9 +96,17 @@ fn config_refuses_like_python() {
     use codelore::config::parse;
     let data: toml::Value = toml::from_str("version = 2\ndir = \"lore\"\nareas = [\"Plans\", \"plans\"]\n[commit]\nmode = \"yolo\"\n[other]\nx = 1").unwrap();
     let error = parse(&data, std::path::Path::new("."), "lore.toml").unwrap_err().to_string();
-    for word in ["version", "must match", "reserved", "commit.mode", "unknown key `other`"] {
+    for word in ["version", "must match", "reserved", "commit.mode"] {
         assert!(error.contains(word), "{word} missing in {error}");
     }
+    // A top-level table this version does not know - a newer lore's - is passed
+    // over with a warning, so an older binary keeps the project's memory.
+    assert!(!error.contains("`other`"), "{error}");
+    let newer: toml::Value = toml::from_str("version = 1\n[future]\nx = 1\n[commit]\nmode = \"plain\"").unwrap();
+    let config = parse(&newer, std::path::Path::new("."), "lore.toml").unwrap();
+    assert_eq!(config.warnings, ["lore.toml: unknown key `future` is ignored (written by a newer lore?)"]);
+    let strict: toml::Value = toml::from_str("version = 1\n[commit]\nmood = \"plain\"").unwrap();
+    assert!(parse(&strict, std::path::Path::new("."), "lore.toml").unwrap_err().to_string().contains("unknown key `commit.mood`"));
     let good: toml::Value = toml::from_str("version = 1\nareas = [\"git\"]\n[commit]\nmode = \"plain\"\n[embed]\nmodel = \"nomic-embed-text-v1.5\"").unwrap();
     let config = parse(&good, std::path::Path::new("."), "lore.toml").unwrap();
     assert_eq!(config.prefixes(), ("search_document: ".into(), "search_query: ".into()));

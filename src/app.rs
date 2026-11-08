@@ -11,8 +11,14 @@ use crate::embed::{self, EmbeddingModel, ModelSource};
 pub fn main() -> ! {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.first().map(String::as_str) == Some("model") {
-        std::process::exit(model(&args[1..]));
+        let code = model(&args[1..]);
+        // A background fetch a search started holds this marker; it ends here.
+        if let Some(lock) = std::env::var_os("LORE_FETCH_LOCK") {
+            let _ = std::fs::remove_file(lock);
+        }
+        std::process::exit(code);
     }
+    crate::builtin::enable_auto_fetch();
     let mut stdin = Vec::new();
     let _ = std::io::stdin().read_to_end(&mut stdin);
     let env = Env {
@@ -29,7 +35,27 @@ pub fn main() -> ! {
     let output = cli::run(&references, &env);
     print!("{}", output.stdout);
     eprint!("{}", output.stderr);
+    if output.code == 0 && args.iter().any(|arg| arg == "init") {
+        prefetch_after_init(&args, &env.cwd);
+    }
     std::process::exit(output.code);
+}
+
+/// After `lore init`: the configured model starts downloading in the background,
+/// so the first search a moment later already finds it on its way.
+fn prefetch_after_init(args: &[String], cwd: &std::path::Path) {
+    if !crate::builtin::auto_fetch() {
+        return;
+    }
+    let start = args.iter().position(|arg| arg == "-C").and_then(|at| args.get(at + 1)).map_or_else(|| cwd.to_path_buf(), |dir| cwd.join(dir));
+    let Ok(config) = crate::config::load(&start) else { return };
+    if config.embed_provider == "none" {
+        return;
+    }
+    let model = config.embedding_model();
+    if !embed::status_for(model, &embed::model_dir(model)).available {
+        eprintln!("lore: {}", crate::builtin::fetch_in_background(model));
+    }
 }
 
 /// docs/lore.md 2.4: a Zerus store's reference roots, the folders a cited

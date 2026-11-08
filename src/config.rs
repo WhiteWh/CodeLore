@@ -36,6 +36,90 @@ pub struct Config {
     pub working: Working,
     /// `[secrets] allow`: literals the secret scan lets pass (11.9).
     pub secrets_allow: Vec<String>,
+    /// `[atlas]`: the code map beside the lore (docs/ATLAS.md). Parsed whether
+    /// or not this build has the `atlas` feature, so a lore.toml means the same
+    /// to every build.
+    pub atlas: Atlas,
+    /// What the file says that this version does not know and passes over: a
+    /// top-level table a newer lore wrote. Said once per command, never refused,
+    /// so an older binary keeps the project's memory working.
+    pub warnings: Vec<String>,
+}
+
+/// The code map's switches. Off unless the lore.toml turns it on; the
+/// `LORE_ATLAS` environment variable (`on`/`off`) overrides that for one user.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Atlas {
+    pub enabled: bool,
+    /// Embed code chunks with the built-in model (else text only).
+    pub semantic: bool,
+    /// `lore for <file>` also names the files that import it and what the lore
+    /// knows about them.
+    pub in_for: bool,
+    /// `lore find` adds the best code places under the records.
+    pub in_find: bool,
+    /// Extra file extensions to index as text (`.hlsl`, `.md`).
+    pub include: Vec<String>,
+    /// Path prefixes or `*` globs left out (beside .gitignore).
+    pub exclude: Vec<String>,
+    /// Files larger than this many KiB are skipped.
+    pub max_kib: u64,
+}
+
+impl Default for Atlas {
+    fn default() -> Self {
+        Self { enabled: false, semantic: true, in_for: true, in_find: false, include: Vec::new(), exclude: Vec::new(), max_kib: 512 }
+    }
+}
+
+impl Atlas {
+    /// Whether the code map is on: `LORE_ATLAS` first, then the lore.toml.
+    pub fn active(&self) -> bool {
+        match std::env::var("LORE_ATLAS").ok().map(|value| value.trim().to_lowercase()).as_deref() {
+            Some("on" | "1" | "true" | "yes") => true,
+            Some("off" | "0" | "false" | "no") => false,
+            _ => self.enabled,
+        }
+    }
+}
+
+fn parse_atlas(value: &toml::Value, bad: &mut Vec<String>) -> Atlas {
+    let mut atlas = Atlas::default();
+    let Some(table) = value.as_table() else {
+        bad.push("`[atlas]` must be a table".into());
+        return atlas;
+    };
+    let strings = |key: &str, value: &toml::Value, bad: &mut Vec<String>| -> Vec<String> {
+        match value.as_array().filter(|items| items.iter().all(toml::Value::is_str)) {
+            Some(items) => items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect(),
+            None => {
+                bad.push(format!("`atlas.{key}` must be a list of strings"));
+                Vec::new()
+            }
+        }
+    };
+    for (key, value) in table {
+        let flag = |bad: &mut Vec<String>| -> bool {
+            value.as_bool().unwrap_or_else(|| {
+                bad.push(format!("`atlas.{key}` must be true or false"));
+                false
+            })
+        };
+        match key.as_str() {
+            "enabled" => atlas.enabled = flag(bad),
+            "semantic" => atlas.semantic = flag(bad),
+            "for" => atlas.in_for = flag(bad),
+            "find" => atlas.in_find = flag(bad),
+            "include" => atlas.include = strings(key, value, bad),
+            "exclude" => atlas.exclude = strings(key, value, bad),
+            "max_kib" => match value.as_integer().filter(|n| (1..=16_384).contains(n)) {
+                Some(n) => atlas.max_kib = n as u64,
+                None => bad.push("`atlas.max_kib` must be a whole number from 1 to 16384".into()),
+            },
+            _ => bad.push(format!("unknown key `atlas.{key}`")),
+        }
+    }
+    atlas
 }
 
 /// The working tier's settings. The expiry days are 1 to 365; every bound may
@@ -143,6 +227,8 @@ impl Config {
             dedupe_jaccard: 0.5,
             working: Working::default(),
             secrets_allow: Vec::new(),
+            atlas: Atlas::default(),
+            warnings: Vec::new(),
         }
     }
 
@@ -213,15 +299,19 @@ pub fn parse(data: &toml::Value, root: &Path, place: &str) -> Result<Config, Lor
     let mut bad: Vec<String> = Vec::new();
     let empty = toml::map::Map::new();
     let table = data.as_table().unwrap_or(&empty);
+    let mut warnings = Vec::new();
     for key in table.keys() {
-        if !["version", "dir", "areas", "commit", "embed", "limits", "dedupe", "working", "secrets"].contains(&key.as_str()) {
-            bad.push(format!("unknown key `{key}`"));
+        if !["version", "dir", "areas", "commit", "embed", "limits", "dedupe", "working", "secrets", "atlas"].contains(&key.as_str()) {
+            // A newer lore's table, or a typo: passed over, said. Keys inside
+            // a known table stay strict.
+            warnings.push(format!("{place}: unknown key `{key}` is ignored (written by a newer lore?)"));
         }
     }
     if table.get("version").and_then(toml::Value::as_integer) != Some(1) {
         bad.push("`version` must be 1".into());
     }
     let mut config = Config::defaults(root);
+    config.warnings = warnings;
 
     match table.get("dir") {
         None => {}
@@ -373,6 +463,10 @@ pub fn parse(data: &toml::Value, root: &Path, place: &str) -> Result<Config, Lor
             }
             None => bad.push("`[secrets]` must be a table".into()),
         },
+    }
+
+    if let Some(atlas) = table.get("atlas") {
+        config.atlas = parse_atlas(atlas, &mut bad);
     }
 
     if bad.is_empty() { Ok(config) } else { Err(LoreError::with(format!("{place} is refused"), bad)) }
