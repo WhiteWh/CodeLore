@@ -1,6 +1,6 @@
 # Atlas - the code map beside the lore
 
-> Status: experimental, on the `CodeLore&Socrat` branch. Built only with the
+> Status: experimental, on the `Atlas` branch. Built only with the
 > `atlas` cargo feature, and on for a project only when its `lore.toml` says so.
 
 CodeLore keeps what was **learned** about a project: faults and their fixes,
