@@ -771,6 +771,9 @@ fn start(args: &Args, env: &Env) -> PathBuf {
 /// Runs one `lore` command line.
 pub fn run(argv: &[&str], env: &Env) -> Output {
     let argv: Vec<String> = argv.iter().map(|word| (*word).to_owned()).collect();
+    if let Some(output) = atlas_call(&argv, env) {
+        return output;
+    }
     let mut io = Io { out: String::new(), err: String::new() };
     let args = match parse_args(&argv).and_then(|args| check_shape(&args).map(|_| args)) {
         Ok(args) => args,
@@ -799,11 +802,67 @@ pub fn run(argv: &[&str], env: &Env) -> Output {
     Output { code, stdout: io.out, stderr: io.err }
 }
 
+/// `lore [-C dir] [--json] [--text-only] atlas ...`: the code map's commands
+/// have their own parser (docs/ATLAS.md); None for every other command.
+fn atlas_call(argv: &[String], env: &Env) -> Option<Output> {
+    let mut at = 0;
+    let (mut dir, mut json, mut text_only) = (None, false, false);
+    while at < argv.len() {
+        match argv[at].as_str() {
+            "-C" => {
+                dir = argv.get(at + 1).cloned();
+                at += 2;
+            }
+            "--json" => {
+                json = true;
+                at += 1;
+            }
+            "--text-only" => {
+                text_only = true;
+                at += 1;
+            }
+            "--by" | "--trailer" | "--mode" => at += 2,
+            "atlas" => break,
+            _ => return None,
+        }
+    }
+    if at >= argv.len() {
+        return None;
+    }
+    let start = match &dir {
+        Some(dir) => env.cwd.join(dir),
+        None => env.cwd.clone(),
+    };
+    #[cfg(feature = "atlas")]
+    {
+        let call = crate::atlas::cli::Call { argv: &argv[at + 1..], start, stdin: &env.stdin, json, text_only };
+        let out = crate::atlas::cli::run(&call);
+        Some(Output { code: out.code, stdout: out.stdout, stderr: out.stderr })
+    }
+    #[cfg(not(feature = "atlas"))]
+    {
+        let _ = (start, json, text_only);
+        Some(Output {
+            code: 1,
+            stdout: String::new(),
+            stderr: "lore: this lore was built without the code map; build it with `cargo install --path <CodeLore> --features atlas`\n".to_owned(),
+        })
+    }
+}
+
 fn dispatch(args: Args, env: &Env, io: &mut Io) -> Result<i32> {
     match args.cmd().as_str() {
         "init" => return cmd_init(&args, env, io),
         "guide" => {
             io.say(GUIDE.trim_end());
+            // A project with the code map on: its part of the guide too.
+            #[cfg(feature = "atlas")]
+            if let Ok(config) = config::load(&start(&args, env)) {
+                if config.atlas.active() {
+                    io.say("");
+                    io.say(crate::atlas::cli::GUIDE);
+                }
+            }
             return Ok(0);
         }
         "check" => return cmd_check(&args, env, io),
@@ -986,6 +1045,11 @@ fn cmd_find(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
         return Ok(0);
     }
     io.say(&hits.iter().map(|hit| format!("{}\n{}{}", fmt_record(&hit.record, Some(hit.score), &hit.via), confidence_line(&durable_result(hit, at)["confidence"]), store_line(hit))).collect::<Vec<_>>().join("\n\n"));
+    #[cfg(feature = "atlas")]
+    if let Some(lines) = crate::atlas::find_lines(&ctx.config, &query) {
+        io.say("");
+        io.say(&lines.join("\n"));
+    }
     Ok(0)
 }
 
@@ -1087,6 +1151,14 @@ fn cmd_for(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
         io.say(&format!("nothing recorded about {target}"));
     } else {
         io.say(&found.iter().map(|record| fmt_record(record, None, &[])).collect::<Vec<_>>().join("\n\n"));
+    }
+    // The code map's lines, text only: `--json` keeps its shape for every reader.
+    #[cfg(feature = "atlas")]
+    if !ctx.args.json {
+        if let Some(lines) = crate::atlas::for_lines(&ctx.config, &records, &target) {
+            io.say("");
+            io.say(&lines.join("\n"));
+        }
     }
     Ok(0)
 }

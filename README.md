@@ -161,6 +161,16 @@ orchestrator's runtime state and stays there. CodeLore knows nothing about any
 orchestrator; without one, a person or a single agent keeps the same records by
 hand.
 
+## Atlas: the code map (experimental)
+
+Built with `--features atlas` and switched on per project with `[atlas] enabled
+= true` (or `LORE_ATLAS=on`), `lore atlas` adds the other half: where things are
+in the code now. Pieces of every file searchable by words, whole terms, symbol
+names and meaning, the import graph, and where it meets the records -
+`lore atlas impact <file>` lists every file a change reaches *and what the lore
+knows about each*; `lore atlas drift` the records citing code that is gone. One
+binary, no server, no watcher. Design and switches: [docs/ATLAS.md](docs/ATLAS.md).
+
 ## What it is not
 
 Not a tracker: no assignees, no notifications, no board. Not a server. Not a
@@ -183,6 +193,9 @@ DirectML.dll are fetched beside the weights. Where no GPU answers, the same
 binary runs on the CPU (`LORE_DEVICE=cpu` forces that); `lore model status`
 says which. It needs the Visual C++ runtime (MSVCP140.dll), which most Windows
 machines have.
+
+**Code map.** `--features atlas` builds `lore atlas` (docs/ATLAS.md); a project
+turns it on with `[atlas] enabled = true`.
 
 ## Development
 

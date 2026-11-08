@@ -9,6 +9,8 @@ use std::collections::BTreeSet;
 use std::path::Path;
 
 pub mod app;
+#[cfg(feature = "atlas")]
+pub mod atlas;
 pub mod builtin;
 pub mod cli;
 pub mod config;

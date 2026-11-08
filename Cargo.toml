@@ -13,6 +13,12 @@ name = "lore"
 path = "src/main.rs"
 
 [features]
+# Off by default, so a package that builds `lore` from this crate (Zerus) gets no
+# code map unless it names the feature. `cargo install --path . --features atlas`.
+default = []
+# The code map beside the lore: `lore atlas ...` (docs/ATLAS.md). No new
+# dependency - SQLite, regex and the built-in embedder are already here.
+atlas = []
 # Build with candle's CUDA backend; the device is picked at runtime (see
 # embed::models::device) and reported by `lore model status`.
 cuda = ["candle-core/cuda"]
