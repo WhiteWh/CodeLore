@@ -126,7 +126,16 @@ pub fn shape_find_at(query: &str, notes: &[String], results: &[search::Found], n
 
 pub fn durable_result(hit: &search::Found, now: i64) -> Value {
     let confidence = search::confidence("durable", &hit.via, hit.meaning, search::record_age(&hit.record, now), search::retired(&hit.record));
-    json!({"score": hit.score, "via": hit.via, "record": hit.record, "tier": "durable", "confidence": confidence})
+    let mut result = json!({"score": hit.score, "via": hit.via, "record": hit.record, "tier": "durable", "confidence": confidence});
+    if let Some(store) = &hit.store {
+        result["store"] = json!(store);
+    }
+    result
+}
+
+/// The text line naming a result's store under `find --stores`.
+pub fn store_line(hit: &search::Found) -> String {
+    hit.store.as_ref().map(|store| format!("\n  store: {store}")).unwrap_or_default()
 }
 
 /// The text line a result's confidence reads as.
@@ -238,6 +247,8 @@ fn options_of(command: &str) -> Option<Vec<(&'static str, &'static [&'static str
             list.push(("n", &["-n"], true));
             // docs/lore.md 11.6: the working tier and the history channel.
             list.extend([("working", &[] as &[&str], false), ("no-working", &[], false), ("history", &[], false), ("no-history", &[], false), ("team", &[], true), ("role", &[], true)]);
+            // Sub-stores: `root` (the default), `all`, or store folders, comma-separated.
+            list.push(("stores", &[], true));
             list
         }
         "for" => vec![("all", &[], false)],
@@ -930,14 +941,18 @@ fn cmd_find(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
         io.progress(&format!("note: {note}"));
     }
     let started = std::time::Instant::now();
-    // A finder with its own index answers without the lore files being read (task 257); one without
-    // gets the store's records.
-    let (hits, notes) = match finder.find_indexed(&ctx.config, &query, &filters(&ctx.args), limit, ctx.args.text_only) {
-        Some(found) => found?,
-        None => {
-            let records = ctx.records()?;
-            finder.find(&ctx.config, &records, &query, &filters(&ctx.args), limit, ctx.args.text_only)?
-        }
+    let stores = ctx.args.one("stores").filter(|spec| spec.trim() != "root");
+    let (hits, notes) = match stores {
+        Some(spec) => find_in_stores(ctx, finder, &spec, &query, limit)?,
+        // A finder with its own index answers without the lore files being read (task 257); one
+        // without gets the store's records.
+        None => match finder.find_indexed(&ctx.config, &query, &filters(&ctx.args), limit, ctx.args.text_only) {
+            Some(found) => found?,
+            None => {
+                let records = ctx.records()?;
+                finder.find(&ctx.config, &records, &query, &filters(&ctx.args), limit, ctx.args.text_only)?
+            }
+        },
     };
     // Task 149: counts only. Never the query or a record's text.
     crate::stats::record_find(&ctx.config, &query, &hits, started.elapsed(), &crate::stats::tiers(&hits));
@@ -970,8 +985,96 @@ fn cmd_find(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
         io.say("nothing found");
         return Ok(0);
     }
-    io.say(&hits.iter().map(|hit| format!("{}\n{}", fmt_record(&hit.record, Some(hit.score), &hit.via), confidence_line(&durable_result(hit, at)["confidence"]))).collect::<Vec<_>>().join("\n\n"));
+    io.say(&hits.iter().map(|hit| format!("{}\n{}{}", fmt_record(&hit.record, Some(hit.score), &hit.via), confidence_line(&durable_result(hit, at)["confidence"]), store_line(hit))).collect::<Vec<_>>().join("\n\n"));
     Ok(0)
+}
+
+/// Folders that are never a store's sub-store, nor hold one.
+const NOT_STORES: [&str; 6] = [".git", "target", "node_modules", "__pycache__", ".venv", "dist"];
+
+/// The sub-stores under a store's root: folders, at most four levels down,
+/// with a lore.toml of their own (a Zerus project store's `teams/<team>`).
+pub fn sub_stores(config: &config::Config) -> Vec<PathBuf> {
+    fn walk(dir: &std::path::Path, depth: usize, skip: &std::path::Path, out: &mut Vec<PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        let mut dirs: Vec<PathBuf> = entries.flatten().filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir())).map(|entry| entry.path()).collect();
+        dirs.sort();
+        for path in dirs {
+            let name = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+            if NOT_STORES.contains(&name.as_str()) || path == skip {
+                continue;
+            }
+            if path.join(config::CONFIG_NAME).is_file() {
+                out.push(path.clone());
+            }
+            if depth > 1 {
+                walk(&path, depth - 1, skip, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&config.root, 4, &config.lore_dir(), &mut out);
+    out
+}
+
+/// A store's name relative to the one `find` runs in: `.`, or `teams/33fbafeb`.
+fn store_name(root: &std::path::Path, store: &std::path::Path) -> String {
+    match store.strip_prefix(root) {
+        Ok(rest) if rest.as_os_str().is_empty() => ".".to_owned(),
+        Ok(rest) => rest.to_string_lossy().replace('\\', "/"),
+        Err(_) => store.to_string_lossy().replace('\\', "/"),
+    }
+}
+
+/// `find --stores all|<store>[,<store>]`: the same search in each store, each
+/// result marked with its store, merged by score (every store's scores are
+/// reciprocal-rank sums of the same lists, so they compare).
+fn find_in_stores(ctx: &mut Ctx, finder: &dyn Finder, spec: &str, query: &str, limit: usize) -> Result<(Vec<search::Found>, Vec<String>)> {
+    let root = ctx.config.root.clone();
+    let mut stores: Vec<PathBuf> = Vec::new();
+    for part in spec.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+        match part {
+            "all" => {
+                stores.push(root.clone());
+                stores.extend(sub_stores(&ctx.config));
+            }
+            "root" | "." => stores.push(root.clone()),
+            path => {
+                let dir = root.join(path);
+                if !dir.join(config::CONFIG_NAME).is_file() {
+                    return Err(LoreError::new(format!("argument --stores: {path} has no {} - name `all`, `root` or a store's folder", config::CONFIG_NAME)));
+                }
+                stores.push(config::simplify(&std::fs::canonicalize(&dir).unwrap_or(dir)));
+            }
+        }
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    stores.retain(|store| seen.insert(store.clone()));
+    let mut hits: Vec<search::Found> = Vec::new();
+    let mut notes: Vec<String> = Vec::new();
+    for store in stores {
+        let name = store_name(&root, &store);
+        let config = if store == root { ctx.config.clone() } else { config::load(&store)? };
+        let found = match finder.find_indexed(&config, query, &filters(&ctx.args), limit, ctx.args.text_only) {
+            Some(found) => found,
+            None => store::load_worktree(&config.root, &config.dir).and_then(|snapshot| finder.find(&config, &snapshot.all(), query, &filters(&ctx.args), limit, ctx.args.text_only)),
+        };
+        match found {
+            Ok((found, more)) => {
+                for note in more {
+                    if !notes.contains(&note) {
+                        notes.push(note);
+                    }
+                }
+                hits.extend(found.into_iter().map(|hit| search::Found { store: Some(name.clone()), ..hit }));
+            }
+            // One unreadable store does not hide the others' answers.
+            Err(error) => notes.push(format!("store {name} was not searched: {}", error.message)),
+        }
+    }
+    hits.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap_or(std::cmp::Ordering::Equal));
+    hits.truncate(limit);
+    Ok((hits, notes))
 }
 
 fn cmd_for(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {

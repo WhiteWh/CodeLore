@@ -80,6 +80,27 @@ duplicates (0.69-0.85) from different faults (0.87-0.88) and word overlap did
 (different records at most 0.32): similarity names, only strong evidence
 refuses (DESIGN.md §4). **Left**: a PyPI release.
 
+## 0.4.1 - what the first harness found
+
+Zerus builds its own `lore` from a pinned revision of this crate and keeps a
+project store with a sub-store per team. What it met, and what changed:
+
+- the project's memory found nothing: its ~440 records were in the team
+  sub-store, and `find` searched only the store it ran in. `find --stores all`
+  searches a store and its sub-stores (or `--stores <folder>,...` the ones
+  named), each result marked with its `store`; without the option `find` is
+  byte for byte what it was.
+- the built-in model was never fetched on an installed build, so search was
+  text only for good. The `lore` binary now fetches the configured model on
+  first need: `lore index` waits for it, `lore find` answers on text and starts
+  one detached fetch, `lore init` starts it. `LORE_MODEL_FETCH=off` stops it; the
+  library never downloads. On Windows the detached fetch first held the
+  caller's stdout pipe open until the download ended (a `find` read through a
+  pipe took 20 s); it no longer inherits it (0.7 s).
+- an older pinned `lore` refused a whole lore.toml for a table a newer one
+  wrote, which would take a project's memory down. An unknown top-level key is
+  a warning on stderr now; keys inside a known table stay strict.
+
 ## 0.3.0 - what a large migration found
 
 Three agent sessions moved about 350 documents into a lore of 6 200 records in

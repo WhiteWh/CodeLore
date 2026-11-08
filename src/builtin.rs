@@ -215,7 +215,7 @@ impl Finder for Builtin {
             });
             let (hits, mut more) = finder::find_records(&index, query, &wanted, limit, semantic.as_ref())?;
             notes.append(&mut more);
-            let found = hits.into_iter().map(|(hit, record)| Found { record, score: hit.score, via: hit.via, meaning: hit.meaning }).collect();
+            let found = hits.into_iter().map(|(hit, record)| Found { record, score: hit.score, via: hit.via, meaning: hit.meaning, store: None }).collect();
             Ok((found, notes))
         })())
     }
@@ -252,7 +252,7 @@ impl Finder for Builtin {
         let found = hits
             .into_iter()
             .filter_map(|hit| {
-                visible.get(&hit.id).map(|record| Found { record: record.clone(), score: hit.score, via: hit.via, meaning: hit.meaning })
+                visible.get(&hit.id).map(|record| Found { record: record.clone(), score: hit.score, via: hit.via, meaning: hit.meaning, store: None })
             })
             .collect();
         Ok((found, notes))

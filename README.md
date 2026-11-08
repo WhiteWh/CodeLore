@@ -5,7 +5,7 @@ fixes, measured readings, decisions, and plan items that never disappear
 silently. JSONL in git, hybrid full-text + semantic search, one CLI - `lore` -
 that checks and commits every entry.
 
-> Status: **0.4.0, rewritten in Rust.** CodeLore is now one native binary,
+> Status: **0.4.1** (0.4.0 was the rewrite in Rust). CodeLore is now one native binary,
 > `lore`, with the same record format, commands and texts as the Python 0.3.0
 > it replaces (its whole test suite is ported test for test in
 > `tests/python_suite.rs`, and the embeddings are checked against the Python
@@ -102,6 +102,7 @@ entry must say.
 ```bash
 lore find "tar: Damaged tar archive (bad header checksum)"
 lore find - < traceback.txt          # paste an error, get the records that know it
+lore find "push rejected" --stores all   # a store and its sub-stores (teams/...), each result marked
 lore for src/render/post/chain.py    # what is known about this file before you edit it
 
 lore add fault --json < record.json  # validated, de-duplicated, committed

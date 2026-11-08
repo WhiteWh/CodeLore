@@ -483,6 +483,7 @@ mod tests {
             score: 0.5,
             via: via.iter().map(|v| v.to_string()).collect(),
             meaning: None,
+            store: None,
         }
     }
 

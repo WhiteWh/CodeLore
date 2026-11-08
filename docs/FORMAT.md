@@ -210,10 +210,9 @@ push = false       # push after each write
 trailers = []      # lines added to every commit message
 
 [embed]
-provider = "ollama"                # "ollama" | "none"
-url = "http://127.0.0.1:11434"
-model = "nomic-embed-text"
-timeout = 2.0                      # seconds to decide the server is not there
+provider = "builtin"               # "builtin" | "none"; "ollama" (older files) means "builtin"
+model = "auto"                     # "auto" | "nomic-embed-text-v1.5" | "multilingual-e5-base" | "bge-m3"
+# url, timeout: read and ignored (they were Ollama's)
 # doc_prefix / query_prefix: task prefixes; nomic models get theirs by default
 
 [limits]           # optional; may only lower §4's ceilings
@@ -233,7 +232,11 @@ pulse_days = 14    # 1-365; message_days = 7, unread_days = 30, urgent_bound = 1
 allow = []         # exact strings the secret scan lets pass (each a literal, never a pattern)
 ```
 
-Unknown keys are refused, so a typo is not silently ignored.
+A key the reader does not know **inside a known table** (`commit.mood`) is
+refused, so a typo is not silently ignored. An unknown **top-level** key or
+table (`[atlas]` read by an older `lore`) is passed over with a warning on
+stderr: a newer lore may write a table an older one cannot read, and refusing
+the whole file would take the project's memory down with it.
 
 ## 7. Versioning
 

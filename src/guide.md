@@ -13,6 +13,7 @@ They are searched, not read whole. Every command takes `--json`.
     lore for <module.symbol>
     lore show <id>
     lore exists <id> <id>...                # are these records now? exit 1 if one is not
+    lore find "<query>" --stores all        # this store and its sub-stores (teams/...), each result marked
 
 Search live, every time: never check «already <id>» against a list or an index
 you saved earlier - records written since are not in it. `lore exists` is cheap.

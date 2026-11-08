@@ -177,7 +177,7 @@ pub(super) fn tiers(ctx: &mut Ctx, query: &str, durable: &[search::Found], notes
         match item {
             Item::Durable(found) => {
                 let result = durable_result(found, at);
-                text.push(format!("{}\n{}", fmt_record(&found.record, Some(found.score), &found.via), confidence_line(&result["confidence"])));
+                text.push(format!("{}\n{}{}", fmt_record(&found.record, Some(found.score), &found.via), confidence_line(&result["confidence"]), store_line(found)));
                 results.push(result);
             }
             Item::Working(entry, via) => {

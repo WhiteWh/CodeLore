@@ -6,26 +6,30 @@ What `lore` is made of and why. The data format it reads and writes is
 ## 1. Shape
 
 ```
-src/codelore/
- ├─ cli.py      the `lore` command
- ├─ config.py   lore.toml: found upwards from the working directory, unknown keys refused
- ├─ schema.py   the kinds, their fields and limits; refuses, never repairs
- ├─ store.py    reads and writes lore/*.jsonl: canonical lines, sorted, LF
- ├─ gitio.py    HEAD blobs, ref checks, the three commit modes
- ├─ ops.py      every write: fill, validate, references, plan rules, commit
- ├─ dedupe.py   the duplicate search before a new record
- ├─ index.py    the disposable SQLite index: two FTS5 tables + vectors
- ├─ embed.py    providers: ollama | none
- ├─ search.py   find / for: exact signals, BM25 x2, cosine, reciprocal rank fusion
- ├─ plans.py    counts, layers, readiness, stale
- ├─ cover.py    a source document's parts and what accounts for each
- └─ guide.md    the agent instructions, printed by `lore guide`
+src/
+ ├─ main.rs, app.rs  the `lore` binary: `codelore::app::main()`, `lore model`, the model fetch
+ ├─ cli.rs           the command layer (`cli::run`): parsing, texts, `--json`
+ ├─ config.rs        lore.toml: found upwards from the working directory
+ ├─ schema.rs        the kinds, their fields and limits; refuses, never repairs
+ ├─ store.rs         reads and writes lore/*.jsonl: canonical lines, sorted, LF
+ ├─ gitio.rs         HEAD blobs, ref checks, the three commit modes
+ ├─ ops.rs, writer.rs  every write: fill, validate, references, plan rules, commit
+ ├─ dedupe.rs        the duplicate search before a new record
+ ├─ index.rs         the disposable SQLite index: FTS5 tables, narrow fact tables, vectors
+ ├─ embed/           the built-in models on candle: nomic-embed-text-v1.5, e5, bge-m3; fetch and pin
+ ├─ finder.rs, builtin.rs, search.rs  find / for: signals, BM25 x2, cosine, reciprocal rank fusion
+ ├─ plans.rs         counts, layers, readiness, stale
+ ├─ cover.rs         a source document's parts and what accounts for each
+ ├─ working.rs       the working tier (pulses, messages, briefs) a harness such as Zerus uses
+ ├─ secrets.rs       the secret scan every write passes
+ └─ guide.md         the agent instructions, printed by `lore guide`
 ```
 
-Standard library only: `sqlite3` (FTS5), `json`, `tomllib`, `urllib`,
-`subprocess` for git. No numpy: cosine over a few thousand 768-float vectors is
-milliseconds in pure Python with `array` and is not the bottleneck. One package,
-one entry point.
+One crate, one binary. SQLite with FTS5 is bundled (`rusqlite`), git is the one
+outside program. The crate is also a library: another package builds its own
+`lore` with `fn main() { codelore::app::main() }` and pins the revision (Zerus
+does); its default features are the binary every such package gets, so a new
+part comes behind a feature that is off by default.
 
 ## 2. Where things live
 
@@ -35,6 +39,7 @@ one entry point.
 | configuration | `<repo>/lore.toml` | yes |
 | index | `$LORE_CACHE/<repo-key>/`, else the user cache: `%LOCALAPPDATA%\codelore\<repo-key>\index.sqlite`, `~/.cache/codelore/<repo-key>/`; where that cannot be written, `.git/codelore/` | no |
 | embedding cache | beside the index, keyed by model and content hash | no |
+| embedding model | `<cache>/models/<model>/`, pinned files, fetched on first use | no |
 
 `<repo-key>` is a hash of the repository's absolute path. Deleting the cache
 costs one rebuild and nothing else. A sandboxed agent may be unable to create a
@@ -82,11 +87,23 @@ the default hides `obsolete`, `superseded`, `reversed` and closed plans' items
 unless `--all`, and source records - ledgers of documents, not knowledge -
 unless `--kind source`.
 
-**No model.** If the provider does not answer, `find` runs on text alone and the
-first line of its output says so. Whether the server is there is decided by a
-probe held to `embed.timeout` (2 s by default); a server that is there may take
-longer on its first call, while it loads the model, and is allowed to. A dead
-provider never fails a search.
+**No model.** If the model is not installed, `find` runs on text alone and the
+first line of its output says so. The `lore` binary then fetches it - once,
+detached from the search, which answers at once and does not hold its caller's
+output pipe open (a marker beside the model keeps a second search from starting
+another fetch); `lore index` and `lore init` fetch it themselves. Each file is
+pinned by size and SHA-256 and streamed into place only when it matches.
+`LORE_MODEL_FETCH=off` stops all of it; the library (`cli::run` called by tests
+or a harness) never downloads. A missing model never fails a search.
+
+**Several stores.** A store may hold sub-stores - folders with a lore.toml of
+their own, such as a Zerus project store's `teams/<team>`. `find` searches the
+store it runs in; `find --stores all` searches it and every sub-store (four
+levels deep at most), `--stores teams/a,teams/b` the ones named. Each store is
+searched with its own index and configuration, every result is marked with its
+store (`.` for the one `find` runs in), and the lists are merged by score -
+reciprocal-rank sums of the same lists, so they compare. A store that cannot be
+read is named in a note; the others still answer.
 
 **Output.** The top records **whole** - five by default, each a few lines - not
 chunks of them. `--json` gives the records as stored, with their scores.

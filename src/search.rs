@@ -42,6 +42,9 @@ pub struct Found {
     pub via: Vec<String>,
     /// Task 133: the cosine of the meaning list, when it found the record.
     pub meaning: Option<f64>,
+    /// Under `find --stores`: the store it came from, relative to the one
+    /// `find` ran in (`.` for that one). None without `--stores`.
+    pub store: Option<String>,
 }
 
 /// Task 133 (owner, 2026-11-07): how far a find result may be trusted - its
