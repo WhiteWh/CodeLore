@@ -491,6 +491,13 @@ impl Index {
     /// Embeds every record that has no vector under `model`. The error is the
     /// provider's, for the caller to turn into a note.
     pub fn ensure_vectors(&self, embedder: &dyn Embeddings, model: &str, doc_prefix: &str) -> Result<(), LoreError> {
+        self.ensure_vectors_within(embedder, model, doc_prefix, usize::MAX).map(|_| ())
+    }
+
+    /// [`Self::ensure_vectors`] when at most `budget` records lack a vector;
+    /// more than that are left for `lore index`, and their number is returned
+    /// (0 when every record has one). A search must not embed a whole lore.
+    pub fn ensure_vectors_within(&self, embedder: &dyn Embeddings, model: &str, doc_prefix: &str, budget: usize) -> Result<usize, LoreError> {
         // The index records which model and dimension its vectors came from;
         // a change (lore.toml's embed.model, or the model's dimension) makes
         // every stored vector useless, so they are dropped and rebuilt.
@@ -523,7 +530,10 @@ impl Index {
             }
         }
         if todo.is_empty() {
-            return Ok(());
+            return Ok(0);
+        }
+        if todo.len() > budget {
+            return Ok(todo.len());
         }
         let texts: Vec<String> = todo.iter().map(|(_, text)| text.clone()).collect();
         let vectors = embedder.embed(&texts)?;
@@ -535,7 +545,8 @@ impl Index {
             let blob: Vec<u8> = vector.iter().flat_map(|value| value.to_le_bytes()).collect();
             tx.execute("INSERT OR REPLACE INTO vectors VALUES(?1,?2,?3)", params![model, hash, blob]).map_err(index_error)?;
         }
-        tx.commit().map_err(index_error)
+        tx.commit().map_err(index_error)?;
+        Ok(0)
     }
 
     /// Puts `model`'s precomputed vectors (by record id) into the index and

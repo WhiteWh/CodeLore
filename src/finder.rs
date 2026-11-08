@@ -13,6 +13,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 pub const RRF_K: f64 = 60.0;
+/// A search embeds at most this many records that lack a vector (new or
+/// changed ones); more - a whole lore after the model arrives - are left for
+/// `lore index`, and meaning searches the records that have one.
+pub const FIND_EMBED_BUDGET: usize = 32;
+/// The start of the note a search leaves when it left records unembedded.
+pub const UNEMBEDDED_NOTE: &str = "records have no vector yet";
 pub const DEPTH: usize = 50;
 /// BM25 weights for the word table's columns: signals, title, main, body.
 const WEIGHTS: [f64; 4] = [50.0, 20.0, 1.0, 1.0];
@@ -249,9 +255,14 @@ pub fn find(
     let mut notes: Vec<String> = Vec::new();
     let visible = visible(index, filters)?;
     let loaded = match semantic {
-        Some(semantic) => match index.ensure_vectors(semantic.embedder, semantic.model, semantic.doc_prefix) {
-            Ok(()) => match index.vectors(semantic.model) {
-                Ok(vectors) => Some((semantic.model.to_owned(), vectors.into_iter().collect::<HashMap<String, Vec<f32>>>())),
+        Some(semantic) => match index.ensure_vectors_within(semantic.embedder, semantic.model, semantic.doc_prefix, FIND_EMBED_BUDGET) {
+            Ok(missing) => match index.vectors(semantic.model) {
+                Ok(vectors) => {
+                    if missing > 0 {
+                        notes.push(format!("{missing} {UNEMBEDDED_NOTE}; meaning searches the {} that have one, and `lore index` embeds the rest", vectors.len()));
+                    }
+                    Some((semantic.model.to_owned(), vectors.into_iter().collect::<HashMap<String, Vec<f32>>>()))
+                }
                 Err(error) => {
                     notes.push(format!("semantic search unavailable: {error}; text only"));
                     None
@@ -482,9 +493,14 @@ pub fn find_records(
     let mut notes: Vec<String> = Vec::new();
     let visible = visible_sql(filters);
     let loaded = match semantic {
-        Some(semantic) => match index.ensure_vectors(semantic.embedder, semantic.model, semantic.doc_prefix) {
-            Ok(()) => match index.vectors(semantic.model) {
-                Ok(vectors) => Some(vectors.into_iter().collect::<HashMap<String, Vec<f32>>>()),
+        Some(semantic) => match index.ensure_vectors_within(semantic.embedder, semantic.model, semantic.doc_prefix, FIND_EMBED_BUDGET) {
+            Ok(missing) => match index.vectors(semantic.model) {
+                Ok(vectors) => {
+                    if missing > 0 {
+                        notes.push(format!("{missing} {UNEMBEDDED_NOTE}; meaning searches the {} that have one, and `lore index` embeds the rest", vectors.len()));
+                    }
+                    Some(vectors.into_iter().collect::<HashMap<String, Vec<f32>>>())
+                }
                 Err(error) => {
                     notes.push(format!("semantic search unavailable: {error}; text only"));
                     None

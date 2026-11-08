@@ -27,6 +27,43 @@ pub fn auto_fetch() -> bool {
     AUTO_FETCH.load(Ordering::Relaxed)
 }
 
+/// After a search that left records without a vector (a whole lore, once the
+/// model arrived): one detached `lore -C <root> index` embeds them, so the next
+/// searches have meaning everywhere. A marker beside the index keeps a second
+/// search from starting another; the note says what this one did.
+pub fn index_in_background(config: &Config, notes: &mut Vec<String>) {
+    if !auto_fetch() || !notes.iter().any(|note| note.contains(finder::UNEMBEDDED_NOTE)) {
+        return;
+    }
+    let Some(dir) = index::index_dir_candidates(&config.root).next() else { return };
+    let lock = dir.join("index.embedding");
+    let fresh = std::fs::metadata(&lock).and_then(|meta| meta.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age.as_secs() < 3 * 3600);
+    if fresh {
+        notes.push("`lore index` is embedding them in the background".to_owned());
+        return;
+    }
+    let started = (|| -> std::io::Result<()> {
+        std::fs::create_dir_all(&dir)?;
+        std::fs::write(&lock, std::process::id().to_string())?;
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command
+            .arg("-C")
+            .arg(&config.root)
+            .arg("index")
+            .env("LORE_FETCH_LOCK", &lock)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        spawn_detached(&mut command)
+    })();
+    match started {
+        Ok(()) => notes.push("`lore index` started in the background to embed them".to_owned()),
+        Err(_) => {
+            let _ = std::fs::remove_file(&lock);
+        }
+    }
+}
+
 /// The marker a background fetch holds while it runs: `<models>/<model>.fetching`.
 pub fn fetch_lock(model: embed::EmbeddingModel) -> PathBuf {
     let dir = embed::model_dir(model);
@@ -215,6 +252,7 @@ impl Finder for Builtin {
             });
             let (hits, mut more) = finder::find_records(&index, query, &wanted, limit, semantic.as_ref())?;
             notes.append(&mut more);
+            index_in_background(config, &mut notes);
             let found = hits.into_iter().map(|(hit, record)| Found { record, score: hit.score, via: hit.via, meaning: hit.meaning, store: None }).collect();
             Ok((found, notes))
         })())
@@ -248,6 +286,7 @@ impl Finder for Builtin {
         });
         let (hits, mut more) = finder::find(&index, query, &wanted, limit, semantic.as_ref())?;
         notes.append(&mut more);
+        index_in_background(config, &mut notes);
         let visible = search::visible(records, filters);
         let found = hits
             .into_iter()

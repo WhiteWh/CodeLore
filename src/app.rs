@@ -20,7 +20,12 @@ pub fn main() -> ! {
     }
     crate::builtin::enable_auto_fetch();
     let mut stdin = Vec::new();
-    let _ = std::io::stdin().read_to_end(&mut stdin);
+    // stdin is read for `find -` and `--json`/`--batch` input. Not for
+    // `--version`, nor from a terminal: either would wait for an EOF nobody sends.
+    let version_only = args.iter().any(|arg| arg == "--version");
+    if !version_only && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        let _ = std::io::stdin().read_to_end(&mut stdin);
+    }
     let env = Env {
         cwd: std::env::current_dir().unwrap_or_default(),
         stdin,
@@ -37,6 +42,10 @@ pub fn main() -> ! {
     eprint!("{}", output.stderr);
     if output.code == 0 && args.iter().any(|arg| arg == "init") {
         prefetch_after_init(&args, &env.cwd);
+    }
+    // A background `lore index` a search started holds this marker; it ends here.
+    if let Some(lock) = std::env::var_os("LORE_FETCH_LOCK") {
+        let _ = std::fs::remove_file(lock);
     }
     std::process::exit(output.code);
 }
