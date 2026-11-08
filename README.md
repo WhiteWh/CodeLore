@@ -46,20 +46,32 @@ lore guide                                   # what an agent needs to know
 
 ## Measured
 
-On its first production user, a private repository worked by several agent
-sessions at once: 41 faults asked 82 ways, CodeLore at full size against grep
-over the project's 20.7 MB of markdown and against a semantic code index. The right record came **first for 98% of pasted errors
-and 71% of paraphrased symptoms** (grep 61% and 7%, the semantic index 39% and
-24%), and an agent read **about 1 KB to reach the answer** instead of 4-13 KB.
-The method, the table, why, and what the numbers do not say yet:
-[docs/RESULTS.md](docs/RESULTS.md).
+`lore` 0.4.1 against plain search, on its first production user: a private
+repository several agent sessions work in at once, 20.7 MB of markdown in
+`docs/` and about 4 500 source files. 88 faults from its troubleshooting page,
+each asked two ways - the **exact** text the fault prints, as an agent pastes
+it, and a **paraphrase** of the symptom sharing no three-word run with the page.
+A result answers when it holds a string of the fault's fix. Tokens are what an
+agent reads up to the answering result (all it was shown, on a miss), counted
+as bytes / 4.
 
-**Rust 0.4.0 against Python 0.3.0** on the same 6773-record lore, text only:
-`lore` starts in 15 ms instead of 192 ms, builds its index in 1.1 s instead of
-5.4 s, answers a `find` in 421 ms instead of 557 ms (median) and runs
-`lore check` in 1.7 s instead of 2.6-4.6 s. The tuned text search finds the
-right record first more often (exact errors 94.3% against 93.2%, paraphrases
-40.9% against 31.8%). Details: [docs/RESULTS-rust.md](docs/RESULTS-rust.md).
+| search | question | answer first | in top 3 | in top 10 | tokens to the answer, median | p90 | calls | time, median |
+|---|---|---|---|---|---|---|---|---|
+| grep over the markdown | exact | 66% | 82% | 93% | ~1 120 | ~2 740 | 1.36 | 0.10 s |
+| grep over the markdown | paraphrase | 5% | 6% | 10% | ~3 050 | ~20 060 | 1.00 | 0.09 s |
+| grep over the code | exact | 2% | 3% | 3% | ~580 | ~8 050 | 1.85 | 0.34 s |
+| grep over the code | paraphrase | 0% | 0% | 0% | ~1 970 | ~11 120 | 1.00 | 0.17 s |
+| **lore**, text only | exact | **92%** | **100%** | **100%** | **~290** | **~490** | **1.00** | 0.09 s |
+| **lore**, text only | paraphrase | **45%** | **65%** | **82%** | **~600** | **~3 190** | **1.00** | 0.09 s |
+
+grep is `git grep` as an agent's Grep tool runs it: the exact text fixed-string,
+else the two rarest words of the question; a result is the matched line with
+two lines either side. Over the code it reads the same way but rarely holds
+the fix - that lives in what was learned, not in the source. A grep that misses
+costs more than the table shows: the agent searches again. `lore` here is the
+fault records among 1 490 other rows of the same page, text search alone (no
+embedding model). Measured 2026-11-09; the method, every number and how to run
+it again: [docs/RESULTS-rust.md](docs/RESULTS-rust.md).
 
 ## The problem it solves
 

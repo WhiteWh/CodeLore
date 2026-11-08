@@ -32,36 +32,24 @@ an after result.
 Corpus and queries are never committed; only this table and the method are.
 
 
-## Speed (Python 0.3.0 against Rust 0.4.0)
+## Speed
 
-Method: the same read-only copy of DCB's lore (6773 records in 105 files),
-text only (no embedding model, so the two are compared on their own work),
+The same read-only copy of DCB's lore (6773 records in 105 files), text only,
 every command a fresh process as an agent calls it, each build into an empty
-index cache. Python 0.3.0, Rust before the build fixes and Rust 0.4.0 ran one
-after the other in each of 4 rounds, so machine load hit all three alike;
-medians. `find` is 40 bench queries alternating the binaries.
+index cache; medians of 4 rounds.
 
-| | Python 0.3.0 | Rust, first port | Rust 0.4.0 |
-|---|---|---|---|
-| start (`lore --version`) | 192 ms | 15 ms | **15 ms** |
-| text index build (`index --text-only --rebuild`) | 5.4 s | 2.1 s | **1.1 s** |
-| `find`, median | 557 ms | 584 ms | **421 ms** |
-| `lore check` | 2.6-4.6 s | 1.7 s | **1.7 s** |
+| | lore 0.4.0 |
+|---|---|
+| start (`lore --version`) | 15 ms |
+| text index build (`index --text-only --rebuild`) | 1.1 s |
+| `find` (40 bench queries) | 421 ms (145 ms after task 257, below) |
+| `lore check` | 1.7 s |
 
 What made the build fast: `--rebuild` used to build the index twice (open,
 delete, build again); records were deep-copied to sort their keys twice per
 record per build; the insert statements were prepared again for every record.
 The index and every search result are unchanged: the rows, the FTS postings
 and the output of 176 bench queries hash equal before and after.
-
-An earlier single run of this table showed the Rust build at 10 s against
-Python's 3.5 s; it did not reproduce (the machine was loaded by other builds at
-the time) and is withdrawn.
-
-What a `find` spent before task 257 (about 420 ms) was mostly fixed overhead:
-reading and parsing all records and the freshness check on every call, not the
-search itself (a long query adds ~20 ms). Task 257 moved that work behind the
-index; the numbers and the remaining tail are above.
 
 ## Task 257: the index answers find, show and plans
 
@@ -93,3 +81,45 @@ built): a single long-lived `hgs lore` server over the existing index, so the
 open and the freshness scan are paid once, with the same Finder answer; it
 would need a bounded cache keyed by root and index generation.
 
+
+## lore against plain search (2026-11-09, lore 0.4.1)
+
+The table in the README, with its method. The repository: DCB at `804aef7d`,
+20.7 MB of markdown in `docs/` and 4 526 source files (`.h .hpp .inl .c .cpp
+.cxx .py .fx .hlsl .glsl .frag .vert .rs .cs .ps1 .bat`). The questions:
+DCB's `tools/lore_bench_queries.jsonl`, 88 faults of its troubleshooting page,
+each asked **exact** (the text it prints) and as a **paraphrase** (held to share
+no three-word run and no quoted name with the row). Each carries keys, strings
+of the row's fix; a result answers when it holds one, judged the same way for
+every system.
+
+- **grep over the markdown**: `git grep -n -i -I` at the revision over
+  `docs/*.md`, as an agent's Grep tool: an exact question fixed-string; a
+  paraphrase, or an exact one that matched nothing, by its two rarest words (a
+  second call). A result is the matched line with two lines either side.
+- **grep over the code**: the same, over the source files above.
+- **lore, text only**: `lore find -n 10 --text-only` in a lore of 1 527 records:
+  the page's faults written as records, among its other 1 490 rows converted
+  mechanically, so the records are searched among as many as a whole migration
+  makes. A result is the record as `lore find` prints it.
+
+Tokens are bytes / 4 of everything shown up to and including the answering
+result (everything, on a miss).
+
+| search | question | n | answer first | in top 3 | in top 10 | MRR | tokens to the answer, median | p90 | calls | time, median | p90 |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| grep over the markdown | exact | 88 | 66% | 82% | 93% | 0.76 | ~1 120 | ~2 740 | 1.36 | 0.10 s | 0.59 s |
+| grep over the markdown | paraphrase | 88 | 5% | 6% | 10% | 0.06 | ~3 050 | ~20 060 | 1.00 | 0.09 s | 0.51 s |
+| grep over the code | exact | 88 | 2% | 3% | 3% | 0.03 | ~580 | ~8 050 | 1.85 | 0.34 s | 1.19 s |
+| grep over the code | paraphrase | 88 | 0% | 0% | 0% | 0.00 | ~1 970 | ~11 120 | 1.00 | 0.17 s | 0.53 s |
+| lore, text only | exact | 88 | 92% | 100% | 100% | 0.96 | ~290 | ~490 | 1.00 | 0.09 s | 0.44 s |
+| lore, text only | paraphrase | 88 | 45% | 65% | 82% | 0.58 | ~600 | ~3 190 | 1.00 | 0.09 s | 0.45 s |
+
+Over all 176 questions the median an agent reads is ~1 485 tokens with grep
+over the markdown and ~335 with lore. A grep that misses costs more than its
+row: the agent searches again, and that search is not counted.
+
+To run it again: DCB's `tools/lore_bench.py` (`--system grep --rev <sha>`,
+`--system lore-text --root <full-size lore>`; `--build-full` makes the lore).
+The code row used a copy of it whose corpus is the source files instead of
+`docs/*.md`.
