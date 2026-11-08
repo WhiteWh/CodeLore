@@ -26,7 +26,7 @@ use crate::refs::Roots;
 use crate::schema::{self, check_limits, item_number, KNOWLEDGE, UNDECIDED};
 use crate::search::{self, Filters, Finder};
 use crate::store::{self, is_lore_file, serialize, Snapshot};
-use crate::{gitio, index, private, LoreError, Result, VERSION};
+use crate::{gitio, index, private, LoreError, Result};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -780,7 +780,7 @@ pub fn run(argv: &[&str], env: &Env) -> Output {
         }
     };
     if args.cmd() == "--version" {
-        io.say(&format!("lore {VERSION}"));
+        io.say(&crate::version_line());
         return Output { code: 0, stdout: io.out, stderr: io.err };
     }
     let json = args.json;

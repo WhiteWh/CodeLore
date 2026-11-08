@@ -103,6 +103,43 @@ pub fn blob(root: &Path, rev: Option<&str>, path: &str) -> Option<Vec<u8>> {
     output.ok().then_some(output.stdout)
 }
 
+/// The bytes of every `paths` at `rev`, by path, in one `git cat-file --batch`:
+/// a process per file cost about a second each on a busy Windows tree (105
+/// files, a minute). A path `rev` does not have is None - missing, not empty.
+pub fn blobs(root: &Path, rev: &str, paths: &[String]) -> Result<BTreeMap<String, Option<Vec<u8>>>> {
+    let mut result = BTreeMap::new();
+    let asked: Vec<&String> = paths.iter().filter(|path| !path.contains('\n')).collect();
+    if asked.is_empty() {
+        return Ok(result);
+    }
+    let input: String = asked.iter().map(|path| format!("{rev}:{path}\n")).collect();
+    let output = git(root, &["cat-file", "--batch"], Some(input.as_bytes()), &[], true)?;
+    let data = output.stdout;
+    let mut at = 0;
+    for path in asked {
+        let line_end = data[at..].iter().position(|b| *b == b'\n').map(|n| at + n).ok_or_else(|| LoreError::new(format!("git cat-file --batch ended early, at {path}")))?;
+        let header = String::from_utf8_lossy(&data[at..line_end]).into_owned();
+        at = line_end + 1;
+        // `<sha> <type> <size>`, or `<spec> missing` / `<spec> ambiguous`.
+        let mut fields = header.rsplitn(3, ' ');
+        let (size, kind) = (fields.next().unwrap_or(""), fields.next().unwrap_or(""));
+        match size.parse::<usize>() {
+            Ok(size) if !header.ends_with(" missing") && !header.ends_with(" ambiguous") => {
+                if at + size > data.len() {
+                    return Err(LoreError::new(format!("git cat-file --batch: {path} is cut short")));
+                }
+                let bytes = data[at..at + size].to_vec();
+                at += size + 1; // the content, then its newline
+                result.insert(path.clone(), (kind == "blob").then_some(bytes));
+            }
+            _ => {
+                result.insert(path.clone(), None);
+            }
+        }
+    }
+    Ok(result)
+}
+
 pub fn ls_tree(root: &Path, rev: Option<&str>, directory: &str) -> Vec<String> {
     let Some(rev) = rev else { return Vec::new() };
     let folder = format!("{directory}/");

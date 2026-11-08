@@ -104,12 +104,16 @@ pub fn slugify(title: &str) -> String {
 pub fn load_rev(config: &Config, rev: Option<&str>) -> Result<Snapshot> {
     let Some(rev) = rev else { return Ok(Snapshot::default()) };
     let mut files = BTreeMap::new();
-    for rel in gitio::ls_tree(&config.root, Some(rev), &config.dir) {
-        if is_lore_file(&rel, &config.dir) {
-            let bytes = gitio::blob(&config.root, Some(rev), &rel).unwrap_or_default();
-            let short: String = rev.chars().take(10).collect();
-            files.insert(rel.clone(), parse(&bytes, &format!("{rel} at {short}"))?);
-        }
+    let wanted: Vec<String> = gitio::ls_tree(&config.root, Some(rev), &config.dir).into_iter().filter(|rel| is_lore_file(rel, &config.dir)).collect();
+    // One git process for all of them, not one per file.
+    let mut blobs = gitio::blobs(&config.root, rev, &wanted)?;
+    let short: String = rev.chars().take(10).collect();
+    for rel in wanted {
+        let bytes = blobs
+            .remove(&rel)
+            .flatten()
+            .ok_or_else(|| LoreError::new(format!("{rel} is listed at {short} but git could not read it")))?;
+        files.insert(rel.clone(), parse(&bytes, &format!("{rel} at {short}"))?);
     }
     Ok(Snapshot { files })
 }

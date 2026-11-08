@@ -38,6 +38,15 @@ pub use store::{canonical, parse, serialize, Store};
 pub use writer::{Duplicates, Writer};
 
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+/// The commit this binary was built from (`5fd9ae0`, `5fd9ae0+` with
+/// uncommitted changes), or empty for a build that could not ask git or was
+/// built as another package's git dependency (build.rs).
+pub const BUILD_COMMIT: &str = env!("LORE_BUILD_COMMIT");
+
+/// What `lore --version` prints: `lore 0.4.1 (5fd9ae0)`, or `lore 0.4.1`.
+pub fn version_line() -> String {
+    if BUILD_COMMIT.is_empty() { format!("lore {VERSION}") } else { format!("lore {VERSION} ({BUILD_COMMIT})") }
+}
 pub const FORMAT_VERSION: u64 = 3;
 /// Record versions this lore reads; a record keeps the version it was written at.
 pub const READS: [u64; 3] = [1, 2, 3];

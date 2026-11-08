@@ -100,6 +100,15 @@ project store with a sub-store per team. What it met, and what changed:
 - an older pinned `lore` refused a whole lore.toml for a table a newer one
   wrote, which would take a project's memory down. An unknown top-level key is
   a warning on stderr now; keys inside a known table stay strict.
+- under `shared-tree`, reading the store at the branch tip (every write, and
+  `lore cover`) ran one `git cat-file blob` per file: about a second each on a
+  busy Windows tree, a minute for 105 files. One `git cat-file --batch` reads
+  them all (`lore cover` on that lore: 13.1 s to 1.8 s, the output byte for
+  byte the same), and a path the commit lacks is an error, not an empty file.
+- two `lore 0.4.0` builds on one PATH could not be told apart. `lore --version`
+  names the commit a build came from, `+` for uncommitted changes; a build made
+  as another package's git dependency keeps the bare version its packaging
+  checks.
 
 ## 0.3.0 - what a large migration found
 

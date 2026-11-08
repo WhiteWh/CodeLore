@@ -18,8 +18,23 @@ that checks and commits every entry.
 ```bash
 git clone https://github.com/WhiteWh/CodeLore.git
 cargo install --path CodeLore --locked      # puts `lore` on PATH (~/.cargo/bin)
-lore --version
+lore --version                              # lore 0.4.1 (5fd9ae0); a `+` after the commit: built with uncommitted changes
 ```
+
+**With Zerus.** Zerus builds its own `lore` from a pinned revision of this
+repository and installs it beside `hgs` (`~/.local/bin/lore.exe` on Windows),
+and hgs uses that copy first (`HGS_LORE`, else beside hgs, else PATH). Keep one
+`lore` on the machine, or `where lore` / `which -a lore` lists two that both say
+`lore 0.4.x` and the earlier one on PATH wins:
+
+- **only Zerus's**: don't `cargo install` CodeLore; the pinned build is the one
+  everything runs. It prints the version alone (`lore 0.4.1`) - a build made as
+  another package's git dependency carries no commit, the pin names it.
+- **a CodeLore build in the same place** (working on CodeLore itself): uninstall
+  the cargo copy and install over Zerus's -
+  `cargo uninstall codelore; cargo install --path CodeLore --locked --root ~/.local`.
+  hgs then runs your build; the next Zerus install puts its pinned one back,
+  and `lore --version` says which is there (`(sha)` yours, none Zerus's).
 
 Then, at a repository's root:
 
