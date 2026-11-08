@@ -42,6 +42,39 @@ impl Builtin {
 }
 
 impl Finder for Builtin {
+    fn find_indexed(
+        &self,
+        config: &Config,
+        query: &str,
+        filters: &Filters,
+        limit: usize,
+        text_only: bool,
+    ) -> Option<Result<(Vec<Found>, Vec<String>)>> {
+        Some((|| -> Result<(Vec<Found>, Vec<String>)> {
+            let index = index::open_index(config)?;
+            let (shared, mut notes) = self.semantic(config, text_only);
+            let wanted = finder::Filters {
+                kind: filters.kind.clone(),
+                area: filters.area.clone(),
+                status: filters.status.clone(),
+                plan: filters.plan.clone(),
+                all: filters.all,
+                sources: filters.sources,
+            };
+            let selected = config.embedding_model();
+            let semantic = shared.as_ref().map(|shared| finder::Semantic {
+                embedder: shared.as_ref(),
+                model: selected.id(),
+                doc_prefix: selected.document_prefix(),
+                query_prefix: selected.query_prefix(),
+            });
+            let (hits, mut more) = finder::find_records(&index, query, &wanted, limit, semantic.as_ref())?;
+            notes.append(&mut more);
+            let found = hits.into_iter().map(|(hit, record)| Found { record, score: hit.score, via: hit.via, meaning: hit.meaning }).collect();
+            Ok((found, notes))
+        })())
+    }
+
     fn find(
         &self,
         config: &Config,

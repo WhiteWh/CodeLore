@@ -22,6 +22,9 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+/// The counters file's schema; a file of this version has every table and index below. A change to
+/// them raises it (and `open_at` builds the missing parts).
+const SCHEMA_VERSION: i64 = 1;
 /// Counters older than this are pruned on the next write.
 pub const RETENTION_DAYS: i64 = 180;
 /// At most this many finds are kept (and their result rows).
@@ -60,6 +63,12 @@ pub fn open_at(path: &std::path::Path) -> rusqlite::Result<rusqlite::Connection>
     }
     let conn = rusqlite::Connection::open(path)?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    // The counters are disposable and the file is WAL: a commit need not wait for the disk (a power
+    // loss may take the last find's row, never the file), and a file already built is not built again.
+    conn.execute_batch("PRAGMA synchronous=NORMAL")?;
+    if conn.query_row("PRAGMA user_version", [], |row| row.get::<_, i64>(0))? == SCHEMA_VERSION {
+        return Ok(conn);
+    }
     conn.execute_batch(
         "PRAGMA journal_mode=WAL;
          PRAGMA user_version=1;

@@ -26,7 +26,7 @@ use crate::refs::Roots;
 use crate::schema::{self, check_limits, item_number, KNOWLEDGE, UNDECIDED};
 use crate::search::{self, Filters, Finder};
 use crate::store::{self, is_lore_file, serialize, Snapshot};
-use crate::{gitio, private, LoreError, Result, VERSION};
+use crate::{gitio, index, private, LoreError, Result, VERSION};
 use serde_json::{json, Map, Value};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -679,6 +679,22 @@ impl<'a> Ctx<'a> {
         Ok((record, at))
     }
 
+    /// The index's records, made fresh from the lore files' size and mtime.
+    /// `None` when no index can be opened; callers then read the store.
+    fn indexed_records(&self) -> Option<Vec<Value>> {
+        let mut index = index::open_index(&self.config).ok()?;
+        index.refresh().ok()?;
+        index.all().ok()
+    }
+
+    /// One record from the index; a miss or an index failure falls back to the
+    /// store, so a record only in git history still shows.
+    fn indexed_record(&self, rid: &str) -> Option<Value> {
+        let mut index = index::open_index(&self.config).ok()?;
+        index.refresh().ok()?;
+        index.get(rid).ok().flatten()
+    }
+
     fn by(&self) -> String {
         let by = self.args.by.clone().or_else(|| self.env.lore_by.clone()).filter(|by| !by.is_empty());
         let by = by.unwrap_or_else(|| {
@@ -909,9 +925,16 @@ fn cmd_find(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     if let Some(note) = finder.place_note(&ctx.config) {
         io.progress(&format!("note: {note}"));
     }
-    let records = ctx.records()?;
     let started = std::time::Instant::now();
-    let (hits, notes) = finder.find(&ctx.config, &records, &query, &filters(&ctx.args), limit, ctx.args.text_only)?;
+    // A finder with its own index answers without the lore files being read (task 257); one without
+    // gets the store's records.
+    let (hits, notes) = match finder.find_indexed(&ctx.config, &query, &filters(&ctx.args), limit, ctx.args.text_only) {
+        Some(found) => found?,
+        None => {
+            let records = ctx.records()?;
+            finder.find(&ctx.config, &records, &query, &filters(&ctx.args), limit, ctx.args.text_only)?
+        }
+    };
     // Task 149: counts only. Never the query or a record's text.
     crate::stats::record_find(&ctx.config, &query, &hits, started.elapsed(), &crate::stats::tiers(&hits));
     // docs/lore.md 11.6: without working entries and without a history
@@ -963,7 +986,12 @@ fn cmd_for(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
 
 fn cmd_show(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     let id = ctx.args.positional[0].clone();
-    let (record, rev) = ctx.record(&id)?;
+    // The index has the record's exact JSON; only a miss (a record that lives
+    // only in git history) falls back to the store.
+    let (record, rev) = match ctx.indexed_record(&id) {
+        Some(record) => (Some(record), None),
+        None => ctx.record(&id)?,
+    };
     let record = record.ok_or_else(|| LoreError::new(format!("{} does not exist", repr_str(&id))))?;
     crate::stats::record_open(&ctx.config, &id);
     if ctx.args.json {
@@ -1598,7 +1626,12 @@ fn cmd_stats(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     Ok(0)
 }
 
-fn cmd_plans(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {    let rows = plans::summary(&ctx.records()?, ctx.args.flag("all"));
+fn cmd_plans(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
+    let records = match ctx.indexed_records() {
+        Some(records) => records,
+        None => ctx.records()?,
+    };
+    let rows = plans::summary(&records, ctx.args.flag("all"));
     if ctx.args.json {
         io.json(&Value::Array(rows));
         return Ok(0);

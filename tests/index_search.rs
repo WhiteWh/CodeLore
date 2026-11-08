@@ -77,6 +77,18 @@ fn first(index: &Index, query: &str) -> String {
 }
 
 #[test]
+fn show_and_plans_read_the_index_json_not_the_files() {
+    let repo = Repo::new();
+    let index = repo.index();
+    let record = index.get("git-archive-piped-into-tar-fails").unwrap().unwrap();
+    assert_eq!(record["title"], "git archive piped into tar fails");
+    assert!(index.get("no-such-record").unwrap().is_none());
+    let all = index.all().unwrap();
+    assert_eq!(all.len(), 3);
+    assert!(all.iter().any(|record| record["id"] == "old-thing"));
+}
+
+#[test]
 fn exact_signal_first() {
     let repo = Repo::new();
     let index = repo.index();

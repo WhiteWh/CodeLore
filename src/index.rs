@@ -16,7 +16,10 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-pub const INDEX_VERSION: i64 = 3;
+/// 4 (task 257): `facts` (kind, area, status, plan and signals, one narrow row per record) and `phrase`
+/// (the flattened text of the phrase check) sit beside `records`, so a find reads neither every record
+/// nor every file: scanning the wide `records` rows costs a page each.
+pub const INDEX_VERSION: i64 = 4;
 
 /// How long a connection waits for another process's write lock.
 const BUSY_TIMEOUT: Duration = Duration::from_secs(120);
@@ -252,6 +255,8 @@ fn create(db: &Connection) -> Result<(), LoreError> {
         CREATE TABLE records(id TEXT PRIMARY KEY, path TEXT, kind TEXT, area TEXT,
             status TEXT, plan TEXT, title TEXT, updated TEXT, ehash TEXT, json TEXT);
         CREATE INDEX records_path ON records(path);
+        CREATE TABLE facts(seq INTEGER PRIMARY KEY, id TEXT NOT NULL UNIQUE, kind TEXT, area TEXT, status TEXT, plan TEXT, signals TEXT);
+        CREATE TABLE phrase(seq INTEGER PRIMARY KEY, flat TEXT NOT NULL);
         CREATE VIRTUAL TABLE words USING fts5(id UNINDEXED, signals, title, main, body,
             tokenize = "porter unicode61 remove_diacritics 2 tokenchars '_'");
         CREATE VIRTUAL TABLE terms USING fts5(id UNINDEXED, toks,
@@ -359,10 +364,37 @@ impl Index {
         ordered
     }
 
+    /// Whether every lore file is as the index recorded it (by size and modification time) and the
+    /// index knows no other file: O(files), reading no record.
+    fn unchanged(&self, ordered: &[(String, PathBuf)]) -> Result<bool, LoreError> {
+        let mut statement = self.db.prepare_cached("SELECT path, size, mtime FROM files").map_err(index_error)?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, (row.get::<_, i64>(1)?, row.get::<_, i64>(2)?))))
+            .map_err(index_error)?;
+        let known: BTreeMap<String, (i64, i64)> = rows.flatten().collect();
+        if known.len() != ordered.len() {
+            return Ok(false);
+        }
+        for (relative, path) in ordered {
+            let Ok(meta) = std::fs::metadata(path) else { return Ok(false) };
+            let mtime = meta.modified().ok().and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |span| span.as_nanos() as i64);
+            if known.get(relative) != Some(&(meta.len() as i64, mtime)) {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Brings the index up to date with the JSONL files: a file is read again
     /// only when its size or modification time moved and its bytes differ.
     pub fn refresh(&mut self) -> Result<Refresh, LoreError> {
         let ordered = self.lore_files();
+        // Nothing moved is the usual case of a search: the files' size and modification time are what
+        // the index recorded, one read of its `files` table and one stat per file, and no write lock
+        // (so a search never waits for another process's build).
+        if !self.fresh && self.unchanged(&ordered)? {
+            return Ok(Refresh::default());
+        }
         let mut summary = Refresh { rebuilt: self.fresh, ..Refresh::default() };
         self.fresh = false;
         // The write lock first (waiting for another process's), then what is known:
@@ -420,6 +452,24 @@ impl Index {
         let mut statement = self.db.prepare("SELECT json FROM records").map_err(index_error)?;
         let rows = statement.query_map([], |row| row.get::<_, String>(0)).map_err(index_error)?;
         Ok(rows.flatten().filter_map(|text| serde_json::from_str(&text).ok()).collect())
+    }
+
+    /// The records of these ids, by id (an id the index does not hold is absent).
+    pub fn get_many(&self, ids: &[String]) -> Result<std::collections::HashMap<String, Value>, LoreError> {
+        let mut found = std::collections::HashMap::new();
+        for chunk in ids.chunks(500) {
+            let marks = (1..=chunk.len()).map(|at| format!("?{at}")).collect::<Vec<_>>().join(",");
+            let mut statement = self.db.prepare(&format!("SELECT id, json FROM records WHERE id IN ({marks})")).map_err(index_error)?;
+            let rows = statement
+                .query_map(rusqlite::params_from_iter(chunk.iter()), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+                .map_err(index_error)?;
+            for (id, text) in rows.flatten() {
+                if let Ok(record) = serde_json::from_str(&text) {
+                    found.insert(id, record);
+                }
+            }
+        }
+        Ok(found)
     }
 
     pub fn get(&self, id: &str) -> Result<Option<Value>, LoreError> {
@@ -533,9 +583,18 @@ fn drop_file(tx: &Connection, relative: &str) -> Result<(), LoreError> {
         tx.execute("DELETE FROM words WHERE id=?1", params![id]).map_err(index_error)?;
         tx.execute("DELETE FROM terms WHERE id=?1", params![id]).map_err(index_error)?;
     }
+    tx.execute("DELETE FROM phrase WHERE seq IN (SELECT seq FROM facts WHERE id IN (SELECT id FROM records WHERE path=?1))", params![relative]).map_err(index_error)?;
+    tx.execute("DELETE FROM facts WHERE id IN (SELECT id FROM records WHERE path=?1)", params![relative]).map_err(index_error)?;
     tx.execute("DELETE FROM records WHERE path=?1", params![relative]).map_err(index_error)?;
     tx.execute("DELETE FROM files WHERE path=?1", params![relative]).map_err(index_error)?;
     Ok(())
+}
+
+/// The record's signals as a JSON array of its string signals, NULL when it has none
+/// (what the exact-signal check of a find reads).
+fn signals_json(record: &Value) -> Option<String> {
+    let list: Vec<&str> = record.get("signals").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
+    (!list.is_empty()).then(|| serde_json::to_string(&list).unwrap_or_default())
 }
 
 /// One record into the three tables. `line` is the record's canonical line (the
@@ -560,6 +619,18 @@ fn put(tx: &Connection, relative: &str, record: &Value, line: &str) -> Result<bo
                 line
             ])
         })
+        .map_err(index_error)?;
+    // The record's narrow rows, numbered as its wide row is (the order the index holds them in). A
+    // record that replaces another of its id takes the old phrase row away.
+    let seq = tx.last_insert_rowid();
+    tx.prepare_cached("DELETE FROM phrase WHERE seq = (SELECT seq FROM facts WHERE id = ?1)")
+        .and_then(|mut statement| statement.execute(params![id]))
+        .map_err(index_error)?;
+    tx.prepare_cached("INSERT OR REPLACE INTO facts(seq, id, kind, area, status, plan, signals) VALUES(?1,?2,?3,?4,?5,?6,?7)")
+        .and_then(|mut statement| statement.execute(params![seq, id, text("kind"), text("area"), text("status"), text("plan"), signals_json(record)]))
+        .map_err(index_error)?;
+    tx.prepare_cached("INSERT INTO phrase(seq, flat) VALUES(?1,?2)")
+        .and_then(|mut statement| statement.execute(params![seq, crate::finder::flat(&crate::finder::phrase_text(record))]))
         .map_err(index_error)?;
     let (signals, title, main, body, terms) = columns(record);
     tx.prepare_cached("INSERT INTO words(id, signals, title, main, body) VALUES(?1,?2,?3,?4,?5)")

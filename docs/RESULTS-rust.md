@@ -58,6 +58,38 @@ An earlier single run of this table showed the Rust build at 10 s against
 Python's 3.5 s; it did not reproduce (the machine was loaded by other builds at
 the time) and is withdrawn.
 
-What a `find` still spends (about 420 ms) is mostly fixed overhead: reading and
-parsing all records and the freshness check on every call, not the search
-itself (a long query adds ~20 ms). Removing it is the next step.
+What a `find` spent before task 257 (about 420 ms) was mostly fixed overhead:
+reading and parsing all records and the freshness check on every call, not the
+search itself (a long query adds ~20 ms). Task 257 moved that work behind the
+index; the numbers and the remaining tail are above.
+
+## Task 257: the index answers find, show and plans
+
+Method: the same read-only copy of DCB's lore (6773 records), text only, one
+fresh process per command, an empty index cache first. `old` is the Rust 0.4.0
+port before task 257 (`lore-257new`, the measured 421 ms build); `new` is task
+257's index answer. Forty bench queries, 3 alternating rounds for `find`; 20
+`show`/`plans` calls after one `index --text-only --rebuild`. The machine was
+loaded by other builds, so read these as paired relative numbers, not as an
+idle-machine absolute.
+
+| | old | new |
+|---|---|---|
+| `find`, median | 296 ms | **145 ms** |
+| `find`, p90 | 992 ms | **270 ms** |
+| `show`, median | 335 ms | **62 ms** |
+| `plans`, median | 336 ms | **162 ms** |
+
+A quieter run of the same `new` binary measured `find` median 78 ms and p90
+108 ms; the earlier `3e08cbc` measured 99/141. `show` and `plans` now read the
+index's stored JSON and refresh it by file size and mtime; only a miss (a record
+that lives only in git history) reads the store. All 176 bench query outputs are
+byte-identical between old and new (`176` compared, `0` different).
+
+What is left of the p90 tail: the refresh stat of every lore file, the
+per-process SQLite open and page-cache warmup, and queries whose phrase/signal
+postings match many records before the limit is applied. A warm path (not
+built): a single long-lived `hgs lore` server over the existing index, so the
+open and the freshness scan are paid once, with the same Finder answer; it
+would need a bounded cache keyed by root and index generation.
+

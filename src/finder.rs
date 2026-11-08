@@ -164,14 +164,7 @@ fn signal_hits(query: &str, visible: &[(String, Value)]) -> Vec<(String, usize)>
     let q_len = q.chars().count();
     let mut hits: Vec<(String, usize)> = Vec::new();
     for (id, record) in visible {
-        let mut best = 0usize;
-        for signal in record.get("signals").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
-            let lower = signal.to_lowercase();
-            let length = signal.chars().count();
-            if (length >= 6 && ql.contains(&lower)) || (q_len >= 8 && lower.contains(&ql)) {
-                best = best.max(length);
-            }
-        }
+        let best = signal_length(&ql, q_len, record.get("signals").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned));
         if best > 0 {
             hits.push((id.clone(), best));
         }
@@ -197,18 +190,22 @@ fn phrase_hits(query: &str, visible: &[(String, Value)]) -> Vec<String> {
     }
     let mut hits = Vec::new();
     for (id, record) in visible {
-        let Some(map) = record.as_object() else { continue };
-        let joined = map
-            .iter()
-            .filter(|(key, _)| !matches!(key.as_str(), "id" | "kind" | "area" | "status" | "by"))
-            .filter_map(|(_, value)| value.as_str())
-            .collect::<Vec<_>>()
-            .join(" ");
-        if flat(&joined).contains(&q) {
+        if flat(&phrase_text(record)).contains(&q) {
             hits.push(id.clone());
         }
     }
     hits
+}
+
+/// A record's own text for the phrase check: its top-level string fields but the identifying ones,
+/// in key order, one space apart. The index keeps its [`flat`] form per record (task 257).
+pub fn phrase_text(record: &Value) -> String {
+    let Some(map) = record.as_object() else { return String::new() };
+    map.iter()
+        .filter(|(key, _)| !matches!(key.as_str(), "id" | "kind" | "area" | "status" | "by"))
+        .filter_map(|(_, value)| value.as_str())
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 pub(crate) fn dot(a: &[f32], b: &[f32]) -> f64 {
@@ -321,21 +318,7 @@ fn find_ranked(
             Err(error) => notes.push(format!("semantic search unavailable: {error}; text only")),
         }
     }
-    let mut scores = Scores::default();
-    for (name, ids) in &lists {
-        for (rank, id) in ids.iter().enumerate() {
-            scores.add(id, 1.0 / (RRF_K + rank as f64 + 1.0), name, false);
-        }
-    }
-    for id in phrase_hits(query, visible) {
-        scores.add(&id, 0.5, "phrase", true);
-    }
-    for (id, length) in signal_hits(query, visible) {
-        scores.add(&id, 1.0 + length as f64 / 1000.0, "signal", true);
-    }
-    let mut rows = scores.rows;
-    rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)); // stable
-    rows.truncate(limit);
+    let rows = fuse(&lists, phrase_hits(query, visible), signal_hits(query, visible), limit);
     let by_id: HashMap<&str, &Value> = visible.iter().map(|(id, record)| (id.as_str(), record)).collect();
     let hits = rows
         .into_iter()
@@ -346,6 +329,213 @@ fn find_ranked(
         })
         .collect();
     Ok((hits, notes))
+}
+
+/// Reciprocal rank fusion of the lists, then the phrase and signal bonuses; the best `limit`
+/// rows, in score order (ties keep the order the records were first scored in).
+fn fuse(lists: &[(&str, Vec<String>)], phrases: Vec<String>, signals: Vec<(String, usize)>, limit: usize) -> Vec<(String, f64, Vec<String>)> {
+    let mut scores = Scores::default();
+    for (name, ids) in lists {
+        for (rank, id) in ids.iter().enumerate() {
+            scores.add(id, 1.0 / (RRF_K + rank as f64 + 1.0), name, false);
+        }
+    }
+    for id in phrases {
+        scores.add(&id, 0.5, "phrase", true);
+    }
+    for (id, length) in signals {
+        scores.add(&id, 1.0 + length as f64 / 1000.0, "signal", true);
+    }
+    let mut rows = scores.rows;
+    rows.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal)); // stable
+    rows.truncate(limit);
+    rows
+}
+
+/// The signal check over one record's signals: the longest signal the query holds, or that holds
+/// the query (see [`signal_hits`]).
+fn signal_length(ql: &str, q_len: usize, signals: impl Iterator<Item = String>) -> usize {
+    let mut best = 0usize;
+    for signal in signals {
+        let lower = signal.to_lowercase();
+        let length = signal.chars().count();
+        if (length >= 6 && ql.contains(&lower)) || (q_len >= 8 && lower.contains(ql)) {
+            best = best.max(length);
+        }
+    }
+    best
+}
+
+/// The rows of `records` a search may return, as SQL: the rules of [`visible`] over the columns the
+/// index keeps (task 257). `args` are its bound values, numbered from 1.
+struct VisibleSql {
+    condition: String,
+    args: Vec<String>,
+}
+
+fn visible_sql(filters: &Filters) -> VisibleSql {
+    let mut conditions: Vec<String> = Vec::new();
+    let mut args: Vec<String> = Vec::new();
+    let mut bind = |value: &str| -> usize {
+        args.push(value.to_owned());
+        args.len()
+    };
+    if let Some(kind) = &filters.kind {
+        conditions.push(format!("facts.kind = ?{}", bind(kind)));
+    } else if !filters.sources {
+        conditions.push("(facts.kind IS NULL OR facts.kind != 'source')".into());
+    }
+    if let Some(area) = &filters.area {
+        conditions.push(format!("facts.area = ?{}", bind(area)));
+    }
+    if let Some(plan) = &filters.plan {
+        let at = bind(plan);
+        conditions.push(format!("(facts.plan = ?{at} OR facts.id = ?{at})"));
+    }
+    if let Some(status) = &filters.status {
+        conditions.push(format!("facts.status = ?{}", bind(status)));
+    } else if !filters.all {
+        let retired = RETIRED.iter().map(|status| format!("'{status}'")).collect::<Vec<_>>().join(",");
+        conditions.push(format!("(facts.status IS NULL OR facts.status NOT IN ({retired}))"));
+        conditions.push(
+            "(facts.kind IS NOT 'item' OR facts.plan IS NULL OR facts.plan NOT IN (SELECT id FROM facts WHERE kind = 'plan' AND status = 'closed'))".into(),
+        );
+    }
+    VisibleSql { condition: if conditions.is_empty() { "1".into() } else { conditions.join(" AND ") }, args }
+}
+
+fn sql_error(error: rusqlite::Error) -> LoreError {
+    LoreError::new(format!("index: {error}"))
+}
+
+/// The ids among `ids` a search may return.
+fn visible_among(index: &Index, visible: &VisibleSql, ids: &[String]) -> Result<HashSet<String>, LoreError> {
+    if ids.is_empty() {
+        return Ok(HashSet::new());
+    }
+    let first = visible.args.len() + 1;
+    let marks = (first..first + ids.len()).map(|at| format!("?{at}")).collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT facts.id FROM facts WHERE facts.id IN ({marks}) AND {}", visible.condition);
+    let mut statement = index.db().prepare(&sql).map_err(sql_error)?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(visible.args.iter().chain(ids.iter())), |row| row.get::<_, String>(0))
+        .map_err(sql_error)?;
+    Ok(rows.flatten().collect())
+}
+
+/// Every id a search may return, in the order the index holds them.
+fn visible_ids(index: &Index, visible: &VisibleSql) -> Result<Vec<String>, LoreError> {
+    let sql = format!("SELECT facts.id FROM facts WHERE {} ORDER BY facts.seq", visible.condition);
+    let mut statement = index.db().prepare(&sql).map_err(sql_error)?;
+    let rows = statement.query_map(rusqlite::params_from_iter(visible.args.iter()), |row| row.get::<_, String>(0)).map_err(sql_error)?;
+    Ok(rows.flatten().collect())
+}
+
+/// [`phrase_hits`] over the index's flattened texts: one `instr` per row inside SQLite, no record
+/// parsed. The same rows, in the same order.
+fn phrase_ids(index: &Index, visible: &VisibleSql, query: &str) -> Result<Vec<String>, LoreError> {
+    let q = flat(query);
+    if q.chars().count() < PHRASE_MIN {
+        return Ok(Vec::new());
+    }
+    let at = visible.args.len() + 1;
+    let sql = format!("SELECT facts.id FROM phrase JOIN facts ON facts.seq = phrase.seq WHERE instr(phrase.flat, ?{at}) > 0 AND {} ORDER BY phrase.seq", visible.condition);
+    let mut statement = index.db().prepare(&sql).map_err(sql_error)?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(visible.args.iter().map(String::as_str).chain(std::iter::once(q.as_str()))), |row| row.get::<_, String>(0))
+        .map_err(sql_error)?;
+    Ok(rows.flatten().collect())
+}
+
+/// [`signal_hits`] over the index's signal column.
+fn signal_ids(index: &Index, visible: &VisibleSql, query: &str) -> Result<Vec<(String, usize)>, LoreError> {
+    let q = query.trim();
+    let ql = q.to_lowercase();
+    let q_len = q.chars().count();
+    let sql = format!("SELECT facts.id, facts.signals FROM facts WHERE facts.signals IS NOT NULL AND {} ORDER BY facts.seq", visible.condition);
+    let mut statement = index.db().prepare(&sql).map_err(sql_error)?;
+    let rows = statement
+        .query_map(rusqlite::params_from_iter(visible.args.iter()), |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+        .map_err(sql_error)?;
+    let mut hits: Vec<(String, usize)> = Vec::new();
+    for (id, json) in rows.flatten() {
+        let signals: Vec<String> = serde_json::from_str(&json).unwrap_or_default();
+        let best = signal_length(&ql, q_len, signals.into_iter());
+        if best > 0 {
+            hits.push((id, best));
+        }
+    }
+    hits.sort_by_key(|hit| std::cmp::Reverse(hit.1)); // stable: ties keep the index's order
+    Ok(hits)
+}
+
+/// [`find`] without reading the store: the visible rows, the lists, the phrase and signal checks and
+/// the titles all come from the index's own columns, and only the records of the best `limit` hits are
+/// read (and parsed). The same hits, scores and order as `find` over the same index (task 257).
+pub fn find_records(
+    index: &Index,
+    query: &str,
+    filters: &Filters,
+    limit: usize,
+    semantic: Option<&Semantic<'_>>,
+) -> Result<(Vec<(Hit, Value)>, Vec<String>), LoreError> {
+    let mut notes: Vec<String> = Vec::new();
+    let visible = visible_sql(filters);
+    let loaded = match semantic {
+        Some(semantic) => match index.ensure_vectors(semantic.embedder, semantic.model, semantic.doc_prefix) {
+            Ok(()) => match index.vectors(semantic.model) {
+                Ok(vectors) => Some(vectors.into_iter().collect::<HashMap<String, Vec<f32>>>()),
+                Err(error) => {
+                    notes.push(format!("semantic search unavailable: {error}; text only"));
+                    None
+                }
+            },
+            Err(error) => {
+                notes.push(format!("semantic search unavailable: {error}; text only"));
+                None
+            }
+        },
+        None => None,
+    };
+    let word_ids = fts(index, "words", &word_query(query), true);
+    let term_ids = fts(index, "terms", &term_query(query), false);
+    let candidates: Vec<String> = word_ids.iter().chain(term_ids.iter()).cloned().collect();
+    let allowed = visible_among(index, &visible, &candidates)?;
+    let take = |ids: Vec<String>| -> Vec<String> { ids.into_iter().filter(|id| allowed.contains(id)).take(DEPTH).collect() };
+    let mut lists: Vec<(&str, Vec<String>)> = vec![("words", take(word_ids)), ("terms", take(term_ids))];
+    let mut cosines: HashMap<String, f64> = HashMap::new();
+    if let (Some(semantic), Some(vectors)) = (semantic, loaded.as_ref()) {
+        let visible_set: HashSet<String> = visible_ids(index, &visible)?.into_iter().collect();
+        let truncated: String = query.chars().take(4000).collect();
+        match semantic.embedder.embed(&[format!("{}{truncated}", semantic.query_prefix)]) {
+            Ok(mut wanted) if !wanted.is_empty() => {
+                let wanted = wanted.remove(0);
+                let mut scored: Vec<(f64, String)> = vectors
+                    .iter()
+                    .filter(|(id, _)| visible_set.contains(id.as_str()))
+                    .map(|(id, vector)| (dot(&wanted, vector), id.clone()))
+                    .collect();
+                // Python sorts (score, id) pairs in reverse.
+                scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(std::cmp::Ordering::Equal).then_with(|| b.1.cmp(&a.1)));
+                let kept: Vec<(f64, String)> = scored.into_iter().take(DEPTH).collect();
+                cosines.extend(kept.iter().map(|(cosine, id)| (id.clone(), *cosine)));
+                lists.push(("meaning", kept.into_iter().map(|(_, id)| id).collect()));
+            }
+            Ok(_) => notes.push("semantic search unavailable: the provider returned no vector; text only".into()),
+            Err(error) => notes.push(format!("semantic search unavailable: {error}; text only")),
+        }
+    }
+    let rows = fuse(&lists, phrase_ids(index, &visible, query)?, signal_ids(index, &visible, query)?, limit);
+    let ids: Vec<String> = rows.iter().map(|(id, _, _)| id.clone()).collect();
+    let mut records = index.get_many(&ids)?;
+    let mut out = Vec::new();
+    for (id, score, via) in rows {
+        let Some(record) = records.remove(&id) else { continue };
+        let title = text(&record, "title").unwrap_or_default().to_owned();
+        let meaning = cosines.get(&id).map(|cosine| (cosine * 1e4).round() / 1e4);
+        out.push((Hit { id, title, score: (score * 1e5).round() / 1e5, via, meaning }, record));
+    }
+    Ok((out, notes))
 }
 
 fn error_re() -> &'static Regex {

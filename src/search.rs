@@ -91,6 +91,19 @@ pub struct IndexInfo {
 pub trait Finder {
     /// The best records for the query, and notes about how they were found.
     fn find(&self, config: &Config, records: &[Value], query: &str, filters: &Filters, limit: usize, text_only: bool) -> Result<(Vec<Found>, Vec<String>), LoreError>;
+    /// [`find`](Self::find) without the store's records (task 257): a finder that keeps its own copy of
+    /// what a search reads, kept fresh by file size and modification time, answers here and the command
+    /// never reads the lore files. `None` (the default): the finder needs the records; use `find`.
+    fn find_indexed(
+        &self,
+        _config: &Config,
+        _query: &str,
+        _filters: &Filters,
+        _limit: usize,
+        _text_only: bool,
+    ) -> Option<Result<(Vec<Found>, Vec<String>), LoreError>> {
+        None
+    }
     /// `lore index [--rebuild]`.
     fn index(&self, config: &Config, records: &[Value], rebuild: bool, text_only: bool) -> Result<IndexInfo, LoreError>;
     /// A note to print once, such as where the index had to go.
