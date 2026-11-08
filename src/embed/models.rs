@@ -106,12 +106,35 @@ impl EmbeddingModel {
         }
     }
 
+    /// Every file this build needs for the model: the candle weights, and with
+    /// the `directml` feature the ONNX export too.
     pub fn files(self) -> &'static [PinnedFile] {
+        #[cfg(feature = "directml")]
+        {
+            match self {
+                Self::BgeM3 => &BGE_M3_ALL,
+                Self::E5Base => &E5_BASE_ALL,
+                Self::Nomic => &NOMIC_ALL,
+            }
+        }
+        #[cfg(not(feature = "directml"))]
+        {
+            self.candle_files()
+        }
+    }
+
+    /// The candle side's files: weights, tokenizer, configuration.
+    pub fn candle_files(self) -> &'static [PinnedFile] {
         match self {
             Self::BgeM3 => &BGE_M3,
             Self::E5Base => &E5_BASE,
             Self::Nomic => &NOMIC,
         }
+    }
+
+    /// The ONNX export's graph file, relative to the model folder.
+    pub fn onnx_file(self) -> Option<&'static str> {
+        Some("onnx/model.onnx")
     }
 
     /// Which model a machine gets when `embed.model` is "auto": bge-m3 when a
@@ -144,21 +167,43 @@ pub const NOMIC: [PinnedFile; 3] = [
     PinnedFile { name: "config.json", bytes: 2_538, sha256: "9ab00bd92cee80a569f708140b7b6c1661a65891ff3765b1519e181ba2f2c92b" },
 ];
 
+/// The ONNX exports at the same revisions (`directml` builds): one graph file,
+/// and bge-m3's weights beside it as external data.
+pub const BGE_M3_ONNX: [PinnedFile; 3] = [
+    PinnedFile { name: "onnx/model.onnx", bytes: 724_923, sha256: "f84251230831afb359ab26d9fd37d5936d4d9bb5d1d5410e66442f630f24435b" },
+    PinnedFile { name: "onnx/model.onnx_data", bytes: 2_266_820_608, sha256: "1eebfb28493f67bba03ce0ef64bfdc7fc5a3bd9d7493f818bb1d78cd798416b4" },
+    PinnedFile { name: "onnx/Constant_7_attr__value", bytes: 65_552, sha256: "cdf16f72c5d07b36484056e601ed9687f78477e5d85cee85a34f2406b7fb5906" },
+];
+pub const E5_BASE_ONNX: [PinnedFile; 1] =
+    [PinnedFile { name: "onnx/model.onnx", bytes: 1_110_059_084, sha256: "84a4d426f7e87a6bf5bf195f0bae2c4a7d15f675b23ca96f42fab8326d7a77aa" }];
+pub const NOMIC_ONNX: [PinnedFile; 1] =
+    [PinnedFile { name: "onnx/model.onnx", bytes: 547_310_275, sha256: "147d5aa88c2101237358e17796cf3a227cead1ec304ec34b465bb08e9d952965" }];
+
+#[cfg(feature = "directml")]
+const BGE_M3_ALL: [PinnedFile; 6] = [BGE_M3[0], BGE_M3[1], BGE_M3[2], BGE_M3_ONNX[0], BGE_M3_ONNX[1], BGE_M3_ONNX[2]];
+#[cfg(feature = "directml")]
+const E5_BASE_ALL: [PinnedFile; 4] = [E5_BASE[0], E5_BASE[1], E5_BASE[2], E5_BASE_ONNX[0]];
+#[cfg(feature = "directml")]
+const NOMIC_ALL: [PinnedFile; 4] = [NOMIC[0], NOMIC[1], NOMIC[2], NOMIC_ONNX[0]];
+
 /// The device the embedder runs on, and what to say about it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DeviceKind {
     Cuda(String),
+    /// ONNX Runtime on DirectML: any DirectX 12 GPU on Windows.
+    DirectMl(String),
     Cpu(String),
 }
 
 impl DeviceKind {
     pub fn is_gpu(&self) -> bool {
-        matches!(self, Self::Cuda(_))
+        matches!(self, Self::Cuda(_) | Self::DirectMl(_))
     }
 
     pub fn label(&self) -> String {
         match self {
             Self::Cuda(name) => format!("GPU ({name})"),
+            Self::DirectMl(name) => format!("GPU via DirectML ({name})"),
             Self::Cpu(name) => format!("CPU ({name})"),
         }
     }
@@ -181,6 +226,11 @@ pub fn device() -> (Device, DeviceKind) {
     (Device::Cpu, DeviceKind::Cpu(name))
 }
 
+/// `LORE_DEVICE=cpu` keeps a GPU build on the CPU (a busy card, a test).
+pub fn gpu_wanted() -> bool {
+    !std::env::var("LORE_DEVICE").is_ok_and(|value| value.trim().eq_ignore_ascii_case("cpu"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -196,7 +246,7 @@ mod tests {
         assert_eq!(EmbeddingModel::E5Base.query_prefix(), "query: ");
         assert_eq!(EmbeddingModel::Nomic.document_prefix(), "search_document: ");
         for model in EmbeddingModel::ALL {
-            assert_eq!(model.files().len(), 3, "{model:?}");
+            assert_eq!(model.candle_files().len(), 3, "{model:?}");
             for file in model.files() {
                 assert_eq!(file.sha256.len(), 64);
                 assert!(file.bytes > 0);

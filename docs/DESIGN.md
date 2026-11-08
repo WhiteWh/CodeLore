@@ -39,7 +39,8 @@ part comes behind a feature that is off by default.
 | configuration | `<repo>/lore.toml` | yes |
 | index | `$LORE_CACHE/<repo-key>/`, else the user cache: `%LOCALAPPDATA%\codelore\<repo-key>\index.sqlite`, `~/.cache/codelore/<repo-key>/`; where that cannot be written, `.git/codelore/` | no |
 | embedding cache | beside the index, keyed by model and content hash | no |
-| embedding model | `<cache>/models/<model>/`, pinned files, fetched on first use | no |
+| embedding model | `$LORE_MODELS/<model>/`, else `<platform cache>/models/<model>/` - one folder for every `lore` on the account, whatever `LORE_CACHE` says; pinned files, fetched on first use | no |
+| DirectML runtime (`directml` builds) | `<models>/runtimes/directml-ort-1.31.0/DirectML.dll`, pinned | no |
 
 `<repo-key>` is a hash of the repository's absolute path. Deleting the cache
 costs one rebuild and nothing else. A sandboxed agent may be unable to create a

@@ -92,7 +92,11 @@ fn ensure(model: EmbeddingModel, dir: &Path, file: &PinnedFile, progress: &mut d
         progress(file.name, file.bytes, file.bytes);
         return Ok(());
     }
-    download(model, file, &dir.join(file.name), progress)
+    let path = dir.join(file.name);
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|error| Error::Fetch(format!("cannot create {}: {error}", parent.display())))?;
+    }
+    download(model, file, &path, progress)
 }
 
 /// Streams `file` from Hugging Face at the model's revision and renames it into
@@ -111,7 +115,8 @@ fn download(model: EmbeddingModel, file: &PinnedFile, path: &Path, progress: &mu
         return Err(Error::Fetch(format!("{url}: HTTP {}", response.status())));
     }
     let mut temporary = path.to_path_buf();
-    temporary.set_file_name(format!(".{}.{}.part", file.name, std::process::id()));
+    let base = path.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_else(|| file.name.to_owned());
+    temporary.set_file_name(format!(".{base}.{}.part", std::process::id()));
     let mut output = std::fs::File::create(&temporary)
         .map_err(|error| Error::Fetch(format!("cannot write {}: {error}", temporary.display())))?;
     let mut hasher = Sha256::new();

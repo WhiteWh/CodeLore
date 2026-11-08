@@ -16,6 +16,10 @@ path = "src/main.rs"
 # Build with candle's CUDA backend; the device is picked at runtime (see
 # embed::models::device) and reported by `lore model status`.
 cuda = ["candle-core/cuda"]
+# Embeddings on any DirectX 12 GPU on Windows - AMD, Intel, NVIDIA - through ONNX
+# Runtime's DirectML provider (linked in statically; DirectML.dll is fetched once
+# into the shared models folder). Without a usable GPU the build runs on the CPU.
+directml = ["dep:ort", "dep:lzma-rust2"]
 
 [dependencies]
 anyhow = "1"
@@ -36,6 +40,9 @@ tokenizers = { version = "0.23", default-features = false, features = ["fancy-re
 sha2 = "0.10"
 thiserror = "2"
 ureq = { version = "3.4", default-features = false, features = ["rustls", "platform-verifier"] }
+
+ort = { version = "=2.0.0-rc.15", default-features = false, features = ["std", "directml", "download-binaries", "tls-rustls", "api-31"], optional = true }
+lzma-rust2 = { version = "0.15", default-features = false, features = ["std"], optional = true }
 
 [dev-dependencies]
 tempfile = "3"

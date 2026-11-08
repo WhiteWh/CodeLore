@@ -159,8 +159,18 @@ was *learned*, not the source.
 
 Rust 1.99+ to build, git at run time. SQLite (with FTS5) is bundled. The
 built-in embedding model (about 0.5-2 GB in the user cache) is fetched on first
-use, or ahead of time with `lore model fetch [--model bge-m3|e5-base|nomic]`;
-`--features cuda` builds the GPU backend.
+use, or ahead of time with `lore model fetch [--model bge-m3|e5-base|nomic]`,
+into one folder every `lore` on the account shares (`%LOCALAPPDATA%\codelore\models`,
+`~/.cache/codelore/models`; `LORE_MODELS` names another, a machine-wide one say) -
+not per `LORE_CACHE`, so several installs fetch a model once.
+
+**GPU.** `cargo install --path CodeLore --locked --features directml` runs the
+embeddings on any DirectX 12 GPU on Windows - AMD, Intel or NVIDIA - through
+ONNX Runtime's DirectML provider; the model's ONNX export and a pinned
+DirectML.dll are fetched beside the weights. Where no GPU answers, the same
+binary runs on the CPU (`LORE_DEVICE=cpu` forces that); `lore model status`
+says which. It needs the Visual C++ runtime (MSVCP140.dll), which most Windows
+machines have.
 
 ## Development
 

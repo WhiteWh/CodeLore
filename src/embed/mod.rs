@@ -14,6 +14,11 @@
 //! [`ModelSource::Local`] verifies an offline install. Without the model the
 //! API answers [`Error::NoEmbeddings`] and search falls back to FTS5.
 pub mod models;
+#[cfg(feature = "directml")]
+mod onnx;
+#[cfg(feature = "directml")]
+pub mod runtime;
+pub mod system;
 
 mod fetch;
 mod model;
@@ -88,7 +93,7 @@ pub enum Error {
 /// Where the model's files come from.
 #[derive(Clone, Copy, Debug)]
 pub enum ModelSource<'a> {
-    /// The user cache: `<cache>/models/<model>/` (or `LORE_MODEL_DIR`).
+    /// The shared models folder ([`model_dir`]; or `LORE_MODEL_DIR`).
     Cache,
     /// A directory that already holds the pinned files (an offline install).
     Local(&'a Path),
@@ -100,6 +105,12 @@ pub fn cache_root() -> PathBuf {
     if let Some(configured) = std::env::var_os("LORE_CACHE").filter(|value| !value.is_empty()) {
         return PathBuf::from(configured);
     }
+    platform_cache()
+}
+
+/// The platform's per-user cache folder under `codelore`, whatever
+/// `LORE_CACHE` says.
+pub fn platform_cache() -> PathBuf {
     #[cfg(windows)]
     {
         if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
@@ -118,13 +129,40 @@ pub fn cache_root() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".cache/codelore")
 }
 
+/// The one folder every `lore` on this account keeps its models in:
+/// `LORE_MODELS` when set (a folder shared by several accounts, say), else
+/// `models` under the platform cache - not under `LORE_CACHE`, which a harness
+/// sets per store or per install: a model is 0.5-2 GB and is fetched once for
+/// all of them.
+pub fn models_root() -> PathBuf {
+    if let Some(configured) = std::env::var_os("LORE_MODELS").filter(|value| !value.is_empty()) {
+        return PathBuf::from(configured);
+    }
+    platform_cache().join("models")
+}
+
 /// Where `model` lives: `LORE_MODEL_DIR` when set (an offline install or a
-/// test fixture), else the user cache's folder for that model.
+/// test fixture); else the shared models folder, unless a complete copy is
+/// already in an older place (`<LORE_CACHE>/models/`, where builds before
+/// 0.4.1 fetched it), which is then used rather than fetched again.
 pub fn model_dir(model: EmbeddingModel) -> PathBuf {
     if let Some(configured) = std::env::var_os("LORE_MODEL_DIR").filter(|value| !value.is_empty()) {
         return PathBuf::from(configured);
     }
-    cache_root().join("models").join(model.directory())
+    let shared = models_root().join(model.directory());
+    if complete(model, &shared) {
+        return shared;
+    }
+    let older = cache_root().join("models").join(model.directory());
+    if older != shared && complete(model, &older) {
+        return older;
+    }
+    shared
+}
+
+/// Every pinned file of `model` is in `dir` at its pinned size.
+fn complete(model: EmbeddingModel, dir: &Path) -> bool {
+    model.files().iter().all(|file| std::fs::metadata(dir.join(file.name)).is_ok_and(|meta| meta.len() == file.bytes))
 }
 
 /// The default (device-following) model's folder.
@@ -184,8 +222,36 @@ pub fn status_at(dir: &Path) -> Status {
 }
 
 /// The embedder: one loaded model and tokenizer, ready to embed.
+/// The engine an embedder runs on: candle (CPU or CUDA), or ONNX Runtime on
+/// DirectML.
+enum Engine {
+    Candle(model::Model),
+    #[cfg(feature = "directml")]
+    Onnx(onnx::OnnxModel),
+}
+
+impl Engine {
+    fn kind(&self) -> EmbeddingModel {
+        match self {
+            Self::Candle(model) => model.kind(),
+            #[cfg(feature = "directml")]
+            Self::Onnx(model) => model.kind(),
+        }
+    }
+
+    fn embed(&self, texts: &[&str], batch_size: usize, threads: usize) -> Result<Vec<Vec<f32>>, Error> {
+        match self {
+            Self::Candle(model) => model.embed(texts, batch_size, threads),
+            #[cfg(feature = "directml")]
+            Self::Onnx(model) => model.embed(texts, batch_size),
+        }
+    }
+}
+
 pub struct Embedder {
-    inner: model::Model,
+    inner: Engine,
+    /// What it runs on: `lore model status` says so.
+    device: DeviceKind,
     batch_size: usize,
     threads: usize,
 }
@@ -218,9 +284,23 @@ impl Embedder {
         if matches!(source, ModelSource::Local(_)) {
             verify(model, &dir)?;
         }
-        let (device, _) = models::device();
-        let inner = model::Model::load(&dir, model, device)?;
-        Ok(Self { inner, batch_size: 32, threads: default_threads() })
+        let (device, kind) = models::device();
+        // No CUDA here: an AMD, Intel or NVIDIA card through DirectML, when this
+        // build has it and the card answers; otherwise candle on the CPU.
+        #[cfg(feature = "directml")]
+        if !kind.is_gpu() && models::gpu_wanted() {
+            match onnx::OnnxModel::load(&dir, model) {
+                Ok(onnx) => return Ok(Self { inner: Engine::Onnx(onnx), device: DeviceKind::DirectMl("DirectX 12 adapter".into()), batch_size: 32, threads: 1 }),
+                Err(error) => directml_note(error.to_string()),
+            }
+        }
+        let inner = Engine::Candle(model::Model::load(&dir, model, device)?);
+        Ok(Self { inner, device: kind, batch_size: 32, threads: default_threads() })
+    }
+
+    /// What this embedder runs on.
+    pub fn device(&self) -> &DeviceKind {
+        &self.device
     }
 
     pub fn model(&self) -> EmbeddingModel {
@@ -338,5 +418,28 @@ mod tests {
         let status = status_at(&dir);
         assert_eq!(status.model, EmbeddingModel::Nomic);
         assert!(!status.device.is_gpu());
+    }
+}
+
+/// Why DirectML was not used, the last time it was tried (`lore model status`).
+#[cfg(feature = "directml")]
+static DIRECTML_NOTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+#[cfg(feature = "directml")]
+fn directml_note(note: String) {
+    if let Ok(mut slot) = DIRECTML_NOTE.lock() {
+        *slot = Some(note);
+    }
+}
+
+/// The reason the last DirectML attempt fell back to the CPU, if any.
+pub fn directml_fallback() -> Option<String> {
+    #[cfg(feature = "directml")]
+    {
+        DIRECTML_NOTE.lock().ok().and_then(|slot| slot.clone())
+    }
+    #[cfg(not(feature = "directml"))]
+    {
+        None
     }
 }

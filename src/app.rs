@@ -125,6 +125,20 @@ fn model(args: &[String]) -> i32 {
     }
     if command == Some("status") {
         let status = embed::status_for(model, &embed::model_dir(model));
+        // What it really runs on: the model is opened, so a GPU path that falls
+        // back (no CUDA libraries, no DirectX 12 card) says so.
+        let mut kind = kind;
+        let mut fallback = None;
+        if status.available {
+            match embed::Embedder::open_model(model, ModelSource::Cache) {
+                Ok(embedder) => kind = embedder.device().clone(),
+                Err(error) => fallback = Some(error.to_string()),
+            }
+            fallback = fallback.or_else(embed::directml_fallback);
+        }
+        if let Some(note) = &fallback {
+            eprintln!("lore: note: {note}");
+        }
         if json {
             println!(
                 "{}",

@@ -50,4 +50,19 @@ fn main() {
         }
     }
     println!("cargo:rustc-env=LORE_BUILD_COMMIT={build}");
+    gpu_libraries();
+}
+
+/// The DirectML build must still start where DirectML.dll is missing: the DLL
+/// is delay-loaded (`/DELAYLOAD`) and the binary loads its own pinned copy by
+/// path before the first GPU session (embed::runtime); without it the build
+/// stays on the CPU.
+fn gpu_libraries() {
+    let windows_msvc = std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc");
+    if std::env::var_os("CARGO_FEATURE_DIRECTML").is_some() && windows_msvc {
+        for kind in ["bins", "tests", "examples"] {
+            println!("cargo:rustc-link-arg-{kind}=/DELAYLOAD:DirectML.dll");
+            println!("cargo:rustc-link-arg-{kind}=delayimp.lib");
+        }
+    }
 }

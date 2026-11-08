@@ -105,6 +105,14 @@ project store with a sub-store per team. What it met, and what changed:
   busy Windows tree, a minute for 105 files. One `git cat-file --batch` reads
   them all (`lore cover` on that lore: 13.1 s to 1.8 s, the output byte for
   byte the same), and a path the commit lacks is an error, not an empty file.
+- models were fetched per `LORE_CACHE`, so each install or harness store
+  fetched its own 0.5-2 GB. They live in one shared folder now (`LORE_MODELS`,
+  else the platform cache's `models`), and a copy an older build fetched is used.
+- the `directml` feature: the same models' ONNX exports on ONNX Runtime's
+  DirectML provider, any DirectX 12 GPU (AMD, Intel, NVIDIA) on Windows; the
+  same vectors as the CPU (256 pieces: cosine 0.999999 at worst). DirectML.dll is
+  fetched pinned and delay-loaded, so the binary starts without it and stays on
+  the CPU where no GPU answers.
 - two `lore 0.4.0` builds on one PATH could not be told apart. `lore --version`
   names the commit a build came from, `+` for uncommitted changes; a build made
   as another package's git dependency keeps the bare version its packaging
