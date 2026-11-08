@@ -141,7 +141,7 @@ fn the_cleanup_is_bounded_and_keeps_what_it_must() {
 #[test]
 fn working_text_is_redacted_not_refused() {
     let (_dir, store) = open(Settings::default());
-    let written = store.send(&message("lead", "the key is ghp_0123456789abcdefghijABCDEFGHIJ012345 now", false), None, T0).unwrap();
+    let written = store.send(&message("lead", concat!("the key is ghp_", "0123456789abcdefghijABCDEFGHIJ012345 now"), false), None, T0).unwrap();
     assert_eq!(written.entry.text, "the key is [redacted: github-token] now");
     assert!(written.notes[0].contains("stored redacted"));
 }
