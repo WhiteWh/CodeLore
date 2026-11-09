@@ -196,7 +196,12 @@ impl Builtin {
             return (None, notes);
         }
         let selected = config.embedding_model();
-        let open = || embed::Embedder::open_model(selected, embed::ModelSource::Cache).map(|embedder| std::sync::Arc::new(embedder) as embed::Shared);
+        // `wait` is an index being built: the GPU for its thousands of texts; a
+        // search embeds one query and a few new records, faster on the CPU.
+        let open = || {
+            let opened = if wait { embed::Embedder::open_model(selected, embed::ModelSource::Cache) } else { embed::Embedder::open_model_for_queries(selected, embed::ModelSource::Cache) };
+            opened.map(|embedder| std::sync::Arc::new(embedder) as embed::Shared)
+        };
         let mut opened = open();
         if opened.is_err() && auto_fetch() && !embed::status_for(selected, &embed::model_dir(selected)).available {
             if wait && !fetching(selected) {

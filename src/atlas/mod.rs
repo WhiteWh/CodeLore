@@ -59,7 +59,9 @@ pub fn embedder(config: &Config, text_only: bool, wait: bool) -> (Option<embed::
         return (None, notes);
     }
     let model = config.embedding_model();
-    let open = || embed::Embedder::open_model(model, embed::ModelSource::Cache);
+    // an index (`wait`) on the GPU; a search's one query on the CPU, which has
+    // it embedded before a DirectML session has built its graph
+    let open = || if wait { embed::Embedder::open_model(model, embed::ModelSource::Cache) } else { embed::Embedder::open_model_for_queries(model, embed::ModelSource::Cache) };
     if let Ok(embedder) = open() {
         return (Some(embedder), notes);
     }

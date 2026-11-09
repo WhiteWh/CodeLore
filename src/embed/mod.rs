@@ -278,6 +278,18 @@ impl Embedder {
     /// Loads `model` from `source`. A local directory is verified (size and
     /// SHA-256) before it is trusted.
     pub fn open_model(model: EmbeddingModel, source: ModelSource<'_>) -> Result<Self, Error> {
+        Self::open_model_on(model, source, true)
+    }
+
+    /// [`open_model`](Self::open_model) on the CPU: what a search wants. A
+    /// DirectML session builds its graph on the card in every new process
+    /// (~1-2 s), so one query is embedded faster by candle on the CPU (~0.5 s
+    /// with the load); the GPU pays off for an index's thousands of texts.
+    pub fn open_model_for_queries(model: EmbeddingModel, source: ModelSource<'_>) -> Result<Self, Error> {
+        Self::open_model_on(model, source, false)
+    }
+
+    fn open_model_on(model: EmbeddingModel, source: ModelSource<'_>, gpu: bool) -> Result<Self, Error> {
         let dir = match source {
             ModelSource::Cache => model_dir(model),
             ModelSource::Local(path) => path.to_path_buf(),
@@ -290,10 +302,12 @@ impl Embedder {
             verify(model, &dir)?;
         }
         let (device, kind) = models::device();
+        #[cfg(not(feature = "directml"))]
+        let _ = gpu;
         // No CUDA here: an AMD, Intel or NVIDIA card through DirectML, when this
         // build has it and the card answers; otherwise candle on the CPU.
         #[cfg(feature = "directml")]
-        if !kind.is_gpu() && models::gpu_wanted() {
+        if gpu && !kind.is_gpu() && models::gpu_wanted() {
             match onnx::OnnxModel::load(&dir, model) {
                 Ok(onnx) => {
                     return Ok(Self { inner: Engine::Onnx(onnx), device: DeviceKind::DirectMl("DirectX 12 adapter".into()), batch_size: 32, threads: 1, dir, fallback: std::sync::OnceLock::new() })
