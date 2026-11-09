@@ -43,6 +43,8 @@ pub struct Env<'a> {
     pub stdin: Vec<u8>,
     /// `LORE_BY`.
     pub lore_by: Option<String>,
+    /// `LORE_MACHINE`: the machine the ledger's journals are named for.
+    pub machine: Option<String>,
     /// The ranked search; without it `find` and `index` are refused.
     pub finder: Option<&'a dyn Finder>,
     /// A Zerus project store's reference roots (docs/lore.md 2.4).
@@ -776,6 +778,9 @@ pub fn run(argv: &[&str], env: &Env) -> Output {
     if let Some(output) = atlas_call(&argv, env) {
         return output;
     }
+    if let Some(output) = ledger_call(&argv, env) {
+        return output;
+    }
     let mut io = Io { out: String::new(), err: String::new() };
     let args = match parse_args(&argv).and_then(|args| check_shape(&args).map(|_| args)) {
         Ok(args) => args,
@@ -852,11 +857,63 @@ fn atlas_call(argv: &[String], env: &Env) -> Option<Output> {
     }
 }
 
+/// `lore [-C dir] [--json] [--by name] ledger ...`: the ledger's commands have
+/// their own parser (docs/FORMAT.md, "ledger, version 4"); None for every other command.
+fn ledger_call(argv: &[String], env: &Env) -> Option<Output> {
+    let mut at = 0;
+    let (mut dir, mut json, mut by) = (None, false, None);
+    while at < argv.len() {
+        match argv[at].as_str() {
+            "-C" => {
+                dir = argv.get(at + 1).cloned();
+                at += 2;
+            }
+            "--json" => {
+                json = true;
+                at += 1;
+            }
+            "--by" => {
+                by = argv.get(at + 1).cloned();
+                at += 2;
+            }
+            "--text-only" => at += 1,
+            "--trailer" | "--mode" => at += 2,
+            "ledger" => break,
+            _ => return None,
+        }
+    }
+    if at >= argv.len() {
+        return None;
+    }
+    let start = match &dir {
+        Some(dir) => env.cwd.join(dir),
+        None => env.cwd.clone(),
+    };
+    let call = crate::ledger::cli::Call {
+        argv: &argv[at + 1..],
+        start,
+        stdin: &env.stdin,
+        json,
+        by: by.or_else(|| env.lore_by.clone()),
+        machine: env.machine.clone(),
+        now: env.now,
+    };
+    let out = crate::ledger::cli::run(&call);
+    Some(Output { code: out.code, stdout: out.stdout, stderr: out.stderr })
+}
+
 fn dispatch(args: Args, env: &Env, io: &mut Io) -> Result<i32> {
     match args.cmd().as_str() {
         "init" => return cmd_init(&args, env, io),
         "guide" => {
             io.say(GUIDE.trim_end());
+            // A project with a ledger: its part of the guide too.
+            if let Ok(config) = config::load(&start(&args, env)) {
+                if config.ledger.is_some() {
+                    io.say("");
+                    io.say(crate::ledger::cli::GUIDE.trim_end());
+                }
+            }
             // A project with the code map on: its part of the guide too.
             #[cfg(feature = "atlas")]
             if let Ok(config) = config::load(&start(&args, env)) {
@@ -1400,6 +1457,9 @@ fn cmd_check(args: &Args, env: &Env, io: &mut Io) -> Result<i32> {
     errs.extend(ops::check_all(&config, &snapshot));
     let head = gitio::head(&config.root);
     let records: Vec<Value> = snapshot.all();
+    let (ledger_errs, ledger_warns) = crate::ledger::ref_findings(&config, &crate::ledger::refs_of(&records), true);
+    errs.extend(ledger_errs);
+    warns.extend(ledger_warns);
     let commits: Vec<String> = records.iter().flat_map(ops::commits_of).collect::<std::collections::BTreeSet<_>>().into_iter().collect();
     let live: Vec<&Value> = records.iter().filter(|record| !["obsolete", "superseded", "reversed"].contains(&field(record, "status"))).collect();
     let live_files: Vec<String> = live
@@ -1430,8 +1490,8 @@ fn cmd_check(args: &Args, env: &Env, io: &mut Io) -> Result<i32> {
         if field(record, "kind") == "source" && field(record, "status") == "covered" {
             let Some(path) = record.get("path").and_then(Value::as_str) else { continue };
             if let Some(data) = cover::read_doc(&config, path, None) {
-                let ledger: Vec<Value> = record.get("parts").and_then(Value::as_array).cloned().unwrap_or_default();
-                let found = cover::coverage(&cover::parts_of(&cover::doc_text(&data)), &ledger);
+                let listed: Vec<Value> = record.get("parts").and_then(Value::as_array).cloned().unwrap_or_default();
+                let found = cover::coverage(&cover::parts_of(&cover::doc_text(&data)), &listed);
                 if !found.uncovered.is_empty() || !found.unknown.is_empty() {
                     warns.push(format!(
                         "{}: {path} changed since it was covered - {} part(s) unaccounted for, {} entry(ies) naming no part; `lore cover {path}`",
@@ -1483,7 +1543,7 @@ fn walk(folder: &Path) -> Vec<PathBuf> {
 }
 
 /// A cited commit is evidence when it touches a file the record cites, or when
-/// its hash is written in a source document whose ledger names the record.
+/// its hash is written in a source document whose parts list names the record.
 fn evidence(config: &Config, records: &[Value], have: &BTreeMap<String, bool>, roots: Option<&Roots>) -> Vec<String> {
     let mut sources: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for record in records {
@@ -1583,8 +1643,8 @@ fn cmd_cover(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
         }
         Some(data) => {
             let parts = cover::parts_of(&cover::doc_text(data));
-            let ledger: Vec<Value> = source.as_ref().and_then(|source| source.get("parts")).and_then(Value::as_array).cloned().unwrap_or_default();
-            let found = cover::coverage(&parts, &ledger);
+            let listed: Vec<Value> = source.as_ref().and_then(|source| source.get("parts")).and_then(Value::as_array).cloned().unwrap_or_default();
+            let found = cover::coverage(&parts, &listed);
             (parts, Some(found))
         }
     };
@@ -1636,13 +1696,13 @@ fn cmd_cover(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
             io.say(&format!("  {:>5} {:7} {}{what}", part.line, part.kind, part.name));
         }
     } else if !uncovered.is_empty() {
-        io.say("unaccounted for (name each in the ledger: `lore cover <doc> --add`):");
+        io.say("unaccounted for (name each in the parts list: `lore cover <doc> --add`):");
         for part in &uncovered {
             io.say(&format!("  {:>5} {:7} {}", part.line, part.kind, part.name));
         }
     }
     for name in &unknown {
-        io.say(&format!("  ledger entry {} names no part of the document now", repr_str(name)));
+        io.say(&format!("  parts list entry {} names no part of the document now", repr_str(name)));
     }
     Ok(if complete { 0 } else { 1 })
 }
@@ -1651,7 +1711,7 @@ fn cover_write(ctx: &mut Ctx, io: &mut Io, path: String) -> Result<i32> {
     let entries = if ctx.args.flag("add") { read_stdin_jsonl(ctx.env)? } else { Vec::new() };
     for (index, entry) in entries.iter().enumerate() {
         if !entry.get("part").is_some_and(Value::is_string) {
-            return Err(LoreError::new(format!("stdin line {}: a ledger entry is {{\"part\": ..., \"records\": [...], \"skip\": ...}}", index + 1)));
+            return Err(LoreError::new(format!("stdin line {}: a parts list entry is {{\"part\": ..., \"records\": [...], \"skip\": ...}}", index + 1)));
         }
     }
     let history = ctx.args.flag("history");
@@ -1669,14 +1729,14 @@ fn cover_write(ctx: &mut Ctx, io: &mut Io, path: String) -> Result<i32> {
             let title: String = title.clone().unwrap_or_else(|| format!("source: {path}")).chars().take(120).collect();
             json!({"kind": "source", "area": "sources", "path": path, "title": title, "status": "open"})
         });
-        let mut ledger: Vec<(String, Value)> = record.get("parts").and_then(Value::as_array).into_iter().flatten().filter_map(|entry| entry.get("part").and_then(Value::as_str).map(|part| (schema::part_key(part), entry.clone()))).collect();
+        let mut listed: Vec<(String, Value)> = record.get("parts").and_then(Value::as_array).into_iter().flatten().filter_map(|entry| entry.get("part").and_then(Value::as_str).map(|part| (schema::part_key(part), entry.clone()))).collect();
         for entry in &entries {
             let key = schema::part_key(entry.get("part").and_then(Value::as_str).unwrap_or_default());
             let only_part = entry.as_object().is_some_and(|map| map.len() == 1);
-            let position = ledger.iter().position(|(existing, _)| *existing == key);
+            let position = listed.iter().position(|(existing, _)| *existing == key);
             if only_part {
                 if let Some(at) = position {
-                    ledger.remove(at); // an entry that names only its part takes it out
+                    listed.remove(at); // an entry that names only its part takes it out
                 }
                 continue;
             }
@@ -1687,12 +1747,12 @@ fn cover_write(ctx: &mut Ctx, io: &mut Io, path: String) -> Result<i32> {
                 }
             }
             match position {
-                Some(at) => ledger[at].1 = Value::Object(kept),
-                None => ledger.push((key, Value::Object(kept))),
+                Some(at) => listed[at].1 = Value::Object(kept),
+                None => listed.push((key, Value::Object(kept))),
             }
         }
         let map = record.as_object_mut().ok_or_else(|| LoreError::new("a record is a JSON object"))?;
-        let parts: Vec<Value> = ledger.into_iter().map(|(_, entry)| entry).collect();
+        let parts: Vec<Value> = listed.into_iter().map(|(_, entry)| entry).collect();
         map.insert("parts".into(), if parts.is_empty() { Value::Null } else { Value::Array(parts.clone()) });
         if history {
             map.insert("status".into(), json!("history"));

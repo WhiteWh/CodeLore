@@ -40,6 +40,9 @@ pub struct Config {
     /// or not this build has the `atlas` feature, so a lore.toml means the same
     /// to every build.
     pub atlas: Atlas,
+    /// `[ledger]`: the journal of structured project data beside the lore
+    /// (docs/FORMAT.md, "ledger, version 4"). None when lore.toml has no such table.
+    pub ledger: Option<Ledger>,
     /// What the file says that this version does not know and passes over: a
     /// top-level table a newer lore wrote. Said once per command, never refused,
     /// so an older binary keeps the project's memory working.
@@ -120,6 +123,135 @@ fn parse_atlas(value: &toml::Value, bad: &mut Vec<String>) -> Atlas {
         }
     }
     atlas
+}
+
+/// The type a ledger field's values have; `null` unsets any of them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FieldType {
+    String,
+    Number,
+    Bool,
+    List,
+    Object,
+    /// One of these strings.
+    Enum(Vec<String>),
+}
+
+impl FieldType {
+    pub fn name(&self) -> String {
+        match self {
+            FieldType::String => "string".into(),
+            FieldType::Number => "number".into(),
+            FieldType::Bool => "bool".into(),
+            FieldType::List => "list".into(),
+            FieldType::Object => "object".into(),
+            FieldType::Enum(values) => format!("one of {}", values.join(", ")),
+        }
+    }
+
+    /// Whether `value` is of this type (`null` always is: it unsets).
+    pub fn admits(&self, value: &serde_json::Value) -> bool {
+        use serde_json::Value;
+        match (self, value) {
+            (_, Value::Null) => true,
+            (FieldType::String, Value::String(_)) | (FieldType::Number, Value::Number(_)) | (FieldType::Bool, Value::Bool(_)) => true,
+            (FieldType::List, Value::Array(_)) | (FieldType::Object, Value::Object(_)) => true,
+            (FieldType::Enum(values), Value::String(text)) => values.contains(text),
+            _ => false,
+        }
+    }
+}
+
+/// `[ledger]`: where the journals are and the kinds of entry they hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Ledger {
+    /// Relative to the root, forward slashes; `ledger` by default.
+    pub dir: String,
+    /// Kind -> field -> type.
+    pub kinds: BTreeMap<String, BTreeMap<String, FieldType>>,
+}
+
+/// A ledger field name: `^[a-z0-9][a-z0-9_-]{0,47}$`.
+pub fn field_name(text: &str) -> bool {
+    let mut chars = text.chars();
+    chars.next().is_some_and(|first| first.is_ascii_lowercase() || first.is_ascii_digit())
+        && text.len() <= 48
+        && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_' || ch == '-')
+}
+
+fn parse_ledger(value: &toml::Value, lore_dir: &str, bad: &mut Vec<String>) -> Ledger {
+    let mut ledger = Ledger { dir: "ledger".into(), kinds: BTreeMap::new() };
+    let Some(table) = value.as_table() else {
+        bad.push("`[ledger]` must be a table".into());
+        return ledger;
+    };
+    for (key, value) in table {
+        match key.as_str() {
+            "dir" => match value.as_str() {
+                Some(dir) if !dir.is_empty() && !dir.starts_with('/') && !dir.contains(':') && !dir.split(['/', '\\']).any(|part| part == ".." || part == ".") => {
+                    ledger.dir = dir.replace('\\', "/").trim_matches('/').to_owned();
+                }
+                _ => bad.push("`ledger.dir` must be a relative path inside the repository".into()),
+            },
+            "kinds" => {
+                let Some(kinds) = value.as_table() else {
+                    bad.push("`ledger.kinds` must be a table of kinds".into());
+                    continue;
+                };
+                for (kind, fields) in kinds {
+                    if !area_slug(kind) {
+                        bad.push(format!("ledger kind `{kind}` must match ^[a-z0-9][a-z0-9-]{{0,47}}$"));
+                        continue;
+                    }
+                    let Some(fields) = fields.as_table() else {
+                        bad.push(format!("`ledger.kinds.{kind}` must be a table of fields"));
+                        continue;
+                    };
+                    let mut declared = BTreeMap::new();
+                    for (field, kind_of) in fields {
+                        if !field_name(field) {
+                            bad.push(format!("ledger field `{kind}.{field}` must match ^[a-z0-9][a-z0-9_-]{{0,47}}$"));
+                            continue;
+                        }
+                        let parsed = match kind_of {
+                            toml::Value::String(name) => match name.as_str() {
+                                "string" => Some(FieldType::String),
+                                "number" => Some(FieldType::Number),
+                                "bool" => Some(FieldType::Bool),
+                                "list" => Some(FieldType::List),
+                                "object" => Some(FieldType::Object),
+                                _ => None,
+                            },
+                            toml::Value::Table(spec) if spec.len() == 1 => spec
+                                .get("enum")
+                                .and_then(toml::Value::as_array)
+                                .filter(|items| !items.is_empty() && items.iter().all(toml::Value::is_str))
+                                .map(|items| FieldType::Enum(items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())),
+                            _ => None,
+                        };
+                        match parsed {
+                            Some(parsed) => {
+                                declared.insert(field.clone(), parsed);
+                            }
+                            None => bad.push(format!(
+                                "ledger field `{kind}.{field}` must be \"string\", \"number\", \"bool\", \"list\", \"object\" or {{ enum = [\"...\"] }}"
+                            )),
+                        }
+                    }
+                    if declared.is_empty() && fields.is_empty() {
+                        bad.push(format!("ledger kind `{kind}` declares no fields"));
+                    }
+                    ledger.kinds.insert(kind.clone(), declared);
+                }
+            }
+            _ => bad.push(format!("unknown key `ledger.{key}`")),
+        }
+    }
+    let inside = |outer: &str, inner: &str| inner == outer || inner.starts_with(&format!("{outer}/"));
+    if inside(lore_dir, &ledger.dir) || inside(&ledger.dir, lore_dir) {
+        bad.push(format!("`ledger.dir` ({}) and `dir` ({lore_dir}) must not hold one another", ledger.dir));
+    }
+    ledger
 }
 
 /// The working tier's settings. The expiry days are 1 to 365; every bound may
@@ -228,6 +360,7 @@ impl Config {
             working: Working::default(),
             secrets_allow: Vec::new(),
             atlas: Atlas::default(),
+            ledger: None,
             warnings: Vec::new(),
         }
     }
@@ -305,7 +438,7 @@ pub fn parse(data: &toml::Value, root: &Path, place: &str) -> Result<Config, Lor
     let table = data.as_table().unwrap_or(&empty);
     let mut warnings = Vec::new();
     for key in table.keys() {
-        if !["version", "dir", "areas", "commit", "embed", "limits", "dedupe", "working", "secrets", "atlas"].contains(&key.as_str()) {
+        if !["version", "dir", "areas", "commit", "embed", "limits", "dedupe", "working", "secrets", "atlas", "ledger"].contains(&key.as_str()) {
             // A newer lore's table, or a typo: passed over, said. Keys inside
             // a known table stay strict.
             warnings.push(format!("{place}: unknown key `{key}` is ignored (written by a newer lore?)"));
@@ -471,6 +604,9 @@ pub fn parse(data: &toml::Value, root: &Path, place: &str) -> Result<Config, Lor
 
     if let Some(atlas) = table.get("atlas") {
         config.atlas = parse_atlas(atlas, &mut bad);
+    }
+    if let Some(ledger) = table.get("ledger") {
+        config.ledger = Some(parse_ledger(ledger, &config.dir, &mut bad));
     }
 
     if bad.is_empty() { Ok(config) } else { Err(LoreError::with(format!("{place} is refused"), bad)) }

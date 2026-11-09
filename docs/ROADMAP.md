@@ -80,6 +80,25 @@ duplicates (0.69-0.85) from different faults (0.87-0.88) and word overlap did
 (different records at most 0.32): similarity names, only strong evidence
 refuses (DESIGN.md §4). **Left**: a PyPI release.
 
+## The ledger - structured data beside the lore
+
+FORMAT.md §8: journals per writer that are only appended to, so nothing ever
+merges; the state is a fold over the lines' `parents` graph, conflicts are
+found by the graph and resolved by a line, never by clocks. `lore ledger
+set|get|find|fold|log|conflicts|resolve|check|status|promote`, pending lines
+(`--to`, `--pending`, `promote`), a fold cached in the user cache and read on
+from where it stopped.
+
+Checks (`tests/ledger.rs`): two writers on different fields keep both; one field
+set by two concurrent lines is a conflict and the smaller id holds; an offline
+chain against another edit is a conflict; a value set back makes no false order;
+a wrong clock and the order files are read in change nothing; unknown kinds,
+fields and types are refused by name, file and line; a missing parent applies
+and is reported; the cache reads on and notices a journal that was not only
+appended to; pending lines and promote by key; resolve ends a conflict; the
+written lines match a fixture byte for byte; a lore without `[ledger]` is what
+it was.
+
 ## 0.4.1 - what the first harness found
 
 Zerus builds its own `lore` from a pinned revision of this crate and keeps a

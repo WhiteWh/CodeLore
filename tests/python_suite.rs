@@ -1141,7 +1141,7 @@ fn migration__Cover__cover_a_document_part_by_part() {
         let found = case.json(&["find", "setup"]);
         assert!(!found["results"].as_array().unwrap().iter().any(|hit| hit["record"]["kind"] == "source"));
     }
-    // a record a ledger names cannot go away quietly, and a document that grows is reported
+    // a record a parts list names cannot go away quietly, and a document that grows is reported
     std::fs::write(case.file("docs/hand.md"), format!("{DOC}\n## New\n\nnew words\n")).unwrap();
     assert!(case.lore(&["check"]).contains("changed since it was covered"));
 }

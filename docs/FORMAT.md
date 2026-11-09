@@ -1,4 +1,4 @@
-# The CodeLore format, version 3
+# The CodeLore format, version 4
 
 This is the contract between a repository's lore and any program that reads or
 writes it. `lore` is one such program; nothing here depends on it.
@@ -10,6 +10,8 @@ lore.toml                    the project's configuration (§6)
 lore/<area>.jsonl            knowledge: fault, reading, decision, topic, recipe records
 lore/plans/<plan-id>.jsonl   one plan: its plan record, then its items
 lore/sources.jsonl           source records: what became of each document moved into lore
+ledger/<author>@<machine>/<YYYY-MM>.jsonl
+                             the ledger, when lore.toml has [ledger]: structured data, not knowledge (§8)
 ```
 
 `lore/` is the default and `lore.toml` can move it (`dir = "docs/lore"`). Areas
@@ -162,7 +164,7 @@ list of a `done` item. A plan's `outcome` is its summary; each item's own
 | field | | |
 |---|---|---|
 | `path` | required, <= 300 | the document's path from the repository root |
-| `parts` | list of entries | the ledger, below |
+| `parts` | list of entries | the parts list, below |
 | `records` | list of ids | the records that hold what still stands of it |
 | `reason` | required when `history`, <= 600 | why nothing in it is current |
 
@@ -230,6 +232,13 @@ pulse_days = 14    # 1-365; message_days = 7, unread_days = 30, urgent_bound = 1
 
 [secrets]          # optional, RustCodeLore only
 allow = []         # exact strings the secret scan lets pass (each a literal, never a pattern)
+
+[ledger]           # optional: the ledger (§8); without this table there is none
+dir = "ledger"     # where the journals are; inside the root, apart from `dir`
+
+[ledger.kinds.item]                 # a kind of entry and its fields
+label = "string"                    # "string" | "number" | "bool" | "list" | "object"
+state = { enum = ["todo", "done"] } # or one of these strings
 ```
 
 A key the reader does not know **inside a known table** (`commit.mood`) is
@@ -250,3 +259,84 @@ the item's optional `outcome`, and made `superseded_by` and `reversed_by` record
 ids rather than strings of up to 64 characters; every version 2 file is a valid
 version 3 file. The optional `seen` list (§3) only adds an optional field, so it
 keeps version 3, and a reader that does not know it keeps it on rewrite.
+
+Version 4 added the ledger (§8) and changed nothing in the knowledge records:
+every version 3 file is a valid version 4 file, and a knowledge record is still
+written at version 3. Only ledger lines carry `"v": 4`.
+
+## 8. The ledger, version 4
+
+The ledger keeps a project's structured data - labels, chosen values, settings
+per object - beside its knowledge and apart from it. Many people write it from
+many machines, and its files may be kept by any version control at all; they
+must never need merging. So:
+
+**Layout.** `<dir>/<author>@<machine>/<YYYY-MM>.jsonl`, `dir` from
+`[ledger]` (`ledger` by default), relative to the root and holding neither the
+lore's `dir` nor anything in it. `<author>` and `<machine>` match
+`[a-z0-9][a-z0-9._-]{0,63}`, so a folder name means the same on a file system
+that ignores case. Each writer writes only its own files and **only appends**
+to them; two writers never touch one file. The month is the one a line was
+appended in. Any other file in `dir` is not a journal; a reader names it.
+
+**A line.** One JSON object a line, canonical as in §2 - keys sorted, no
+insignificant whitespace, UTF-8 with non-ASCII as is, LF, a final newline, no
+blank lines. Inside a file the lines are in the order they were appended, not
+sorted by `id`.
+
+| field | type | rule |
+|---|---|---|
+| `v` | int | `4` |
+| `id` | string | the first 16 hex digits (lower case) of the SHA-256 of the line's canonical text without `id` |
+| `kind` | string | a kind declared under `[ledger.kinds]` |
+| `key` | string | the entry's address within its kind (a path, say), non-empty; compared byte for byte |
+| `set` | object | field -> value, at least one; every field declared for the kind and of its type; `null` unsets a field |
+| `parents` | list of ids | sorted, each once: the entry's heads the writer saw when writing; empty for the first line |
+| `by` | string | who wrote it, as in §3; equal to the journal's `<author>` |
+| `at` | string | `YYYY-MM-DDTHH:MM:SSZ`, UTC; shown to people, never orders anything |
+| `note` | string | optional, 1-1000 characters |
+
+No other field is allowed. Types: `string`, `number`, `bool`, `list` (any JSON
+array), `object` (any JSON object), or `{ enum = [...] }`, one of the listed
+strings. A reader refuses a line that breaks any of this - an undeclared kind or
+field, a value of the wrong type, an `id` that is not the line's hash, a `by`
+that is not the journal's author - by file and line, and repairs nothing.
+
+```json
+{"at":"2026-11-09T12:00:00Z","by":"alice","id":"213af8e1a2eb278f","key":"a/b/c","kind":"item","parents":[],"set":{"label":"Größe ü","shared":true,"size":2.5},"v":4}
+```
+
+**The fold.** An *entry* is a kind and a key. Its lines form a graph by
+`parents`: a line comes after every line it descends from. Two lines are
+*concurrent* when neither descends from the other - which also catches a chain
+of edits made offline against someone else's edit. A field's value is given by
+each line that sets the field and has no descendant that sets it too:
+
+- one such line, or several with the same value: that value;
+- several with different values: a **conflict**. Until it is resolved the
+  value of the line with the smallest `id` holds - the same on every machine,
+  whatever order the files are read in.
+
+`at` plays no part, and a value set back (A, then B, then A) is a new line
+with its own id, not the first one again. The *heads* of an entry are its
+lines that no other line of it descends from; a writer's `parents` are the
+heads it saw. A parent not (yet) among the entry's lines - its writer's journal
+has not arrived - is passed over: the line still applies, and a reader reports
+the missing parent. A parent that is a line of another entry is an error. The
+same line in two places counts once.
+
+A conflict is resolved by an ordinary line whose `parents` hold all the
+conflicting lines (a writer takes the entry's heads), setting the field.
+
+**Pending lines** are lines of the same format kept in a file outside the
+journals - written ahead and not yet sent. A reader may read such a file over
+the journals; moving a line into its author's journal appends it unchanged
+(same `id`, `at` and `parents`), and the pending file, which is no journal,
+may then be written again without it.
+
+**References.** A knowledge record names a ledger entry in `refs.records` as
+`ledger:<kind>:<key>`. The kind must be declared; an entry not in the ledger is
+a warning, not an error, since the journal holding it may arrive later.
+
+A store whose lore.toml has no `[ledger]` has no ledger, and everything in §1-§7
+reads and writes as it did.
