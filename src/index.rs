@@ -535,17 +535,22 @@ impl Index {
         if todo.len() > budget {
             return Ok(todo.len());
         }
-        let texts: Vec<String> = todo.iter().map(|(_, text)| text.clone()).collect();
-        let vectors = embedder.embed(&texts)?;
-        if vectors.len() != todo.len() {
-            return Err(LoreError::new("the provider answered with another number of vectors"));
+        // In portions, each committed as it is done: a long first embedding
+        // (thousands of records) keeps what it made if it is stopped or fails,
+        // and the next run goes on from there.
+        for portion in todo.chunks(256) {
+            let texts: Vec<String> = portion.iter().map(|(_, text)| text.clone()).collect();
+            let vectors = embedder.embed(&texts)?;
+            if vectors.len() != portion.len() {
+                return Err(LoreError::new("the provider answered with another number of vectors"));
+            }
+            let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate).map_err(index_error)?;
+            for ((hash, _), vector) in portion.iter().zip(vectors) {
+                let blob: Vec<u8> = vector.iter().flat_map(|value| value.to_le_bytes()).collect();
+                tx.execute("INSERT OR REPLACE INTO vectors VALUES(?1,?2,?3)", params![model, hash, blob]).map_err(index_error)?;
+            }
+            tx.commit().map_err(index_error)?;
         }
-        let tx = Transaction::new_unchecked(&self.db, TransactionBehavior::Immediate).map_err(index_error)?;
-        for ((hash, _), vector) in todo.iter().zip(vectors) {
-            let blob: Vec<u8> = vector.iter().flat_map(|value| value.to_le_bytes()).collect();
-            tx.execute("INSERT OR REPLACE INTO vectors VALUES(?1,?2,?3)", params![model, hash, blob]).map_err(index_error)?;
-        }
-        tx.commit().map_err(index_error)?;
         Ok(0)
     }
 

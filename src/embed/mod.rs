@@ -254,6 +254,11 @@ pub struct Embedder {
     device: DeviceKind,
     batch_size: usize,
     threads: usize,
+    /// The model's folder, for the CPU fallback of a GPU engine.
+    dir: PathBuf,
+    /// A GPU engine that failed mid-run (a hung or reset device): the rest of
+    /// the process embeds on candle's CPU path with the same model.
+    fallback: std::sync::OnceLock<model::Model>,
 }
 
 impl Embedder {
@@ -290,12 +295,32 @@ impl Embedder {
         #[cfg(feature = "directml")]
         if !kind.is_gpu() && models::gpu_wanted() {
             match onnx::OnnxModel::load(&dir, model) {
-                Ok(onnx) => return Ok(Self { inner: Engine::Onnx(onnx), device: DeviceKind::DirectMl("DirectX 12 adapter".into()), batch_size: 32, threads: 1 }),
+                Ok(onnx) => {
+                    return Ok(Self { inner: Engine::Onnx(onnx), device: DeviceKind::DirectMl("DirectX 12 adapter".into()), batch_size: 32, threads: 1, dir, fallback: std::sync::OnceLock::new() })
+                }
                 Err(error) => directml_note(error.to_string()),
             }
         }
         let inner = Engine::Candle(model::Model::load(&dir, model, device)?);
-        Ok(Self { inner, device: kind, batch_size: 32, threads: default_threads() })
+        Ok(Self { inner, device: kind, batch_size: 32, threads: default_threads(), dir, fallback: std::sync::OnceLock::new() })
+    }
+
+    /// Embeds on the engine, or - once a GPU engine has failed - on the CPU
+    /// with the same model and vectors (tests/parity.rs holds them equal).
+    fn run(&self, texts: &[&str], batch_size: usize, threads: usize) -> Result<Vec<Vec<f32>>, Error> {
+        if let Some(cpu) = self.fallback.get() {
+            return cpu.embed(texts, batch_size, default_threads().max(threads));
+        }
+        match self.inner.embed(texts, batch_size, threads) {
+            Ok(vectors) => Ok(vectors),
+            Err(error) if matches!(self.inner, Engine::Candle(_)) => Err(error),
+            Err(error) => {
+                eprintln!("lore: note: the GPU embedder failed ({error}); going on on the CPU");
+                let cpu = model::Model::load(&self.dir, self.inner.kind(), candle_core::Device::Cpu)?;
+                let cpu = self.fallback.get_or_init(|| cpu);
+                cpu.embed(texts, batch_size, default_threads())
+            }
+        }
     }
 
     /// What this embedder runs on.
@@ -343,7 +368,7 @@ impl Embedder {
             })
             .collect();
         let references: Vec<&str> = prefixed.iter().map(String::as_str).collect();
-        self.inner.embed(&references, self.batch_size, self.threads)
+        self.run(&references, self.batch_size, self.threads)
     }
 
     /// The embedding of a search query, with the model's query prefix.
@@ -354,13 +379,13 @@ impl Embedder {
         } else {
             format!("{prefix}{text}")
         };
-        let mut vectors = self.inner.embed(&[prefixed.as_str()], 1, 1)?;
+        let mut vectors = self.run(&[prefixed.as_str()], 1, 1)?;
         vectors.pop().ok_or_else(|| Error::Run("the model returned no vector".into()))
     }
 
     /// Embeds texts with the prefix they already carry (the index's own text).
     pub fn embed_prefixed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, Error> {
-        self.inner.embed(texts, self.batch_size, self.threads)
+        self.run(texts, self.batch_size, self.threads)
     }
 }
 
