@@ -48,7 +48,7 @@ says *where*; the lore says *what we know about it*. Joined:
 
 | switch | where | effect |
 |---|---|---|
-| `atlas` cargo feature | build | compiles the map in. **Off by default**: a package that builds `lore` from this crate (Zerus pins it) gets no new code unless it names the feature. `cargo install --path . --features atlas` |
+| `atlas` cargo feature | build | compiles the map in. **On by default** since 0.4.1, so every `lore` - this repository's or one a package builds from this crate (Zerus pins it) - has `lore atlas`; it stays off at runtime until the switch below. `--no-default-features` leaves it out |
 | `[atlas] enabled = true` | lore.toml | turns the map on for the project (default `false`) |
 | `LORE_ATLAS=on\|off` | environment | overrides `enabled` for one user or one harness |
 | `[atlas] semantic` | lore.toml | embed pieces (default `true`); `false` keeps the map text only |

@@ -163,8 +163,8 @@ hand.
 
 ## Atlas: the code map (experimental)
 
-Built with `--features atlas` and switched on per project with `[atlas] enabled
-= true` (or `LORE_ATLAS=on`), `lore atlas` adds the other half: where things are
+In every build and switched on per project with `[atlas] enabled = true` (or
+`LORE_ATLAS=on`), `lore atlas` adds the other half: where things are
 in the code now. Pieces of every file searchable by words, whole terms, symbol
 names and meaning, the import graph, and where it meets the records -
 `lore atlas impact <file>` lists every file a change reaches *and what the lore
@@ -194,8 +194,8 @@ binary runs on the CPU (`LORE_DEVICE=cpu` forces that); `lore model status`
 says which. It needs the Visual C++ runtime (MSVCP140.dll), which most Windows
 machines have.
 
-**Code map.** `--features atlas` builds `lore atlas` (docs/ATLAS.md); a project
-turns it on with `[atlas] enabled = true`.
+**Code map.** Every build has `lore atlas` (docs/ATLAS.md); a project turns it on
+with `[atlas] enabled = true`. `--no-default-features` builds without it.
 
 ## Development
 

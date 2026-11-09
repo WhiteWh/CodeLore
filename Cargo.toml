@@ -13,9 +13,11 @@ name = "lore"
 path = "src/main.rs"
 
 [features]
-# Off by default, so a package that builds `lore` from this crate (Zerus) gets no
-# code map unless it names the feature. `cargo install --path . --features atlas`.
-default = []
+# The code map is compiled into every build, so any `lore` - this repository's or
+# one a package builds from this crate (Zerus) - can answer `lore atlas`. It stays
+# off at runtime until a project sets `[atlas] enabled` (or LORE_ATLAS=on).
+# `--no-default-features` leaves it out.
+default = ["atlas"]
 # The code map beside the lore: `lore atlas ...` (docs/ATLAS.md). No new
 # dependency - SQLite, regex and the built-in embedder are already here.
 atlas = []

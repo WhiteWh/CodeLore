@@ -28,8 +28,9 @@ src/
 One crate, one binary. SQLite with FTS5 is bundled (`rusqlite`), git is the one
 outside program. The crate is also a library: another package builds its own
 `lore` with `fn main() { codelore::app::main() }` and pins the revision (Zerus
-does); its default features are the binary every such package gets, so a new
-part comes behind a feature that is off by default.
+does); its default features are the binary every such package gets. A new part
+comes behind a runtime switch that is off by default; the code map (`atlas`)
+is a default feature, inert until a project sets `[atlas] enabled`.
 
 ## 2. Where things live
 

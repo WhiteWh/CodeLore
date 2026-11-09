@@ -847,7 +847,7 @@ fn atlas_call(argv: &[String], env: &Env) -> Option<Output> {
         Some(Output {
             code: 1,
             stdout: String::new(),
-            stderr: "lore: this lore was built without the code map; build it with `cargo install --path <CodeLore> --features atlas`\n".to_owned(),
+            stderr: "lore: this lore was built without the code map (--no-default-features); build it with the default features\n".to_owned(),
         })
     }
 }
