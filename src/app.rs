@@ -20,10 +20,11 @@ pub fn main() -> ! {
     }
     crate::builtin::enable_auto_fetch();
     let mut stdin = Vec::new();
-    // stdin is read for `find -` and `--json`/`--batch` input. Not for
-    // `--version`, nor from a terminal: either would wait for an EOF nobody sends.
-    let version_only = args.iter().any(|arg| arg == "--version");
-    if !version_only && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+    // stdin is read only by a command that takes its input there, and never from
+    // a terminal: a caller that hands its own stdin on (a harness, a script, an
+    // agent's shell) may keep that pipe open without writing, and a read would
+    // wait for an EOF nobody sends.
+    if wants_stdin(&args) && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         let _ = std::io::stdin().read_to_end(&mut stdin);
     }
     let env = Env {
@@ -48,6 +49,38 @@ pub fn main() -> ! {
         let _ = std::fs::remove_file(lock);
     }
     std::process::exit(output.code);
+}
+
+/// Whether this command line reads stdin: `--batch`, `--json-in`/`--stdin`
+/// (add, update), `cover --add`, a lone `-` (`find -`, `message send -`),
+/// `brief set`, and `message send` without its text.
+pub fn wants_stdin(args: &[String]) -> bool {
+    if args.iter().any(|arg| matches!(arg.as_str(), "--batch" | "--json-in" | "--stdin" | "--add" | "-")) {
+        return true;
+    }
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    let after = |first: &str, second: &str| words.windows(2).position(|pair| pair[0] == first && pair[1] == second).map(|at| at + 2);
+    if after("brief", "set").is_some() {
+        return true;
+    }
+    if let Some(start) = after("message", "send") {
+        // The text is a positional word; options that take a value are skipped.
+        let valued = ["--to", "--team", "--role", "--by", "--trailer", "-C", "--task", "--mode"];
+        let mut at = start;
+        while at < words.len() {
+            let word = words[at];
+            if valued.contains(&word) {
+                at += 2;
+                continue;
+            }
+            if !word.starts_with('-') {
+                return false;
+            }
+            at += 1;
+        }
+        return true;
+    }
+    false
 }
 
 /// After `lore init`: the configured model starts downloading in the background,
