@@ -149,6 +149,44 @@ fn a_change_in_the_working_tree_is_read_again_and_drift_is_named() {
     assert_eq!(cycles, json!([["src/render/post.rs", "src/store.rs"]]));
 }
 
+/// A search skips the scan while the quick print (index file, `git diff-files`,
+/// folder times) is unchanged; every kind of change must still be seen.
+#[test]
+fn the_quick_freshness_check_misses_no_change() {
+    let repo = Repo::new(true);
+    repo.json(&["atlas", "index"]);
+    let first = |query: &str| repo.json(&["atlas", "search", query])["results"][0]["path"].as_str().unwrap_or("").to_owned();
+    let search_twice = |query: &str| {
+        let a = first(query);
+        assert_eq!(a, first(query), "a second search of {query} answers the same");
+        a
+    };
+    assert_eq!(search_twice("open_depth_buffer"), "src/lib.rs");
+
+    // a new file beside tracked ones
+    std::fs::write(repo.root.join("src/render/glow.rs"), "pub fn glow_radius() -> u32 { 3 }\n").unwrap();
+    assert_eq!(search_twice("glow_radius"), "src/render/glow.rs");
+    // a new file in a new folder
+    std::fs::create_dir_all(repo.root.join("src/audio/mix")).unwrap();
+    std::fs::write(repo.root.join("src/audio/mix/bus.rs"), "pub fn duck_the_music() {}\n").unwrap();
+    assert_eq!(search_twice("duck_the_music"), "src/audio/mix/bus.rs");
+    // a second edit to a file already modified (the diff-files list stays the same)
+    std::fs::write(repo.root.join("src/store.rs"), "pub struct Cache;\nimpl Cache { pub fn warm_slowly() {} }\n").unwrap();
+    assert_eq!(search_twice("warm_slowly"), "src/store.rs");
+    std::fs::write(repo.root.join("src/store.rs"), "pub struct Cache;\nimpl Cache { pub fn warm_quickly_now() {} }\n").unwrap();
+    assert_eq!(search_twice("warm_quickly_now"), "src/store.rs");
+    // a new file in an untracked folder seen before
+    std::fs::write(repo.root.join("src/audio/mix/fade.rs"), "pub fn fade_out_slowly() {}\n").unwrap();
+    assert_eq!(search_twice("fade_out_slowly"), "src/audio/mix/fade.rs");
+    // staged and committed: the index file changes
+    git(&repo.root, &["add", "-A"]);
+    git(&repo.root, &["commit", "-qm", "two"]);
+    assert_eq!(search_twice("glow_radius"), "src/render/glow.rs");
+    // removed
+    std::fs::remove_file(repo.root.join("src/render/glow.rs")).unwrap();
+    assert_ne!(first("glow_radius"), "src/render/glow.rs");
+}
+
 #[test]
 fn an_unknown_table_is_a_warning_not_a_refusal() {
     let repo = Repo::new(true);

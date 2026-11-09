@@ -214,7 +214,9 @@ pub fn index_dir_candidates(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
 /// keeps, so a changed device or a provider renamed in lore.toml does not
 /// switch the model and embed everything again. None when nothing is embedded.
 pub fn stored_vector_model(root: &Path) -> Option<String> {
-    for dir in index_dir_candidates(root) {
+    // The places an index usually is, looked at without starting git
+    // (`git_index_dir` runs `git rev-parse`: ~0.1-0.3 s on every command).
+    for dir in [cache_dir().join(repo_key(root)), root.join(".git").join("codelore")] {
         for (file, sql) in [
             ("index.sqlite", "SELECT model FROM vectors GROUP BY model ORDER BY count(*) DESC LIMIT 1"),
             ("atlas.sqlite", "SELECT substr(value, 1, instr(value || '/', '/') - 1) FROM meta WHERE key = 'vector_model'"),

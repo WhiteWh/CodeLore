@@ -165,7 +165,21 @@ impl Atlas {
 
     /// Brings the map up to date with the working tree.
     pub fn refresh(&mut self, config: &Config) -> Result<Refresh, LoreError> {
-        let wanted = scan::scan(config)?;
+        let settings = format!("{:?}|{:?}|{}", config.atlas.include, config.atlas.exclude, config.atlas.max_kib);
+        // The quick print over the folders the last scan saw: when it is the same,
+        // nothing a scan could find has changed. It is taken before the scan, so
+        // an edit made while scanning shows up next time.
+        let dirs: BTreeSet<String> = self.meta("dirs").map(|text| text.split('\n').map(str::to_owned).collect()).unwrap_or_default();
+        let print = if dirs.is_empty() { String::new() } else { scan::quick_print(&config.root, &settings, &dirs)? };
+        if !print.is_empty() && self.meta("fingerprint").as_deref() == Some(print.as_str()) && self.meta("graph").is_some() {
+            return Ok(Refresh::default());
+        }
+        let (_, changes) = scan::status(&config.root)?;
+        let (wanted, seen_dirs) = scan::scan_with(config, &changes)?;
+        // New folders: no print yet (one taken now could postdate the scan); the
+        // next call takes one over these folders and scans once more.
+        let print = if dirs == seen_dirs { print } else { String::new() };
+        self.set_meta("dirs", &seen_dirs.iter().cloned().collect::<Vec<_>>().join("\n"))?;
         let mut known: HashMap<String, String> = HashMap::new();
         {
             let mut statement = self.db.prepare("SELECT path, blob FROM files").map_err(error)?;
@@ -178,9 +192,9 @@ impl Atlas {
         let mut info = Refresh { rebuilt: known.is_empty() && !wanted.is_empty(), ..Refresh::default() };
         let gone: Vec<String> = known.keys().filter(|path| !wanted.contains_key(*path)).cloned().collect();
         let changed: Vec<&Entry> = wanted.values().filter(|entry| known.get(&entry.path) != Some(&entry.blob)).collect();
-        let settings = format!("{:?}|{:?}|{}", config.atlas.include, config.atlas.exclude, config.atlas.max_kib);
         let graph_missing = self.meta("graph").is_none() || self.meta("settings").as_deref() != Some(settings.as_str());
         if gone.is_empty() && changed.is_empty() && !graph_missing {
+            self.set_meta("fingerprint", &print)?;
             return Ok(info);
         }
         let tx = self.db.transaction().map_err(error)?;
@@ -201,6 +215,7 @@ impl Atlas {
         tx.execute("INSERT OR REPLACE INTO meta VALUES('graph', ?1)", [info.edges.to_string()]).map_err(error)?;
         tx.execute("INSERT OR REPLACE INTO meta VALUES('settings', ?1)", [settings]).map_err(error)?;
         tx.execute("INSERT OR REPLACE INTO meta VALUES('refreshed', ?1)", [chrono::Utc::now().to_rfc3339()]).map_err(error)?;
+        tx.execute("INSERT OR REPLACE INTO meta VALUES('fingerprint', ?1)", [&print]).map_err(error)?;
         tx.commit().map_err(error)?;
         Ok(info)
     }
@@ -276,9 +291,15 @@ impl Atlas {
             return Vec::new();
         }
         let rank = if table == "code_words" { format!("bm25({table}, 0, 4.0, 8.0, 1.0)") } else { format!("bm25({table})") };
-        let sql = format!(
-            "SELECT t.chunk FROM {table} t JOIN chunks c ON c.id = t.chunk JOIN files f ON f.path = c.path WHERE {table} MATCH ?1 AND (?2 = '' OR c.path LIKE ?2 || '%') AND (?3 = '' OR f.lang = ?3) ORDER BY {rank} LIMIT ?4"
-        );
+        // Without a path or language filter the FTS table alone ranks and cuts:
+        // joining every match to chunks and files first cost most of a search.
+        let sql = if filter.path.is_empty() && filter.lang.is_empty() {
+            format!("SELECT chunk FROM {table} WHERE {table} MATCH ?1 AND ?2 = '' AND ?3 = '' ORDER BY {rank} LIMIT ?4")
+        } else {
+            format!(
+                "SELECT t.chunk FROM {table} t JOIN chunks c ON c.id = t.chunk JOIN files f ON f.path = c.path WHERE {table} MATCH ?1 AND (?2 = '' OR c.path LIKE ?2 || '%') AND (?3 = '' OR f.lang = ?3) ORDER BY {rank} LIMIT ?4"
+            )
+        };
         let run = || -> rusqlite::Result<Vec<i64>> {
             let mut statement = self.db.prepare(&sql)?;
             let rows = statement.query_map(params![query, filter.path, filter.lang, DEPTH as i64], |row| row.get::<_, i64>(0))?;
