@@ -72,24 +72,19 @@ impl OnnxModel {
         self.kind
     }
 
+    /// The width a batch whose longest text has `longest` tokens is padded to.
+    fn width(&self, longest: usize) -> usize {
+        longest.max(1).next_power_of_two().clamp(16, self.max_tokens.max(16))
+    }
+
     /// Texts of a similar length go in one batch, and each batch is padded to
     /// a fixed width (a power of two): DirectML prepares its graph for every
     /// new input shape, so a handful of shapes is fast where one per batch is
-    /// not. The result is in input order.
+    /// not. A batch also holds at most [`batch_tokens`] padded tokens: 32 code
+    /// pieces of 1024 tokens ran ten times slower than 4 at a time on an 8 GB
+    /// card (the attention outgrows the card's memory), while short texts still
+    /// go 16 or more at once. The result is in input order.
     pub fn embed(&self, texts: &[&str], batch_size: usize) -> Result<Vec<Vec<f32>>, Error> {
-        let mut order: Vec<usize> = (0..texts.len()).collect();
-        order.sort_by_key(|&at| texts[at].len());
-        let mut out: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
-        for group in order.chunks(batch_size.max(1)) {
-            let batch: Vec<&str> = group.iter().map(|&at| texts[at]).collect();
-            for (&at, vector) in group.iter().zip(self.embed_batch(&batch)?) {
-                out[at] = Some(vector);
-            }
-        }
-        Ok(out.into_iter().map(Option::unwrap_or_default).collect())
-    }
-
-    fn embed_batch(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, Error> {
         let mut encoded: Vec<Vec<u32>> = Vec::with_capacity(texts.len());
         for text in texts {
             let encoding = self.tokenizer.encode(*text, true).map_err(|error| Error::Tokenize(error.to_string()))?;
@@ -97,9 +92,37 @@ impl OnnxModel {
             ids.truncate(self.max_tokens);
             encoded.push(ids);
         }
-        let rows = texts.len();
-        let longest = encoded.iter().map(Vec::len).max().unwrap_or(0).max(1);
-        let width = longest.next_power_of_two().clamp(16, self.max_tokens.max(16));
+        let mut order: Vec<usize> = (0..texts.len()).collect();
+        order.sort_by_key(|&at| encoded[at].len());
+        let budget = batch_tokens();
+        let mut out: Vec<Option<Vec<f32>>> = vec![None; texts.len()];
+        let mut group: Vec<usize> = Vec::new();
+        for at in order {
+            let rows = group.len() + 1;
+            // sorted by length, so the newcomer is the longest
+            if !group.is_empty() && (rows > batch_size.max(1) || rows * self.width(encoded[at].len()) > budget) {
+                self.embed_group(&group, &encoded, &mut out)?;
+                group.clear();
+            }
+            group.push(at);
+        }
+        if !group.is_empty() {
+            self.embed_group(&group, &encoded, &mut out)?;
+        }
+        Ok(out.into_iter().map(Option::unwrap_or_default).collect())
+    }
+
+    fn embed_group(&self, group: &[usize], encoded: &[Vec<u32>], out: &mut [Option<Vec<f32>>]) -> Result<(), Error> {
+        let batch: Vec<Vec<u32>> = group.iter().map(|&at| encoded[at].clone()).collect();
+        for (&at, vector) in group.iter().zip(self.embed_batch(batch)?) {
+            out[at] = Some(vector);
+        }
+        Ok(())
+    }
+
+    fn embed_batch(&self, encoded: Vec<Vec<u32>>) -> Result<Vec<Vec<f32>>, Error> {
+        let rows = encoded.len();
+        let width = self.width(encoded.iter().map(Vec::len).max().unwrap_or(0));
         let mut ids = vec![0i64; rows * width];
         let mut mask = vec![0i64; rows * width];
         for (row, tokens) in encoded.iter().enumerate() {
@@ -150,4 +173,10 @@ impl OnnxModel {
         }
         Ok(vectors)
     }
+}
+
+/// Padded tokens one GPU batch may hold (rows x width). `LORE_EMBED_TOKENS`
+/// changes it for a card that wants more or less (at least 512).
+fn batch_tokens() -> usize {
+    std::env::var("LORE_EMBED_TOKENS").ok().and_then(|value| value.trim().parse().ok()).map_or(4096, |value: usize| value.max(512))
 }

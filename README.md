@@ -192,7 +192,10 @@ ONNX Runtime's DirectML provider; the model's ONNX export and a pinned
 DirectML.dll are fetched beside the weights. Where no GPU answers, the same
 binary runs on the CPU (`LORE_DEVICE=cpu` forces that); `lore model status`
 says which. It needs the Visual C++ runtime (MSVCP140.dll), which most Windows
-machines have.
+machines have. A GPU batch holds at most 4 096 padded tokens, so long code pieces
+go a few at a time and short records many (`LORE_EMBED_TOKENS` changes it); on an
+8 GB laptop card that is ~900 code pieces a minute, seven times the speed of
+fixed batches of 32.
 
 **Code map.** Every build has `lore atlas` (docs/ATLAS.md); a project turns it on
 with `[atlas] enabled = true`. `--no-default-features` builds without it.
