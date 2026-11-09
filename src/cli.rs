@@ -249,6 +249,8 @@ fn options_of(command: &str) -> Option<Vec<(&'static str, &'static [&'static str
             list.extend([("working", &[] as &[&str], false), ("no-working", &[], false), ("history", &[], false), ("no-history", &[], false), ("team", &[], true), ("role", &[], true)]);
             // Sub-stores: `root` (the default), `all`, or store folders, comma-separated.
             list.push(("stores", &[], true));
+            // Always ask the model, even where the text search answers on its own.
+            list.push(("semantic", &[], false));
             list
         }
         "for" => vec![("all", &[], false)],
@@ -975,7 +977,7 @@ fn cmd_areas(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
 }
 
 fn filters(args: &Args) -> Filters {
-    Filters { kind: args.one("kind"), area: args.one("area"), status: args.one("status"), plan: args.one("plan"), all: args.flag("all"), sources: false }
+    Filters { kind: args.one("kind"), area: args.one("area"), status: args.one("status"), plan: args.one("plan"), all: args.flag("all"), sources: false, semantic: args.flag("semantic") }
 }
 
 fn cmd_find(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {

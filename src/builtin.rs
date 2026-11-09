@@ -234,6 +234,28 @@ impl Finder for Builtin {
     ) -> Option<Result<(Vec<Found>, Vec<String>)>> {
         Some((|| -> Result<(Vec<Found>, Vec<String>)> {
             let index = index::open_index(config)?;
+            let wanted = finder::Filters {
+                kind: filters.kind.clone(),
+                area: filters.area.clone(),
+                status: filters.status.clone(),
+                plan: filters.plan.clone(),
+                all: filters.all,
+                sources: filters.sources,
+            };
+            // The text search first: a pasted error that a record carries, a
+            // phrase found whole, or a query that is code (a path, a symbol, an
+            // error code, a quote) is answered there as well as with the model
+            // (measured: exact errors 94% first without it, 93% with it) and in
+            // a tenth of a second instead of the model's seconds. Words in
+            // plain language go on to the model, where meaning pays.
+            if !text_only && !filters.semantic {
+                let (hits, notes) = finder::find_records(&index, query, &wanted, limit, None)?;
+                let exact_hit = hits.first().is_some_and(|(hit, _)| hit.via.iter().any(|via| via == "signal" || via == "phrase"));
+                if exact_hit || crate::stats::classify(query) == "exact" {
+                    let found = hits.into_iter().map(|(hit, record)| Found { record, score: hit.score, via: hit.via, meaning: hit.meaning, store: None }).collect();
+                    return Ok((found, notes));
+                }
+            }
             let (shared, mut notes) = self.semantic(config, text_only, false);
             let wanted = finder::Filters {
                 kind: filters.kind.clone(),

@@ -32,6 +32,8 @@ pub struct Filters {
     pub all: bool,
     /// Source records too, without `--kind source`.
     pub sources: bool,
+    /// `--semantic`: always ask the model, even where the text search answers.
+    pub semantic: bool,
 }
 
 /// One result of `lore find`: `{"score", "via", "record"}`.
