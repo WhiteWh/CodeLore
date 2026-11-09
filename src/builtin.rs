@@ -21,6 +21,16 @@ static AUTO_FETCH: AtomicBool = AtomicBool::new(false);
 pub fn enable_auto_fetch() {
     let off = std::env::var("LORE_MODEL_FETCH").ok().map(|value| value.trim().to_lowercase()).is_some_and(|value| matches!(value.as_str(), "off" | "0" | "false" | "no"));
     AUTO_FETCH.store(!off, Ordering::Relaxed);
+    BACKGROUND.store(true, Ordering::Relaxed);
+}
+
+/// Set by the real CLI only (`app::main`): background processes - a model
+/// server, an index - start from `current_exe`, which in a test is the test
+/// binary. Independent of `LORE_MODEL_FETCH`, which is about downloads.
+static BACKGROUND: AtomicBool = AtomicBool::new(false);
+
+fn background_allowed() -> bool {
+    BACKGROUND.load(Ordering::Relaxed)
 }
 
 pub fn auto_fetch() -> bool {
@@ -198,7 +208,7 @@ impl Builtin {
         let selected = config.embedding_model();
         // A search asks the model server first (src/embed/serve.rs): no model of
         // its own to open, the query is embedded in the server's memory.
-        let serve = !wait && auto_fetch() && embed::serve::enabled();
+        let serve = !wait && background_allowed() && embed::serve::enabled();
         if serve {
             if let Some(remote) = embed::serve::connect(selected) {
                 return (Some(std::sync::Arc::new(remote) as embed::Shared), notes);
