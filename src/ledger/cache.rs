@@ -4,7 +4,7 @@
 //! went away, or whose read part changed broke the append-only rule: that is
 //! said by name and the cache is built again from every file.
 use super::fold::{self, Entry, Side};
-use super::{journal_author, parse_bytes, parse_line, Line};
+use super::{journal_author, Line};
 use crate::config::{Config, Ledger};
 use crate::store::canonical;
 use crate::{LoreError, Result};
@@ -90,6 +90,7 @@ impl Cache {
         db.busy_timeout(std::time::Duration::from_secs(60)).map_err(db_error(path))?;
         db.execute_batch(
             "PRAGMA journal_mode = WAL;
+             PRAGMA synchronous = NORMAL;
              CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, size INTEGER NOT NULL, mtime INTEGER NOT NULL, lines INTEGER NOT NULL, prefix TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS lines (id TEXT NOT NULL, file TEXT NOT NULL, number INTEGER NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, text TEXT NOT NULL);
@@ -164,7 +165,8 @@ impl Cache {
         rebuild |= !broken.is_empty();
         let mut dirty: BTreeSet<Key> = BTreeSet::new();
         if rebuild {
-            tx.execute_batch("DELETE FROM files; DELETE FROM lines; DELETE FROM entries;").map_err(db_error(&path))?;
+            // Indexes are made again after the bulk insert: far cheaper than kept up row by row.
+            tx.execute_batch("DELETE FROM files; DELETE FROM lines; DELETE FROM entries; DROP INDEX IF EXISTS lines_entry; DROP INDEX IF EXISTS lines_id;").map_err(db_error(&path))?;
             reads.clear();
             for relative in &journals {
                 let full = folder.join(relative);
@@ -174,35 +176,46 @@ impl Cache {
             }
         }
         let mut errors: Vec<LoreError> = Vec::new();
-        for (relative, bytes, from, first, stamp) in &reads {
+        // On a rebuild every line is here already, so entries fold without reading them back.
+        let mut fresh: BTreeMap<Key, Vec<Line>> = BTreeMap::new();
+        // Parsing and checking the lines is most of a read: the files go in parallel.
+        let parsed = parse_all(&reads, ledger, &shown);
+        for ((relative, bytes, _, first, stamp), lines) in reads.iter().zip(parsed) {
             let (author, _) = journal_author(relative).unwrap_or_default();
             let place = shown(relative);
-            let lines = match parse_bytes(&bytes[*from..], *first, &place, ledger) {
+            let lines = match lines {
                 Ok(lines) => lines,
                 Err(error) => {
                     errors.push(error);
                     continue;
                 }
             };
-            let foreign: Vec<String> = lines.iter().enumerate().filter(|(_, line)| line.by != author).map(|(at, line)| format!("line {}: `by` {} in {author}'s journal", first + at, line.by)).collect();
+            let foreign: Vec<String> = lines.iter().enumerate().filter(|(_, (line, _))| line.by != author).map(|(at, (line, _))| format!("line {}: `by` {} in {author}'s journal", first + at, line.by)).collect();
             if !foreign.is_empty() {
                 errors.push(LoreError::with(format!("{place} is refused"), foreign));
                 continue;
             }
-            for (at, line) in lines.iter().enumerate() {
-                tx.execute(
-                    "INSERT INTO lines (id, file, number, kind, key, text) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-                    params![line.id, relative, (first + at) as i64, line.kind, line.key, line.text()],
-                )
-                .map_err(db_error(&path))?;
-                dirty.insert(line.entry());
+            let count = (first - 1 + lines.len()) as i64;
+            {
+                let mut insert = tx.prepare_cached("INSERT INTO lines (id, file, number, kind, key, text) VALUES (?1, ?2, ?3, ?4, ?5, ?6)").map_err(db_error(&path))?;
+                for (at, (line, text)) in lines.iter().enumerate() {
+                    insert.execute(params![line.id, relative, (*first + at) as i64, line.kind, line.key, text]).map_err(db_error(&path))?;
+                    dirty.insert(line.entry());
+                }
             }
-            let count = (*first - 1 + lines.len()) as i64;
+            if rebuild {
+                for (line, _) in lines {
+                    fresh.entry(line.entry()).or_default().push(line);
+                }
+            }
             tx.execute(
                 "INSERT OR REPLACE INTO files (path, size, mtime, lines, prefix) VALUES (?1, ?2, ?3, ?4, ?5)",
                 params![relative, bytes.len() as i64, stamp, count, sha_hex(bytes)],
             )
             .map_err(db_error(&path))?;
+        }
+        if rebuild {
+            tx.execute_batch("CREATE INDEX IF NOT EXISTS lines_entry ON lines (kind, key); CREATE INDEX IF NOT EXISTS lines_id ON lines (id);").map_err(db_error(&path))?;
         }
         if !errors.is_empty() {
             drop(tx);
@@ -213,13 +226,24 @@ impl Cache {
             }
             return Err(LoreError::with("the ledger is refused; nothing in it was read", details));
         }
-        for (kind, key) in &dirty {
-            let lines = lines_in(&tx, &path, ledger, kind, key)?;
-            let state = canonical(&fold::fold(&lines).to_json());
-            tx.execute("INSERT OR REPLACE INTO entries (kind, key, state) VALUES (?1, ?2, ?3)", params![kind, key, state]).map_err(db_error(&path))?;
+        {
+            let mut put = tx.prepare_cached("INSERT OR REPLACE INTO entries (kind, key, state) VALUES (?1, ?2, ?3)").map_err(db_error(&path))?;
+            for (kind, key) in &dirty {
+                let entry = match fresh.remove(&(kind.clone(), key.clone())) {
+                    Some(lines) => fold::fold(&lines),
+                    None => fold::fold(&lines_in(&tx, &path, ledger, kind, key)?),
+                };
+                put.execute(params![kind, key, canonical(&entry.to_json())]).map_err(db_error(&path))?;
+            }
         }
         tx.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema', ?1)", params![print]).map_err(db_error(&path))?;
+        let wrote = !reads.is_empty() || rebuild;
         tx.commit().map_err(db_error(&path))?;
+        if wrote {
+            // Into the main file: a reader that opens the cache then has no
+            // write-ahead log to read through first.
+            let _ = self.db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);");
+        }
         self.warnings = warnings;
         Ok(())
     }
@@ -290,14 +314,21 @@ impl Cache {
     }
 }
 
-fn lines_in(db: &Connection, path: &Path, ledger: &Ledger, kind: &str, key: &str) -> Result<Vec<Line>> {
+type Read = (String, Vec<u8>, usize, usize, i64);
+
+fn parse_all(reads: &[Read], ledger: &Ledger, shown: &(dyn Fn(&str) -> String + Sync)) -> Vec<Result<Vec<(Line, String)>>> {
+    let jobs: Vec<(String, &[u8], usize)> = reads.iter().map(|(relative, bytes, from, first, _)| (shown(relative), &bytes[*from..], *first)).collect();
+    super::parse_many(&jobs, ledger)
+}
+
+fn lines_in(db: &Connection, path: &Path, _ledger: &Ledger, kind: &str, key: &str) -> Result<Vec<Line>> {
     let mut statement = db.prepare_cached("SELECT text FROM lines WHERE kind = ?1 AND key = ?2").map_err(db_error(path))?;
     let rows = statement.query_map(params![kind, key], |row| row.get::<_, String>(0)).map_err(db_error(path))?;
     let mut lines = Vec::new();
     for row in rows {
         let text = row.map_err(db_error(path))?;
-        // Checked when it was read; parsed again only to fold.
-        if let Ok(line) = parse_line(&text, ledger) {
+        // Checked when it was read: taken back without checking it again.
+        if let Some(line) = Line::from_checked(&text) {
             lines.push(line);
         }
     }

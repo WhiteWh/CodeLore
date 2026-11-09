@@ -82,6 +82,23 @@ impl Line {
         canonical(&self.value())
     }
 
+    /// A line that was checked when it was first read (the cache's copy),
+    /// taken back without hashing or checking it again.
+    pub fn from_checked(text: &str) -> Option<Self> {
+        let value: Value = serde_json::from_str(text).ok()?;
+        let text_of = |key: &str| value.get(key).and_then(Value::as_str).map(str::to_owned);
+        Some(Self {
+            id: text_of("id")?,
+            kind: text_of("kind")?,
+            key: text_of("key")?,
+            set: value.get("set")?.as_object()?.clone(),
+            parents: value.get("parents")?.as_array()?.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect(),
+            by: text_of("by")?,
+            at: text_of("at")?,
+            note: text_of("note"),
+        })
+    }
+
     /// The entry the line belongs to.
     pub fn entry(&self) -> (String, String) {
         (self.kind.clone(), self.key.clone())
@@ -223,6 +240,12 @@ pub fn parse_line(text: &str, ledger: &Ledger) -> std::result::Result<Line, Vec<
 /// The lines of one file's bytes, numbered from `first` (1 for a whole file),
 /// or a refusal naming the file and each bad line.
 pub fn parse_bytes(bytes: &[u8], first: usize, place: &str, ledger: &Ledger) -> Result<Vec<Line>> {
+    parse_bytes_raw(bytes, first, place, ledger).map(|lines| lines.into_iter().map(|(line, _)| line).collect())
+}
+
+/// [`parse_bytes`] with each line's own text: a line that was accepted is
+/// canonical, so a caller that stores it need not write it again.
+pub fn parse_bytes_raw(bytes: &[u8], first: usize, place: &str, ledger: &Ledger) -> Result<Vec<(Line, String)>> {
     if first == 1 && bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return Err(LoreError::new(format!("{place}: starts with a BOM; ledger files are UTF-8 without one")));
     }
@@ -245,11 +268,36 @@ pub fn parse_bytes(bytes: &[u8], first: usize, place: &str, ledger: &Ledger) -> 
             continue;
         }
         match parse_line(raw, ledger) {
-            Ok(line) => lines.push(line),
+            Ok(line) => lines.push((line, raw.to_owned())),
             Err(found) => errs.extend(found.into_iter().map(|error| format!("line {number}: {error}"))),
         }
     }
     if errs.is_empty() { Ok(lines) } else { Err(LoreError::with(format!("{place} is refused"), errs)) }
+}
+
+/// Many files' lines - (place, bytes, first line number) each - parsed on as
+/// many threads as there are cores: checking lines is most of reading them.
+pub fn parse_many(jobs: &[(String, &[u8], usize)], ledger: &Ledger) -> Vec<Result<Vec<(Line, String)>>> {
+    let one = |(place, bytes, first): &(String, &[u8], usize)| parse_bytes_raw(bytes, *first, place, ledger);
+    let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1).min(jobs.len().max(1));
+    if threads <= 1 || jobs.iter().map(|job| job.1.len()).sum::<usize>() < 1 << 20 {
+        return jobs.iter().map(one).collect();
+    }
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let slots: Vec<std::sync::Mutex<Option<Result<Vec<(Line, String)>>>>> = jobs.iter().map(|_| std::sync::Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..threads {
+            scope.spawn(|| loop {
+                let at = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if at >= jobs.len() {
+                    break;
+                }
+                let result = one(&jobs[at]);
+                *slots[at].lock().unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(result);
+            });
+        }
+    });
+    slots.into_iter().map(|slot| slot.into_inner().unwrap_or_else(|poisoned| poisoned.into_inner()).unwrap_or_else(|| Ok(Vec::new()))).collect()
 }
 
 /// A journal's place: `<author>@<machine>/<YYYY-MM>.jsonl` under the ledger's

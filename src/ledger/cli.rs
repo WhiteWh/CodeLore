@@ -666,12 +666,16 @@ fn cmd_check(ctx: &Ctx<'_>, out: &mut Out) -> Result<i32> {
     for given in &ctx.opts.pending {
         sources.push((given.clone(), ctx.file(given), None));
     }
-    for (shown, path, author) in &sources {
-        count += 1;
-        let bytes = std::fs::read(path).map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
-        match parse_bytes(&bytes, 1, shown, ledger) {
+    let mut contents = Vec::new();
+    for (shown, path, _) in &sources {
+        contents.push(std::fs::read(path).map_err(|error| LoreError::new(format!("{shown}: {error}")))?);
+    }
+    count += sources.len();
+    let jobs: Vec<(String, &[u8], usize)> = sources.iter().zip(&contents).map(|((shown, _, _), bytes)| (shown.clone(), bytes.as_slice(), 1)).collect();
+    for ((shown, _, author), parsed) in sources.iter().zip(super::parse_many(&jobs, ledger)) {
+        match parsed {
             Ok(lines) => {
-                for (at, line) in lines.into_iter().enumerate() {
+                for (at, (line, _)) in lines.into_iter().enumerate() {
                     if let Some(author) = author {
                         if line.by != *author {
                             errors.push(format!("{shown}: line {}: `by` {} in {author}'s journal", at + 1, line.by));
