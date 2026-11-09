@@ -195,7 +195,11 @@ says which. It needs the Visual C++ runtime (MSVCP140.dll), which most Windows
 machines have. A GPU batch holds at most 4 096 padded tokens, so long code pieces
 go a few at a time and short records many (`LORE_EMBED_TOKENS` changes it); on an
 8 GB laptop card that is ~900 code pieces a minute, seven times the speed of
-fixed batches of 32.
+fixed batches of 32. A search embeds its one query on the CPU, and the first
+search starts `lore model serve`: the model held in memory on 127.0.0.1 (a
+token in its state file), so the searches after it open no model of their own
+(~0.3 s with meaning instead of ~0.8). It ends after ten idle minutes;
+`LORE_EMBED_SERVE=off` turns it off.
 
 **Code map.** Every build has `lore atlas` (docs/ATLAS.md); a project turns it on
 with `[atlas] enabled = true`. `--no-default-features` builds without it.

@@ -196,6 +196,14 @@ impl Builtin {
             return (None, notes);
         }
         let selected = config.embedding_model();
+        // A search asks the model server first (src/embed/serve.rs): no model of
+        // its own to open, the query is embedded in the server's memory.
+        let serve = !wait && auto_fetch() && embed::serve::enabled();
+        if serve {
+            if let Some(remote) = embed::serve::connect(selected) {
+                return (Some(std::sync::Arc::new(remote) as embed::Shared), notes);
+            }
+        }
         // `wait` is an index being built: the GPU for its thousands of texts; a
         // search embeds one query and a few new records, faster on the CPU.
         let open = || {
@@ -215,7 +223,13 @@ impl Builtin {
             }
         }
         match opened {
-            Ok(shared) => (Some(shared), notes),
+            Ok(shared) => {
+                if serve {
+                    // for the searches after this one
+                    embed::serve::start(selected, spawn_detached);
+                }
+                (Some(shared), notes)
+            }
             Err(_error) => {
                 let status = embed::status_for(selected, &embed::model_dir(selected));
                 notes.push(format!(

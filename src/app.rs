@@ -145,7 +145,7 @@ fn model(args: &[String]) -> i32 {
         .position(|arg| arg == "--model")
         .and_then(|position| args.get(position + 1))
         .map(String::as_str);
-    let command = args.iter().find(|arg| matches!(arg.as_str(), "fetch" | "status")).map(String::as_str);
+    let command = args.iter().find(|arg| matches!(arg.as_str(), "fetch" | "status" | "serve")).map(String::as_str);
     let (device, kind) = embed::models::device();
     let model = named.and_then(EmbeddingModel::from_name).unwrap_or_else(|| EmbeddingModel::default_for(&device));
     if named.is_some() && named.and_then(EmbeddingModel::from_name).is_none() {
@@ -155,6 +155,11 @@ fn model(args: &[String]) -> i32 {
     if command.is_none() {
         eprintln!("usage: lore model fetch|status [--local <dir>] [--json] [--model NAME]");
         return 2;
+    }
+    // Started by a search: holds the model for the searches after it
+    // (src/embed/serve.rs). Not in the usage line - nobody needs to run it.
+    if command == Some("serve") {
+        return embed::serve::run(model);
     }
     if command == Some("status") {
         let status = embed::status_for(model, &embed::model_dir(model));

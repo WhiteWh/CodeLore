@@ -18,6 +18,7 @@ pub mod models;
 mod onnx;
 #[cfg(feature = "directml")]
 pub mod runtime;
+pub mod serve;
 pub mod system;
 
 mod fetch;
