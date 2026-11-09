@@ -1,12 +1,11 @@
 //! `lore ledger ...`: the commands over the journals (docs/FORMAT.md,
 //! "ledger, version 4"). They write files and nothing else; whoever keeps the
 //! files versions them.
-use super::cache::{Cache, Key};
+use super::cache::{Cache, Filter, Key};
 use super::fold::{self, Entry};
-use super::{author, field_type, journal_author, journal_of, machine, parse_bytes, set_errors, Line};
+use super::{author, canonical, field_type, journal_author, journal_of, machine, parse_whole, write_errors, Line};
 use crate::config::{self, Config, FieldType, Ledger};
 use crate::py::repr_str;
-use crate::store::canonical;
 use crate::{LoreError, Result};
 use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -36,7 +35,7 @@ pub struct Out {
     pub stderr: String,
 }
 
-const USAGE: &str = "usage: lore ledger [--pending <file>] <set|get|find|fold|log|conflicts|resolve|check|status|promote> ...";
+const USAGE: &str = "usage: lore ledger [--pending <file>] <set|get|find|fold|log|conflicts|resolve|clear|check|status|promote|ack|export|repair> ...";
 
 #[derive(Default)]
 struct Opts {
@@ -51,8 +50,13 @@ struct Opts {
     parents: Option<Vec<String>>,
     note: Option<String>,
     wheres: Vec<String>,
+    missing: Vec<String>,
     keys: Vec<String>,
     kinds: Vec<String>,
+    ids: Vec<String>,
+    keep: bool,
+    strict: bool,
+    with_state: bool,
 }
 
 fn parse(argv: &[String]) -> std::result::Result<Opts, String> {
@@ -82,6 +86,9 @@ fn parse(argv: &[String]) -> std::result::Result<Opts, String> {
             match name.as_str() {
                 "--json" => opts.json = true,
                 "--batch" => opts.batch = true,
+                "--keep" => opts.keep = true,
+                "--strict" => opts.strict = true,
+                "--with-state" => opts.with_state = true,
                 "--by" => opts.by = Some(value()?),
                 "--pending" => opts.pending.push(value()?),
                 "--to" => opts.to = Some(value()?),
@@ -92,8 +99,10 @@ fn parse(argv: &[String]) -> std::result::Result<Opts, String> {
                 }
                 "--note" => opts.note = Some(value()?),
                 "--where" => opts.wheres.push(value()?),
+                "--missing" => opts.missing.push(value()?),
                 "--key" => opts.keys.push(value()?),
                 "--kind" => opts.kinds.push(value()?),
+                "--id" => opts.ids.extend(value()?.split(',').map(str::trim).filter(|id| !id.is_empty()).map(str::to_owned)),
                 _ => return Err(format!("unrecognized arguments: {word}")),
             }
             continue;
@@ -118,12 +127,19 @@ fn parse(argv: &[String]) -> std::result::Result<Opts, String> {
         "" => return Err("a ledger command is needed".into()),
         "set" if opts.batch => need(0, Some(0), "")?,
         "set" => need(2, None, "kind key field=value")?,
-        "get" | "log" => need(2, Some(2), "kind key")?,
+        "get" | "log" | "clear" => need(2, Some(2), "kind key")?,
         "find" => need(1, Some(1), "kind")?,
         "fold" | "check" | "status" => need(0, Some(0), "")?,
         "conflicts" => need(0, Some(1), "")?,
         "resolve" => need(3, Some(4), "kind key field value")?,
-        "promote" => need(1, Some(1), "file")?,
+        "promote" | "export" => need(1, Some(1), "file")?,
+        "ack" => {
+            need(1, Some(1), "file")?;
+            if opts.ids.is_empty() {
+                return Err("ack names the lines it confirms: --id <id>[,<id>...]".into());
+            }
+        }
+        "repair" => need(0, Some(1), "")?,
         other => return Err(format!("argument <ledger command>: invalid choice: {}", repr_str(other))),
     }
     Ok(opts)
@@ -162,6 +178,24 @@ struct Ctx<'a> {
     call: &'a Call<'a>,
 }
 
+/// The lines of the pending files read over the journals, and the files that
+/// end in an unfinished line.
+#[derive(Default)]
+struct Pending {
+    lines: Vec<Line>,
+    incomplete: Vec<(String, usize)>,
+}
+
+impl Pending {
+    fn by_entry(&self) -> BTreeMap<Key, Vec<Line>> {
+        let mut grouped: BTreeMap<Key, Vec<Line>> = BTreeMap::new();
+        for line in &self.lines {
+            grouped.entry(line.entry()).or_default().push(line.clone());
+        }
+        grouped
+    }
+}
+
 impl Ctx<'_> {
     fn ledger(&self) -> &Ledger {
         self.config.ledger.as_ref().expect("checked in dispatch")
@@ -180,23 +214,28 @@ impl Ctx<'_> {
         super::at_of(self.call.now.unwrap_or_else(|| chrono::Utc::now().timestamp()))
     }
 
-    /// The lines of a pending file (none when it does not exist yet).
-    fn read_pending(&self, given: &str) -> Result<Vec<Line>> {
-        let path = self.file(given);
-        match std::fs::read(&path) {
-            Ok(bytes) => parse_bytes(&bytes, 1, given, self.ledger()),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(Vec::new()),
+    /// The whole lines of a pending file (none when it does not exist yet),
+    /// and the length of an unfinished last line.
+    fn read_pending(&self, given: &str) -> Result<(Vec<Line>, usize)> {
+        match std::fs::read(self.file(given)) {
+            Ok(bytes) => parse_whole(&bytes, given, self.ledger()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((Vec::new(), 0)),
             Err(error) => Err(LoreError::new(format!("{given}: {error}"))),
         }
     }
 
     /// Every `--pending` file's lines, and `--to`'s when it is written to.
-    fn pending(&self) -> Result<Vec<Line>> {
-        let mut lines = Vec::new();
+    fn pending(&self, out: &mut Out) -> Result<Pending> {
+        let mut pending = Pending::default();
         for given in self.opts.pending.iter().chain(self.opts.to.iter()) {
-            lines.extend(self.read_pending(given)?);
+            let (lines, tail) = self.read_pending(given)?;
+            if tail > 0 {
+                out.stderr.push_str(&format!("lore: warning: {given} ends in an unfinished line ({tail} bytes), not read; the state is not complete\n"));
+                pending.incomplete.push((given.clone(), tail));
+            }
+            pending.lines.extend(lines);
         }
-        Ok(lines)
+        Ok(pending)
     }
 
     fn say(out: &mut Out, text: &str) {
@@ -207,6 +246,44 @@ impl Ctx<'_> {
     fn json(out: &mut Out, value: &Value) {
         Self::say(out, &crate::cli::pretty(value));
     }
+
+    /// An entry as the state shows it: retired fields left out.
+    fn project(&self, kind: &str, entry: &Entry) -> Entry {
+        let ledger = self.ledger();
+        let mut shown = entry.clone();
+        shown.set.retain(|field, _| !ledger.is_retired(kind, field));
+        shown.conflicts.retain(|field, _| !ledger.is_retired(kind, field));
+        shown
+    }
+
+    fn live_kind(&self, kind: &str) -> Result<()> {
+        let ledger = self.ledger();
+        if !ledger.kinds.contains_key(kind) {
+            return Err(LoreError::new(format!("kind {} is not declared in [ledger.kinds]", repr_str(kind))));
+        }
+        if ledger.retired_kinds.contains(kind) {
+            return Err(LoreError::new(format!("kind {kind} is retired; `lore ledger log` still shows its history")));
+        }
+        Ok(())
+    }
+}
+
+/// Why a state is not known to be complete: missing parents and unfinished lines.
+fn gaps(entries: &BTreeMap<Key, Entry>, cache: &Cache, pending: &Pending) -> Vec<String> {
+    let mut found = Vec::new();
+    for ((kind, key), entry) in entries {
+        for (line, parent) in &entry.dangling {
+            found.push(format!("{kind} {}: line {line} names parent {parent}, which is in no journal here", repr_str(key)));
+        }
+    }
+    for (file, tail) in cache.incomplete.iter().chain(&pending.incomplete) {
+        found.push(format!("{file} ends in an unfinished line ({tail} bytes)"));
+    }
+    found
+}
+
+fn strict_refusal(gaps: Vec<String>) -> LoreError {
+    LoreError::with("the state is not complete (--strict)", gaps)
 }
 
 fn dispatch(opts: &Opts, call: &Call<'_>, out: &mut Out) -> Result<i32> {
@@ -220,7 +297,7 @@ fn dispatch(opts: &Opts, call: &Call<'_>, out: &mut Out) -> Result<i32> {
     let ctx = Ctx { config, opts, call };
     match opts.command.as_str() {
         "check" => return cmd_check(&ctx, out),
-        "promote" => return cmd_promote(&ctx, out),
+        "repair" => return cmd_repair(&ctx, out),
         _ => {}
     }
     let cache = Cache::open(&ctx.config, ctx.ledger())?;
@@ -235,6 +312,10 @@ fn dispatch(opts: &Opts, call: &Call<'_>, out: &mut Out) -> Result<i32> {
         "log" => cmd_log(&ctx, &cache, out),
         "conflicts" => cmd_conflicts(&ctx, &cache, out),
         "resolve" => cmd_resolve(&ctx, &cache, out),
+        "clear" => cmd_clear(&ctx, &cache, out),
+        "promote" => cmd_promote(&ctx, &cache, out),
+        "ack" => cmd_ack(&ctx, &cache, out),
+        "export" => cmd_export(&ctx, &cache, out),
         _ => cmd_status(&ctx, &cache, out),
     }
 }
@@ -322,16 +403,29 @@ fn batch_requests(stdin: &[u8]) -> Result<Vec<Request>> {
 
 /// Builds the lines of `requests` in order, each one's default parents the
 /// heads its entry has with the lines before it; then writes them all at once.
-fn write(ctx: &Ctx<'_>, cache: &Cache, requests: Vec<Request>, out: &mut Out) -> Result<i32> {
+/// Returns the lines written.
+fn write(ctx: &Ctx<'_>, cache: &Cache, requests: Vec<Request>, out: &mut Out) -> Result<Vec<Line>> {
     let ledger = ctx.ledger();
     let by = ctx.author()?;
     let at = ctx.now();
-    let mut pending = ctx.pending()?;
+    let pending = ctx.pending(out)?;
+    // Per entry: the pending lines and this call's lines so far - each request
+    // folds only its own entry, so a batch stays linear.
+    let mut over: BTreeMap<Key, Vec<Line>> = pending.by_entry();
+    let mut known_here: BTreeMap<String, Key> = pending.lines.iter().map(|line| (line.id.clone(), line.entry())).collect();
+    // Per entry this call writes to: its heads now and its fields in conflict,
+    // kept up as lines are added - a line after every head is the one head, and
+    // ends every conflict on a field it sets - so an entry edited many times in
+    // one batch, or with a long history, is folded once. A line with parents of
+    // its own makes the entry be folded again.
+    let mut seen: BTreeMap<Key, (Vec<String>, BTreeSet<String>)> = BTreeMap::new();
+    let mut explicit: BTreeSet<Key> = BTreeSet::new();
     let mut lines: Vec<Line> = Vec::new();
     let mut errs = Vec::new();
     for (index, request) in requests.into_iter().enumerate() {
         let who = if ctx.opts.batch { format!("line {}: ", index + 1) } else { String::new() };
-        let mut found = set_errors(ledger, &request.kind, &request.set);
+        let entry_key: Key = (request.kind.clone(), request.key.clone());
+        let mut found = write_errors(ledger, &request.kind, &request.set);
         if request.key.is_empty() {
             found.push("the key is empty".into());
         }
@@ -340,24 +434,51 @@ fn write(ctx: &Ctx<'_>, cache: &Cache, requests: Vec<Request>, out: &mut Out) ->
                 found.push(format!("a note is 1-{} characters", super::NOTE_MAX));
             }
         }
+        let empty = Vec::new();
+        let defaulted = request.parents.is_none();
         let parents = match request.parents {
             Some(parents) => {
-                for parent in parents.iter().filter(|parent| !super::is_id(parent)) {
-                    found.push(format!("parent {} is not a line id ({} hex digits)", repr_str(parent), super::ID_LEN));
+                for parent in &parents {
+                    if !super::is_id(parent) {
+                        found.push(format!("parent {} is not a line id ({} hex digits)", repr_str(parent), super::ID_LEN));
+                        continue;
+                    }
+                    let owner = match known_here.get(parent) {
+                        Some(owner) => Some(owner.clone()),
+                        None => cache.owner(parent)?,
+                    };
+                    if let Some((kind, key)) = owner.filter(|owner| *owner != entry_key) {
+                        found.push(format!("parent {parent} is a line of {kind} {}, not of {} {}", repr_str(&key), request.kind, repr_str(&request.key)));
+                    }
                 }
                 parents
             }
             None => {
-                let mut over = pending.clone();
-                over.extend(lines.iter().cloned());
-                cache.entry_with(ledger, &request.kind, &request.key, &over)?.map(|entry| entry.heads).unwrap_or_default()
+                if !seen.contains_key(&entry_key) {
+                    let entry = cache.entry_with(ledger, &request.kind, &request.key, over.get(&entry_key).unwrap_or(&empty))?.unwrap_or_default();
+                    let conflicts = ctx.project(&request.kind, &entry).conflicts.into_keys().collect();
+                    seen.insert(entry_key.clone(), (entry.heads, conflicts));
+                }
+                seen.get(&entry_key).map(|(heads, _)| heads.clone()).unwrap_or_default()
             }
         };
         if !found.is_empty() {
             errs.extend(found.into_iter().map(|error| format!("{who}{error}")));
             continue;
         }
-        lines.push(Line::new(&request.kind, &request.key, request.set, parents, &by, &at, request.note));
+        let line = Line::new(&request.kind, &request.key, request.set, parents, &by, &at, request.note);
+        if defaulted {
+            if let Some((heads, conflicts)) = seen.get_mut(&entry_key) {
+                *heads = vec![line.id.clone()];
+                conflicts.retain(|field| !line.set.contains_key(field));
+            }
+        } else {
+            seen.remove(&entry_key);
+            explicit.insert(entry_key.clone());
+        }
+        over.entry(entry_key.clone()).or_default().push(line.clone());
+        known_here.insert(line.id.clone(), entry_key);
+        lines.push(line);
     }
     if !errs.is_empty() {
         return Err(LoreError::with("refused, nothing was written", errs));
@@ -365,27 +486,36 @@ fn write(ctx: &Ctx<'_>, cache: &Cache, requests: Vec<Request>, out: &mut Out) ->
     if lines.is_empty() {
         return Err(LoreError::new("nothing to write"));
     }
-    let (path, shown) = match &ctx.opts.to {
-        Some(given) => (ctx.file(given), given.clone()),
+    let shown = match &ctx.opts.to {
+        Some(given) => {
+            let path = ctx.file(given);
+            super::locked(&path, || super::append(&path, &lines))?;
+            given.clone()
+        }
         None => {
             let relative = journal_of(&by, &machine(ctx.call.machine.as_deref())?, &at);
-            (super::folder(&ctx.config.root, ledger).join(&relative), format!("{}/{relative}", ledger.dir))
+            super::append(&super::folder(&ctx.config.root, ledger).join(&relative), &lines)?;
+            format!("{}/{relative}", ledger.dir)
         }
     };
-    super::append(&path, &lines)?;
-    pending.extend(lines.iter().cloned());
     // What the entries come to now, to say a conflict they are in.
     let mut notes = Vec::new();
     let touched: BTreeSet<Key> = lines.iter().map(Line::entry).collect();
-    for (kind, key) in &touched {
-        let mut all = cache.lines(ledger, kind, key)?;
-        all.extend(pending.iter().filter(|line| line.kind == *kind && line.key == *key).cloned());
-        let entry = fold::fold(&all);
-        if !entry.conflicts.is_empty() {
+    for entry_key in &touched {
+        let (kind, key) = entry_key;
+        let conflicts: Vec<String> = match seen.get(entry_key) {
+            Some((_, conflicts)) if !explicit.contains(entry_key) => conflicts.iter().cloned().collect(),
+            _ => {
+                let mut all = cache.lines(ledger, kind, key)?;
+                all.extend(over.get(entry_key).cloned().unwrap_or_default());
+                ctx.project(kind, &fold::fold(&all)).conflicts.into_keys().collect()
+            }
+        };
+        if !conflicts.is_empty() {
             notes.push(format!(
                 "{kind} {} has a conflict on {} - `lore ledger conflicts` shows it, `lore ledger resolve` ends it",
                 repr_str(key),
-                entry.conflicts.keys().cloned().collect::<Vec<_>>().join(", ")
+                conflicts.join(", ")
             ));
         }
     }
@@ -400,7 +530,7 @@ fn write(ctx: &Ctx<'_>, cache: &Cache, requests: Vec<Request>, out: &mut Out) ->
             Ctx::say(out, &format!("note: {note}"));
         }
     }
-    Ok(0)
+    Ok(lines)
 }
 
 fn shown_set(set: &Map<String, Value>) -> String {
@@ -427,7 +557,7 @@ fn cmd_set(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
         let set = assignments(ctx.ledger(), kind, &opts.positional[2..], &opts.unset)?;
         vec![Request { kind: kind.clone(), key: key.clone(), set, parents: opts.parents.clone(), note: opts.note.clone() }]
     };
-    write(ctx, cache, requests, out)
+    write(ctx, cache, requests, out).map(|_| 0)
 }
 
 fn cmd_resolve(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
@@ -438,15 +568,50 @@ fn cmd_resolve(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
         (None, [unset]) if unset == field => Value::Null,
         _ => return Err(LoreError::new("resolve takes the field's value, or --unset <field> in its place")),
     };
-    let pending = ctx.pending()?;
-    let entry = cache.entry_with(ctx.ledger(), kind, key, &pending)?.ok_or_else(|| LoreError::new(format!("no ledger entry {kind} {}", repr_str(key))))?;
+    let pending = ctx.pending(out)?;
+    let entry = cache.entry_with(ctx.ledger(), kind, key, &pending.lines)?.ok_or_else(|| LoreError::new(format!("no ledger entry {kind} {}", repr_str(key))))?;
     if !entry.conflicts.contains_key(field.as_str()) {
         return Err(LoreError::new(format!("{kind} {} has no conflict on {field} - set it with `lore ledger set`", repr_str(key))));
     }
     let mut set = Map::new();
     set.insert(field.clone(), value);
-    // Every head as a parent: the line comes after every side of the conflict.
-    write(ctx, cache, vec![Request { kind: kind.clone(), key: key.clone(), set, parents: Some(entry.heads.clone()), note: opts.note.clone() }], out)
+    // The heads the person saw (--parents), else every head: the line comes
+    // after each side of the conflict it was shown. A line that came later and
+    // was not seen stays concurrent with it, and its conflict stays.
+    let parents = opts.parents.clone().unwrap_or_else(|| entry.heads.clone());
+    let written = write(ctx, cache, vec![Request { kind: kind.clone(), key: key.clone(), set, parents: Some(parents), note: opts.note.clone() }], out)?;
+    let mut all = cache.lines(ctx.ledger(), kind, key)?;
+    all.extend(pending.lines.iter().filter(|line| line.kind == *kind && line.key == *key).cloned());
+    all.extend(written);
+    if fold::fold(&all).conflicts.contains_key(field.as_str()) && !ctx.opts.json {
+        Ctx::say(out, &format!("note: {field} is still in conflict - a line the resolution did not see sets it too"));
+    }
+    Ok(0)
+}
+
+/// Unsets every field the entry holds or has in conflict, after the heads the
+/// writer saw. The entry stays: an empty entry is still one, and its history and
+/// any conflict a concurrent line makes stay visible.
+fn cmd_clear(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
+    let (kind, key) = (&ctx.opts.positional[0], &ctx.opts.positional[1]);
+    ctx.live_kind(kind)?;
+    let pending = ctx.pending(out)?;
+    let Some(entry) = cache.entry_with(ctx.ledger(), kind, key, &pending.lines)? else {
+        return Err(LoreError::new(format!("no ledger entry {kind} {}", repr_str(key))));
+    };
+    let entry = ctx.project(kind, &entry);
+    let fields: BTreeSet<&String> = entry.set.keys().chain(entry.conflicts.keys()).collect();
+    if fields.is_empty() {
+        if ctx.opts.json {
+            Ctx::json(out, &json!({"file": null, "lines": [], "notes": ["nothing to clear: no field is set"]}));
+        } else {
+            Ctx::say(out, "nothing to clear: no field is set");
+        }
+        return Ok(0);
+    }
+    let set: Map<String, Value> = fields.into_iter().map(|field| (field.clone(), Value::Null)).collect();
+    let parents = ctx.opts.parents.clone().unwrap_or_else(|| entry.heads.clone());
+    write(ctx, cache, vec![Request { kind: kind.clone(), key: key.clone(), set, parents: Some(parents), note: ctx.opts.note.clone() }], out).map(|_| 0)
 }
 
 fn entry_json(kind: &str, key: &str, entry: &Entry) -> Value {
@@ -454,18 +619,29 @@ fn entry_json(kind: &str, key: &str, entry: &Entry) -> Value {
     if let Value::Object(map) = &mut value {
         map.insert("kind".into(), Value::String(kind.into()));
         map.insert("key".into(), Value::String(key.into()));
+        map.insert("complete".into(), Value::Bool(entry.dangling.is_empty()));
     }
     value
 }
 
 fn cmd_get(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
     let (kind, key) = (&ctx.opts.positional[0], &ctx.opts.positional[1]);
-    let pending = ctx.pending()?;
-    let Some(entry) = cache.entry_with(ctx.ledger(), kind, key, &pending)? else {
+    ctx.live_kind(kind)?;
+    let pending = ctx.pending(out)?;
+    let Some(entry) = cache.entry_with(ctx.ledger(), kind, key, &pending.lines)? else {
         return Err(LoreError::new(format!("no ledger entry {kind} {}", repr_str(key))));
     };
+    let entry = ctx.project(kind, &entry);
+    let mut one = BTreeMap::new();
+    one.insert((kind.clone(), key.clone()), entry.clone());
+    let missing = gaps(&one, cache, &pending);
+    if ctx.opts.strict && !missing.is_empty() {
+        return Err(strict_refusal(missing));
+    }
     if ctx.opts.json {
-        Ctx::json(out, &entry_json(kind, key, &entry));
+        let mut value = entry_json(kind, key, &entry);
+        value["complete"] = Value::Bool(missing.is_empty());
+        Ctx::json(out, &value);
         return Ok(0);
     }
     Ctx::say(out, &format!("{kind} {}", repr_str(key)));
@@ -481,38 +657,61 @@ fn cmd_get(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
             Ctx::say(out, &format!("    {field}: {} by {} at {} ({})", shown_value(&side.value), side.by, side.at, side.id));
         }
     }
-    for (line, parent) in &entry.dangling {
-        Ctx::say(out, &format!("  note: line {line} names parent {parent}, not here yet"));
+    for gap in &missing {
+        Ctx::say(out, &format!("  not complete: {gap}"));
     }
     Ok(0)
 }
 
 fn cmd_find(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
     let kind = &ctx.opts.positional[0];
+    ctx.live_kind(kind)?;
     let ledger = ctx.ledger();
-    if !ledger.kinds.contains_key(kind.as_str()) {
-        return Err(LoreError::new(format!("kind {} is not declared in [ledger.kinds]", repr_str(kind))));
-    }
     let mut wheres = Vec::new();
     for word in &ctx.opts.wheres {
         let Some((field, text)) = word.split_once('=') else { return Err(LoreError::new(format!("--where {} is not field=value", repr_str(word)))) };
-        if field_type(ledger, kind, field).is_none() {
-            return Err(LoreError::new(format!("kind {kind} has no field {}", repr_str(field))));
+        if field_type(ledger, kind, field).is_none() || ledger.is_retired(kind, field) {
+            return Err(LoreError::new(format!("kind {kind} has no field {} in its state", repr_str(field))));
         }
         wheres.push((field.to_owned(), canonical(&value_of(ledger, kind, field, text).map_err(LoreError::new)?)));
     }
-    let entries = cache.state(ledger, Some(kind), &ctx.pending()?)?;
-    let found: Vec<(&Key, &Entry)> = entries
-        .iter()
+    for field in &ctx.opts.missing {
+        if field_type(ledger, kind, field).is_none() || ledger.is_retired(kind, field) {
+            return Err(LoreError::new(format!("kind {kind} has no field {} in its state", repr_str(field))));
+        }
+    }
+    // The stored state is canonical, so `"field":value` is in every match:
+    // sqlite narrows the entries down (never past one that matches), the
+    // values are then compared exactly. Entries pending lines touch are
+    // folded again and compared whatever the narrowing said.
+    let needles = wheres.iter().map(|(field, want)| format!("{}:{want}", canonical(&Value::String(field.clone())))).collect();
+    let pending = ctx.pending(out)?;
+    let entries = cache.state(ledger, Some(kind), &Filter::Holding(needles), &pending.lines)?;
+    let shown: BTreeMap<Key, Entry> = entries.iter().map(|(at, entry)| (at.clone(), ctx.project(kind, entry))).collect();
+    let found: BTreeMap<Key, Entry> = shown
+        .into_iter()
         .filter(|(_, entry)| wheres.iter().all(|(field, want)| entry.set.get(field).is_some_and(|value| canonical(value) == *want)))
+        .filter(|(_, entry)| ctx.opts.missing.iter().all(|field| !entry.set.contains_key(field)))
         .collect();
+    let missing = gaps(&found, cache, &pending);
+    if ctx.opts.strict && !missing.is_empty() {
+        return Err(strict_refusal(missing));
+    }
     if ctx.opts.json {
-        Ctx::json(out, &Value::Array(found.iter().map(|((_, key), entry)| json!({"key": key, "set": entry.set, "conflicts": entry.conflicts.keys().collect::<Vec<_>>()})).collect()));
+        let rows: Vec<Value> = found
+            .iter()
+            .map(|((_, key), entry)| {
+                let dangling: Vec<Value> = entry.dangling.iter().map(|(line, parent)| json!({"line": line, "parent": parent})).collect();
+                json!({"key": key, "set": entry.set, "conflicts": entry.conflicts.keys().collect::<Vec<_>>(), "dangling": dangling})
+            })
+            .collect();
+        Ctx::json(out, &Value::Array(rows));
         return Ok(0);
     }
     for ((_, key), entry) in &found {
         let mark = if entry.conflicts.is_empty() { String::new() } else { format!("  (conflict: {})", entry.conflicts.keys().cloned().collect::<Vec<_>>().join(", ")) };
-        Ctx::say(out, &format!("{}  {}{mark}", repr_str(key), shown_set(&entry.set)));
+        let gap = if entry.dangling.is_empty() { "" } else { "  (not complete)" };
+        Ctx::say(out, &format!("{}  {}{mark}{gap}", repr_str(key), shown_set(&entry.set)));
     }
     if found.is_empty() {
         Ctx::say(out, "nothing found");
@@ -521,20 +720,43 @@ fn cmd_find(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
 }
 
 fn cmd_fold(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
-    let entries = cache.state(ctx.ledger(), None, &ctx.pending()?)?;
+    let pending = ctx.pending(out)?;
+    let ledger = ctx.ledger();
+    let entries: BTreeMap<Key, Entry> = cache
+        .state(ledger, None, &Filter::All, &pending.lines)?
+        .into_iter()
+        .filter(|((kind, _), _)| !ledger.retired_kinds.contains(kind))
+        .map(|((kind, key), entry)| {
+            let shown = ctx.project(&kind, &entry);
+            ((kind, key), shown)
+        })
+        .collect();
+    let missing = gaps(&entries, cache, &pending);
+    if ctx.opts.strict && !missing.is_empty() {
+        return Err(strict_refusal(missing));
+    }
     let mut state: Map<String, Value> = Map::new();
     for ((kind, key), entry) in &entries {
         let by_kind = state.entry(kind.clone()).or_insert_with(|| Value::Object(Map::new()));
         if let Value::Object(map) = by_kind {
-            map.insert(key.clone(), Value::Object(entry.set.clone()));
+            // --with-state: the values with what they rest on, from one read.
+            let value = if ctx.opts.with_state { entry.to_json() } else { Value::Object(entry.set.clone()) };
+            map.insert(key.clone(), value);
         }
     }
-    let state = Value::Object(state);
     if ctx.opts.json {
-        Ctx::json(out, &state);
+        if ctx.opts.with_state {
+            Ctx::json(out, &json!({"complete": missing.is_empty(), "gaps": missing, "entries": state}));
+        } else {
+            Ctx::json(out, &Value::Object(state));
+        }
     } else {
         for ((kind, key), entry) in &entries {
-            Ctx::say(out, &format!("{kind} {}  {}", repr_str(key), shown_set(&entry.set)));
+            let mark = if entry.conflicts.is_empty() { String::new() } else { format!("  (conflict: {})", entry.conflicts.keys().cloned().collect::<Vec<_>>().join(", ")) };
+            Ctx::say(out, &format!("{kind} {}  {}{mark}", repr_str(key), shown_set(&entry.set)));
+        }
+        for gap in &missing {
+            Ctx::say(out, &format!("not complete: {gap}"));
         }
     }
     Ok(0)
@@ -544,11 +766,11 @@ fn cmd_log(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
     let (kind, key) = (&ctx.opts.positional[0], &ctx.opts.positional[1]);
     let mut lines = cache.lines(ctx.ledger(), kind, key)?;
     let journal: BTreeSet<String> = lines.iter().map(|line| line.id.clone()).collect();
-    lines.extend(ctx.pending()?.into_iter().filter(|line| line.kind == *kind && line.key == *key));
+    lines.extend(ctx.pending(out)?.lines.into_iter().filter(|line| line.kind == *kind && line.key == *key));
     if lines.is_empty() {
         return Err(LoreError::new(format!("no ledger entry {kind} {}", repr_str(key))));
     }
-    let entry = fold::fold(&lines);
+    let entry = super::fold_checked(kind, key, &lines)?;
     let by_id: BTreeMap<&str, &Line> = lines.iter().map(|line| (line.id.as_str(), line)).collect();
     let ordered: Vec<&Line> = entry.order.iter().filter_map(|id| by_id.get(id.as_str()).copied()).collect();
     if ctx.opts.json {
@@ -575,11 +797,17 @@ fn cmd_log(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
 
 fn cmd_conflicts(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
     let kind = ctx.opts.positional.first().map(String::as_str);
-    let entries = cache.state(ctx.ledger(), kind, &ctx.pending()?)?;
+    let ledger = ctx.ledger();
+    let pending = ctx.pending(out)?;
+    let entries = cache.state(ledger, kind, &Filter::Conflicted, &pending.lines)?;
     let mut rows = Vec::new();
     for ((kind, key), entry) in &entries {
-        for (field, sides) in &entry.conflicts {
-            rows.push((kind, key, field, sides));
+        if ledger.retired_kinds.contains(kind) {
+            continue;
+        }
+        let entry = ctx.project(kind, entry);
+        for (field, sides) in entry.conflicts {
+            rows.push((kind.clone(), key.clone(), field, sides));
         }
     }
     if ctx.opts.json {
@@ -609,16 +837,26 @@ fn cmd_conflicts(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
 fn cmd_status(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
     let ledger = ctx.ledger();
     let files = cache.files()?;
-    let entries = cache.state(ledger, None, &ctx.pending()?)?;
-    let conflicts: usize = entries.values().map(|entry| entry.conflicts.len()).sum();
+    let pending = ctx.pending(out)?;
+    // Counted in sqlite; with pending lines the touched entries are folded again.
+    let (count, conflicts) = if pending.lines.is_empty() {
+        let (count, conflicts, _) = cache.counts()?;
+        (count as usize, conflicts as usize)
+    } else {
+        let entries = cache.state(ledger, None, &Filter::All, &pending.lines)?;
+        (entries.len(), entries.values().map(|entry| entry.conflicts.len()).sum())
+    };
+    let with_dangling = cache.state(ledger, None, &Filter::Dangling, &pending.lines)?;
+    let missing = gaps(&with_dangling, cache, &pending);
     let mut dangling = Vec::new();
-    for ((kind, key), entry) in &entries {
+    for ((kind, key), entry) in &with_dangling {
         for (line, parent) in &entry.dangling {
             dangling.push(json!({"kind": kind, "key": key, "line": line, "parent": parent}));
         }
     }
     let lines: i64 = files.iter().map(|(_, _, lines)| lines).sum();
     let bytes: i64 = files.iter().map(|(_, bytes, _)| bytes).sum();
+    let unfinished: Vec<Value> = cache.incomplete.iter().chain(&pending.incomplete).map(|(file, tail)| json!({"file": file, "bytes": tail})).collect();
     if ctx.opts.json {
         Ctx::json(
             out,
@@ -627,23 +865,33 @@ fn cmd_status(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
                 "files": files.iter().map(|(path, bytes, lines)| json!({"path": format!("{}/{path}", ledger.dir), "bytes": bytes, "lines": lines})).collect::<Vec<_>>(),
                 "lines": lines,
                 "bytes": bytes,
-                "entries": entries.len(),
+                "entries": count,
                 "conflicts": conflicts,
                 "dangling": dangling,
+                "unfinished": unfinished,
+                "complete": missing.is_empty(),
                 "cache": cache.path.display().to_string(),
             }),
         );
         return Ok(0);
     }
-    Ctx::say(out, &format!("{}: {} journal{}, {lines} lines, {bytes} bytes; {} entries, {conflicts} conflicting field{}", ledger.dir, files.len(), if files.len() == 1 { "" } else { "s" }, entries.len(), if conflicts == 1 { "" } else { "s" }));
+    Ctx::say(
+        out,
+        &format!(
+            "{}: {} journal{}, {lines} lines, {bytes} bytes; {} entries, {conflicts} conflicting field{}{}",
+            ledger.dir,
+            files.len(),
+            if files.len() == 1 { "" } else { "s" },
+            count,
+            if conflicts == 1 { "" } else { "s" },
+            if missing.is_empty() { "" } else { "; not complete" }
+        ),
+    );
     for (path, bytes, lines) in &files {
         Ctx::say(out, &format!("  {}/{path}  {lines} lines, {bytes} bytes", ledger.dir));
     }
-    for row in &dangling {
-        Ctx::say(
-            out,
-            &format!("  dangling: {} {} line {} names parent {}, not here yet", row["kind"].as_str().unwrap_or_default(), repr_str(row["key"].as_str().unwrap_or_default()), row["line"].as_str().unwrap_or_default(), row["parent"].as_str().unwrap_or_default()),
-        );
+    for gap in &missing {
+        Ctx::say(out, &format!("  not complete: {gap}"));
     }
     Ok(0)
 }
@@ -654,10 +902,16 @@ fn cmd_check(ctx: &Ctx<'_>, out: &mut Out) -> Result<i32> {
     let folder = super::folder(&ctx.config.root, ledger);
     let (mut errors, mut warnings) = (Vec::new(), Vec::new());
     let mut all: Vec<(String, Line)> = Vec::new();
-    let mut count = 0;
     let mut sources: Vec<(String, PathBuf, Option<String>)> = Vec::new();
-    for relative in super::files(&folder) {
+    for relative in super::files(&folder)? {
         let shown = format!("{}/{relative}", ledger.dir);
+        if relative.ends_with(".lock") || relative.ends_with(".tmp") {
+            continue;
+        }
+        if relative.contains(".jsonl.torn-") {
+            warnings.push(format!("{shown}: bytes a repair set aside - look at them, then delete the file"));
+            continue;
+        }
         match journal_author(&relative) {
             Some((author, _)) => sources.push((shown, folder.join(&relative), Some(author))),
             None => errors.push(format!("{shown}: not a journal - a journal is <author>@<machine>/<YYYY-MM>.jsonl")),
@@ -668,10 +922,17 @@ fn cmd_check(ctx: &Ctx<'_>, out: &mut Out) -> Result<i32> {
     }
     let mut contents = Vec::new();
     for (shown, path, _) in &sources {
-        contents.push(std::fs::read(path).map_err(|error| LoreError::new(format!("{shown}: {error}")))?);
+        contents.push(std::fs::read(path).map_err(|error| LoreError::new(format!("{shown}: {error}; nothing was checked")))?);
     }
-    count += sources.len();
-    let jobs: Vec<(String, &[u8], usize)> = sources.iter().zip(&contents).map(|((shown, _, _), bytes)| (shown.clone(), bytes.as_slice(), 1)).collect();
+    let count = sources.len();
+    let mut jobs: Vec<(String, &[u8], usize)> = Vec::new();
+    for ((shown, _, _), bytes) in sources.iter().zip(&contents) {
+        let (whole, tail) = super::whole_lines(bytes);
+        if tail > 0 {
+            errors.push(format!("{shown}: ends in an unfinished line ({tail} bytes) - a write in progress, a copy cut short or damage; `lore ledger repair` sets it aside"));
+        }
+        jobs.push((shown.clone(), whole, 1));
+    }
     for ((shown, _, author), parsed) in sources.iter().zip(super::parse_many(&jobs, ledger)) {
         match parsed {
             Ok(lines) => {
@@ -691,20 +952,29 @@ fn cmd_check(ctx: &Ctx<'_>, out: &mut Out) -> Result<i32> {
         }
     }
     let mut places: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
-    let mut entry_of: BTreeMap<&str, (&str, &str)> = BTreeMap::new();
+    let mut first_of: BTreeMap<&str, &Line> = BTreeMap::new();
     for (place, line) in &all {
         places.entry(line.id.as_str()).or_default().push(place.as_str());
-        entry_of.insert(line.id.as_str(), (line.kind.as_str(), line.key.as_str()));
+        match first_of.get(line.id.as_str()) {
+            Some(first) if *first != line => errors.push(format!("{place}: id {} stands for another line too - an id collision, or a changed copy", line.id)),
+            Some(_) => {}
+            None => {
+                first_of.insert(line.id.as_str(), line);
+            }
+        }
     }
     for (id, at) in places.iter().filter(|(_, at)| at.len() > 1) {
         warnings.push(format!("line {id} is written {} times ({}); it counts once", at.len(), at.join(", ")));
     }
     for (place, line) in &all {
         for parent in &line.parents {
-            match entry_of.get(parent.as_str()) {
-                None => warnings.push(format!("{place}: parent {parent} is not here (yet) - its writer's journal may not have arrived")),
-                Some((kind, key)) if (*kind, *key) != (line.kind.as_str(), line.key.as_str()) => {
-                    errors.push(format!("{place}: parent {parent} is a line of {kind} {}, not of this entry", repr_str(key)));
+            match first_of.get(parent.as_str()) {
+                None => {
+                    let text = format!("{place}: parent {parent} is in no journal here - its writer's journal may not have arrived");
+                    if ctx.opts.strict { errors.push(text) } else { warnings.push(text) }
+                }
+                Some(other) if (other.kind.as_str(), other.key.as_str()) != (line.kind.as_str(), line.key.as_str()) => {
+                    errors.push(format!("{place}: parent {parent} is a line of {} {}, not of this entry", other.kind, repr_str(&other.key)));
                 }
                 Some(_) => {}
             }
@@ -725,57 +995,217 @@ fn cmd_check(ctx: &Ctx<'_>, out: &mut Out) -> Result<i32> {
     Ok(if errors.is_empty() { 0 } else { 1 })
 }
 
-/// Moves the lines of the chosen entries from a pending file into the
-/// author's journal and leaves the rest where they are.
-fn cmd_promote(ctx: &Ctx<'_>, out: &mut Out) -> Result<i32> {
+/// The lines of a pending file `--id`, `--key` and `--kind` choose: exact ids
+/// when given (each must be there), else every line of the chosen entries.
+fn choose<'a>(ctx: &Ctx<'_>, lines: &'a [Line], given: &str) -> Result<Vec<&'a Line>> {
+    if !ctx.opts.ids.is_empty() {
+        let mut chosen = Vec::new();
+        let mut absent = Vec::new();
+        for id in &ctx.opts.ids {
+            match lines.iter().find(|line| line.id == *id) {
+                Some(line) => chosen.push(line),
+                None => absent.push(id.clone()),
+            }
+        }
+        if !absent.is_empty() {
+            return Err(LoreError::with(format!("refused, nothing was moved: {given} has no line"), absent));
+        }
+        return Ok(chosen);
+    }
+    Ok(lines.iter().filter(|line| (ctx.opts.kinds.is_empty() || ctx.opts.kinds.contains(&line.kind)) && (ctx.opts.keys.is_empty() || ctx.opts.keys.contains(&line.key))).collect())
+}
+
+/// A chosen line's parent that is still only in the pending file must go with it.
+fn closure_errors(chosen: &[&Line], lines: &[Line], cache: &Cache) -> Result<Vec<String>> {
+    let picked: BTreeSet<&str> = chosen.iter().map(|line| line.id.as_str()).collect();
+    let here: BTreeSet<&str> = lines.iter().map(|line| line.id.as_str()).collect();
+    let mut errs = Vec::new();
+    for line in chosen {
+        for parent in &line.parents {
+            if here.contains(parent.as_str()) && !picked.contains(parent.as_str()) && !cache.has_line(parent)? {
+                errs.push(format!("line {} needs its parent {}, which is only in the pending file - choose it too", line.id, parent));
+            }
+        }
+    }
+    Ok(errs)
+}
+
+/// The pending file's bytes without the given lines, its unfinished last
+/// line (when there is one) kept as it was.
+fn without(bytes: &[u8], lines: &[Line], gone: &BTreeSet<&str>) -> Vec<u8> {
+    let (whole, _) = super::whole_lines(bytes);
+    let mut rest: Vec<u8> = Vec::new();
+    for line in lines.iter().filter(|line| !gone.contains(line.id.as_str())) {
+        rest.extend_from_slice(line.text().as_bytes());
+        rest.push(b'\n');
+    }
+    rest.extend_from_slice(&bytes[whole.len()..]);
+    rest
+}
+
+/// Moves the chosen lines of a pending file into the author's journal and,
+/// unless `--keep`, out of the pending file. Under the file's lock from read to
+/// rewrite, so a line written to it meanwhile is never lost. The journal is
+/// written and synced first: a crash before the pending file is rewritten
+/// leaves the lines in both places, and the next promote finds them there.
+fn cmd_promote(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
     let ledger = ctx.ledger();
     let given = &ctx.opts.positional[0];
     let path = ctx.file(given);
-    let bytes = std::fs::read(&path).map_err(|error| LoreError::new(format!("{given}: {error}")))?;
-    let lines = parse_bytes(&bytes, 1, given, ledger)?;
     let by = ctx.author()?;
-    let chosen = |line: &Line| (ctx.opts.kinds.is_empty() || ctx.opts.kinds.contains(&line.kind)) && (ctx.opts.keys.is_empty() || ctx.opts.keys.contains(&line.key));
-    let (moving, staying): (Vec<Line>, Vec<Line>) = lines.into_iter().partition(|line| chosen(line));
-    let foreign: Vec<String> = moving.iter().filter(|line| line.by != by).map(|line| format!("line {} is by {}", line.id, line.by)).collect();
-    if !foreign.is_empty() {
-        return Err(LoreError::with(format!("refused, nothing was moved: only {by}'s lines go into {by}'s journal"), foreign));
-    }
-    let cache = Cache::open(&ctx.config, ledger)?;
-    for warning in &cache.warnings {
-        out.stderr.push_str(&format!("lore: warning: {warning}\n"));
-    }
-    let mut fresh = Vec::new();
-    for line in &moving {
-        if !cache.has_line(&line.id)? {
-            fresh.push(line.clone());
-        }
-    }
     let relative = journal_of(&by, &machine(ctx.call.machine.as_deref())?, &ctx.now());
     let shown = format!("{}/{relative}", ledger.dir);
-    super::append(&super::folder(&ctx.config.root, ledger).join(&relative), &fresh)?;
-    // The pending file is not a journal: it is written again without the moved lines.
-    let mut rest = String::new();
-    for line in &staying {
-        rest.push_str(&line.text());
-        rest.push('\n');
-    }
-    std::fs::write(&path, rest.as_bytes()).map_err(|error| LoreError::new(format!("{given}: {error}")))?;
-    let entries: BTreeSet<Key> = moving.iter().map(Line::entry).collect();
+    let (moved, already, left, entries) = super::locked(&path, || {
+        let bytes = std::fs::read(&path).map_err(|error| LoreError::new(format!("{given}: {error}")))?;
+        let (lines, tail) = parse_whole(&bytes, given, ledger)?;
+        if tail > 0 {
+            out.stderr.push_str(&format!("lore: warning: {given} ends in an unfinished line ({tail} bytes); it is not moved and stays in the file\n"));
+        }
+        let chosen = choose(ctx, &lines, given)?;
+        let mut errs: Vec<String> = chosen.iter().filter(|line| line.by != by).map(|line| format!("line {} is by {}: only {by}'s lines go into {by}'s journal", line.id, line.by)).collect();
+        for line in &chosen {
+            errs.extend(write_errors(ledger, &line.kind, &line.set).into_iter().map(|error| format!("line {}: {error} - it stays in {given}", line.id)));
+        }
+        errs.extend(closure_errors(&chosen, &lines, cache)?);
+        if !errs.is_empty() {
+            return Err(LoreError::with("refused, nothing was moved", errs));
+        }
+        let mut fresh = Vec::new();
+        for line in &chosen {
+            if !cache.has_line(&line.id)? {
+                fresh.push((*line).clone());
+            }
+        }
+        super::append(&super::folder(&ctx.config.root, ledger).join(&relative), &fresh)?;
+        let gone: BTreeSet<&str> = chosen.iter().map(|line| line.id.as_str()).collect();
+        let left = if ctx.opts.keep {
+            lines.len()
+        } else {
+            super::replace(&path, &without(&bytes, &lines, &gone))?;
+            lines.len() - gone.len()
+        };
+        let entries: BTreeSet<Key> = chosen.iter().map(|line| line.entry()).collect();
+        Ok((fresh.iter().map(|line| line.id.clone()).collect::<Vec<_>>(), chosen.len() - fresh.len(), left, entries))
+    })?;
     if ctx.opts.json {
         Ctx::json(
             out,
-            &json!({"file": shown, "moved": fresh.iter().map(|line| line.id.clone()).collect::<Vec<_>>(), "already": moving.len() - fresh.len(), "left": staying.len(), "entries": entries.iter().map(|(kind, key)| json!({"kind": kind, "key": key})).collect::<Vec<_>>()}),
+            &json!({"file": shown, "moved": moved, "already": already, "left": left, "kept": ctx.opts.keep, "entries": entries.iter().map(|(kind, key)| json!({"kind": kind, "key": key})).collect::<Vec<_>>()}),
         );
     } else {
-        Ctx::say(out, &format!("moved {} line{} of {} entr{} to {shown}; {} left in {given}", fresh.len(), if fresh.len() == 1 { "" } else { "s" }, entries.len(), if entries.len() == 1 { "y" } else { "ies" }, staying.len()));
-        if moving.len() > fresh.len() {
-            Ctx::say(out, &format!("note: {} were in the journal already", moving.len() - fresh.len()));
+        let verb = if ctx.opts.keep { "copied" } else { "moved" };
+        Ctx::say(out, &format!("{verb} {} line{} of {} entr{} to {shown}; {left} left in {given}", moved.len(), if moved.len() == 1 { "" } else { "s" }, entries.len(), if entries.len() == 1 { "y" } else { "ies" }));
+        if already > 0 {
+            Ctx::say(out, &format!("note: {already} were in the journal already"));
         }
     }
     Ok(0)
 }
 
-/// Whether `path` names a file under the ledger folder (for callers that list files).
-pub fn is_ledger_path(config: &Config, relative: &str) -> bool {
-    config.ledger.as_ref().is_some_and(|ledger| relative.starts_with(&format!("{}/", ledger.dir)))
+/// Takes confirmed lines out of a pending file: each must be in a journal
+/// already. When the confirmation comes is the caller's to say - a line's
+/// copy in the journal is not one by itself. An id the file no longer holds
+/// was taken out before, and counts as done.
+fn cmd_ack(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
+    let ledger = ctx.ledger();
+    let given = &ctx.opts.positional[0];
+    let path = ctx.file(given);
+    let (removed, gone_before) = super::locked(&path, || {
+        let bytes = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+            Err(error) => return Err(LoreError::new(format!("{given}: {error}"))),
+        };
+        let (lines, _) = parse_whole(&bytes, given, ledger)?;
+        let mut errs = Vec::new();
+        let mut gone: BTreeSet<&str> = BTreeSet::new();
+        let mut before = Vec::new();
+        for id in &ctx.opts.ids {
+            match lines.iter().find(|line| line.id == *id) {
+                Some(line) if cache.has_line(&line.id)? => {
+                    gone.insert(line.id.as_str());
+                }
+                Some(line) => errs.push(format!("line {} is in no journal yet - promote it first", line.id)),
+                None => before.push(id.clone()),
+            }
+        }
+        if !errs.is_empty() {
+            return Err(LoreError::with(format!("refused, {given} was not changed"), errs));
+        }
+        if !gone.is_empty() {
+            super::replace(&path, &without(&bytes, &lines, &gone))?;
+        }
+        Ok((gone.into_iter().map(str::to_owned).collect::<Vec<_>>(), before))
+    })?;
+    if ctx.opts.json {
+        Ctx::json(out, &json!({"file": given, "removed": removed, "gone_before": gone_before}));
+    } else {
+        Ctx::say(out, &format!("took {} confirmed line{} out of {given}", removed.len(), if removed.len() == 1 { "" } else { "s" }));
+        if !gone_before.is_empty() {
+            Ctx::say(out, &format!("note: {} were taken out before", gone_before.len()));
+        }
+    }
+    Ok(0)
+}
+
+/// Prints the chosen lines of a pending file as they are, and changes nothing:
+/// what an outside step is about to send, frozen by id.
+fn cmd_export(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
+    let ledger = ctx.ledger();
+    let given = &ctx.opts.positional[0];
+    let path = ctx.file(given);
+    let texts = super::locked(&path, || {
+        let bytes = std::fs::read(&path).map_err(|error| LoreError::new(format!("{given}: {error}")))?;
+        let (lines, _) = parse_whole(&bytes, given, ledger)?;
+        let chosen = choose(ctx, &lines, given)?;
+        let errs = closure_errors(&chosen, &lines, cache)?;
+        if !errs.is_empty() {
+            return Err(LoreError::with("refused", errs));
+        }
+        Ok(chosen.iter().map(|line| line.value()).collect::<Vec<_>>())
+    })?;
+    if ctx.opts.json {
+        Ctx::json(out, &json!({"file": given, "lines": texts}));
+    } else {
+        for value in &texts {
+            Ctx::say(out, &canonical(value));
+        }
+    }
+    Ok(0)
+}
+
+/// Sets aside the unfinished last line of the author's own journals on this
+/// machine, or of the pending file given: its bytes go to `<file>.torn-<n>`.
+fn cmd_repair(ctx: &Ctx<'_>, out: &mut Out) -> Result<i32> {
+    let ledger = ctx.ledger();
+    let mut targets: Vec<(String, PathBuf)> = Vec::new();
+    match ctx.opts.positional.first() {
+        Some(given) => targets.push((given.clone(), ctx.file(given))),
+        None => {
+            let by = ctx.author()?;
+            let here = machine(ctx.call.machine.as_deref())?;
+            let folder = super::folder(&ctx.config.root, ledger);
+            for relative in super::files(&folder)? {
+                if journal_author(&relative).is_some_and(|(author, machine)| author == by && machine == here) {
+                    targets.push((format!("{}/{relative}", ledger.dir), folder.join(&relative)));
+                }
+            }
+        }
+    }
+    let mut done = Vec::new();
+    for (shown, path) in &targets {
+        if let Some((tail, kept)) = super::repair(path)? {
+            done.push(json!({"file": shown, "bytes": tail, "kept": kept.display().to_string()}));
+        }
+    }
+    if ctx.opts.json {
+        Ctx::json(out, &json!({"repaired": done}));
+    } else if done.is_empty() {
+        Ctx::say(out, "nothing to repair: every file ends in a whole line");
+    } else {
+        for row in &done {
+            Ctx::say(out, &format!("{}: set aside an unfinished line ({} bytes) in {}", row["file"].as_str().unwrap_or_default(), row["bytes"], row["kept"].as_str().unwrap_or_default()));
+        }
+    }
+    Ok(0)
 }

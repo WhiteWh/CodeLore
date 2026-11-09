@@ -73,7 +73,7 @@ fn ledger() -> Ledger {
     fields.insert("state".to_owned(), FieldType::Enum(vec!["todo".into(), "done".into()]));
     let mut kinds = BTreeMap::new();
     kinds.insert("item".to_owned(), fields);
-    Ledger { dir: "ledger".into(), kinds }
+    Ledger { dir: "ledger".into(), kinds, retired_fields: Default::default(), retired_kinds: Default::default() }
 }
 
 fn line(set: Value, parents: &[&Line], by: &str, at: &str) -> Line {
@@ -237,7 +237,7 @@ fn a_parent_not_here_yet_is_applied_and_reported() {
     assert_eq!(status["dangling"][0]["parent"], json!(missing));
     let check = repo.json("alice", &["ledger", "check"]);
     assert_eq!(check["errors"], json!([]));
-    assert!(check["warnings"][0].as_str().unwrap().contains(&format!("parent {missing} is not here (yet)")));
+    assert!(check["warnings"][0].as_str().unwrap().contains(&format!("parent {missing} is in no journal here")));
 }
 
 #[test]
@@ -356,7 +356,8 @@ fn the_written_lines_match_the_fixture_byte_for_byte() {
     let repo = Repo::new(true);
     let first = repo.set("alice", NOON, &["item", "a/b/c", "label=Größe ü", "size=2.5", "shared=true"]);
     repo.set("alice", NOON + 61, &["item", "a/b/c", "--unset", "size", "tags=[\"b\",\"a\"]", "--note", "tidied"]);
-    repo.set("alice", NOON + 62, &["item", "x", "extra={\"z\":1,\"a\":[true,null]}", "state=todo", "--parents", &first]);
+    // After the first line, concurrent with the second; numbers in their canonical form.
+    repo.set("alice", NOON + 62, &["item", "a/b/c", "extra={\"z\":1,\"a\":[true,null,1e-5,-0.0,1e20,123456789012345678,0.1]}", "state=todo", "--parents", &first]);
     let written = std::fs::read(repo.journal("alice")).unwrap();
     let place = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/ledger/alice@m1/2026-11.jsonl");
     if std::env::var_os("LORE_BLESS").is_some() {
@@ -432,4 +433,105 @@ fn the_declarations_are_checked() {
     let ledger = ledger();
     assert_eq!(config.ledger.unwrap().kinds["item"]["state"], FieldType::Enum(vec!["a".into(), "b".into()]));
     assert_eq!(ledger.dir, "ledger");
+}
+
+/// The fold by its definition, slowly: ancestors by walking back, a field's
+/// latest lines those with no descendant setting it.
+fn reference(lines: &[Line]) -> (BTreeMap<String, Value>, BTreeMap<String, Vec<String>>) {
+    let by_id: BTreeMap<&str, &Line> = lines.iter().map(|line| (line.id.as_str(), line)).collect();
+    let ancestors = |id: &str| {
+        let mut seen = std::collections::BTreeSet::new();
+        let mut stack = vec![id.to_owned()];
+        while let Some(at) = stack.pop() {
+            for parent in by_id.get(at.as_str()).map(|line| line.parents.clone()).unwrap_or_default() {
+                if by_id.contains_key(parent.as_str()) && seen.insert(parent.clone()) {
+                    stack.push(parent);
+                }
+            }
+        }
+        seen
+    };
+    let all: BTreeMap<&str, std::collections::BTreeSet<String>> = by_id.keys().map(|id| (*id, ancestors(id))).collect();
+    let mut fields: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for line in by_id.values() {
+        fields.extend(line.set.keys().cloned());
+    }
+    let (mut set, mut conflicts) = (BTreeMap::new(), BTreeMap::new());
+    for field in fields {
+        let setters: Vec<&Line> = by_id.values().copied().filter(|line| line.set.contains_key(&field)).collect();
+        let latest: Vec<&Line> = setters.iter().copied().filter(|line| !setters.iter().any(|other| all[other.id.as_str()].contains(&line.id))).collect();
+        let values: std::collections::BTreeSet<String> = latest.iter().map(|line| line.set[&field].to_string()).collect();
+        if values.len() > 1 {
+            conflicts.insert(field.clone(), latest.iter().map(|line| line.id.clone()).collect());
+        }
+        if !latest[0].set[&field].is_null() {
+            set.insert(field.clone(), latest[0].set[&field].clone());
+        }
+    }
+    (set, conflicts)
+}
+
+#[test]
+fn the_fold_agrees_with_its_definition_on_random_graphs() {
+    let mut seed: u64 = 0x2545_f491_4f6c_dd1d;
+    let mut next = |below: u64| {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        seed % below
+    };
+    for round in 0..300 {
+        let count = 1 + next(40) as usize;
+        let mut lines: Vec<Line> = Vec::new();
+        for at in 0..count {
+            let mut parents = Vec::new();
+            for _ in 0..next(4) {
+                if !lines.is_empty() {
+                    parents.push(lines[next(lines.len() as u64) as usize].id.clone());
+                }
+            }
+            if next(10) == 0 {
+                parents.push(format!("{:016x}", next(u64::MAX)));
+            }
+            let mut set = Map::new();
+            for field in ["label", "state", "size"] {
+                if next(3) == 0 {
+                    set.insert(field.to_owned(), if next(5) == 0 { Value::Null } else { json!(next(3)) });
+                }
+            }
+            if set.is_empty() {
+                set.insert("label".into(), json!(next(3)));
+            }
+            lines.push(Line::new("item", "k", set, parents, "alice", &format!("2026-11-01T00:00:{:02}Z", at % 60), None));
+        }
+        let entry = fold(&lines);
+        let (set, conflicts) = reference(&lines);
+        let got: BTreeMap<String, Value> = entry.set.iter().map(|(key, value)| (key.clone(), value.clone())).collect();
+        assert_eq!(got, set, "round {round}");
+        let got: BTreeMap<String, Vec<String>> = entry.conflicts.iter().map(|(field, sides)| (field.clone(), sides.iter().map(|side| side.id.clone()).collect())).collect();
+        assert_eq!(got, conflicts, "round {round}");
+    }
+}
+
+#[test]
+fn an_entry_of_many_lines_folds_in_linear_time() {
+    // 30 000 edits of one entry, every hundredth by a writer who missed the line before.
+    let mut lines: Vec<Line> = Vec::new();
+    for at in 0..30_000usize {
+        let parents: Vec<String> = match at {
+            0 => vec![],
+            _ if at % 100 == 0 && at > 1 => vec![lines[at - 2].id.clone()],
+            _ if at % 100 == 1 && at > 1 => vec![lines[at - 1].id.clone(), lines[at - 2].id.clone()],
+            _ => vec![lines[at - 1].id.clone()],
+        };
+        let set = json!({"label": format!("v{at}")}).as_object().unwrap().clone();
+        let line = Line::new("item", "a/b/c", set, parents, "alice", "2026-11-01T00:00:00Z", None);
+        lines.push(line);
+    }
+    let started = std::time::Instant::now();
+    let entry = fold(&lines);
+    assert!(started.elapsed() < std::time::Duration::from_secs(5), "{:?}", started.elapsed());
+    assert_eq!(entry.set["label"], json!("v29999"));
+    assert!(entry.conflicts.is_empty());
+    assert_eq!(entry.heads.len(), 1);
 }

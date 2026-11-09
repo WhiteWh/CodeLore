@@ -6,7 +6,6 @@
 //! lines' `parents` make, never over their clocks. Ledger commands write files
 //! and nothing else: versioning them is the business of whoever keeps them.
 use crate::config::{FieldType, Ledger};
-use crate::store::canonical;
 use crate::{LoreError, Result};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
@@ -136,6 +135,28 @@ pub fn at_of(seconds: i64) -> String {
 /// The refusal for an author that cannot name a folder.
 pub fn name_rule(what: &str, name: &str) -> String {
     format!("{what} {} must match ^[a-z0-9][a-z0-9._-]{{0,63}}$ (it names the journal's folder)", crate::py::repr_str(name))
+}
+
+/// A ledger line's canonical text: keys sorted at every depth, no
+/// insignificant whitespace, non-ASCII as is; an integer exactly, any other
+/// number in the shortest form that reads back as the same double (`0.1`,
+/// `0.00001`, `1e-6`, `1e+20`, `-0.0`). Read back, the text gives the same value and so
+/// the same bytes and id.
+pub fn canonical(value: &Value) -> String {
+    crate::store::canonical(value)
+}
+
+/// [`set_errors`] for a line about to be written: no retired kind or field either.
+pub fn write_errors(ledger: &Ledger, kind: &str, set: &Map<String, Value>) -> Vec<String> {
+    let mut errs = set_errors(ledger, kind, set);
+    if ledger.retired_kinds.contains(kind) {
+        errs.push(format!("kind {kind} is retired: its lines are kept and read, no new one is written"));
+    } else {
+        for field in set.keys().filter(|field| ledger.retired_fields.contains(&(kind.to_owned(), (*field).clone()))) {
+            errs.push(format!("{kind}.{field} is retired: its lines are kept and read, no new value is written"));
+        }
+    }
+    errs
 }
 
 /// What is wrong with `set` for `kind` under `ledger`'s declarations.
@@ -312,27 +333,110 @@ pub fn journal_author(relative: &str) -> Option<(String, String)> {
 
 /// Every file under the ledger's folder, two levels down, sorted; the paths
 /// are relative to that folder. Files that are not journals are listed too, so
-/// `check` can name them.
-pub fn files(dir: &Path) -> Vec<String> {
+/// `check` can name them. A folder that does not exist yet holds no journal; a
+/// folder that cannot be listed is a refusal, never an empty ledger.
+pub fn files(dir: &Path) -> Result<Vec<String>> {
+    let listing = |path: &Path| -> Result<Vec<std::fs::DirEntry>> {
+        let refused = |error: std::io::Error| LoreError::new(format!("{}: cannot be listed ({error}); nothing was read", path.display()));
+        std::fs::read_dir(path).map_err(refused)?.collect::<std::io::Result<Vec<_>>>().map_err(refused)
+    };
+    match std::fs::metadata(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(LoreError::new(format!("{}: {error}; nothing was read", dir.display()))),
+        Ok(_) => {}
+    }
     let mut found = Vec::new();
-    let Ok(folders) = std::fs::read_dir(dir) else { return found };
-    for folder in folders.flatten() {
+    for folder in listing(dir)? {
         let path = folder.path();
         let name = folder.file_name().to_string_lossy().into_owned();
-        if path.is_dir() {
-            if let Ok(entries) = std::fs::read_dir(&path) {
-                for entry in entries.flatten() {
-                    if entry.path().is_file() {
-                        found.push(format!("{name}/{}", entry.file_name().to_string_lossy()));
-                    }
+        let kind = folder.file_type().map_err(|error| LoreError::new(format!("{}: {error}", path.display())))?;
+        if kind.is_dir() {
+            for entry in listing(&path)? {
+                if entry.file_type().map_err(|error| LoreError::new(format!("{}: {error}", entry.path().display())))?.is_file() {
+                    found.push(format!("{name}/{}", entry.file_name().to_string_lossy()));
                 }
             }
-        } else if path.is_file() {
+        } else if kind.is_file() {
             found.push(name);
         }
     }
     found.sort();
-    found
+    Ok(found)
+}
+
+/// The part of a file that is whole lines, and the length of what follows its
+/// last LF: an unfinished line a writer is appending, or one an interrupted
+/// write left. Readers take whole lines only.
+pub fn whole_lines(bytes: &[u8]) -> (&[u8], usize) {
+    match bytes.iter().rposition(|byte| *byte == b'\n') {
+        Some(at) => (&bytes[..=at], bytes.len() - at - 1),
+        None => (&bytes[..0], bytes.len()),
+    }
+}
+
+/// The whole lines of a file's bytes, and how many bytes of an unfinished
+/// last line follow them.
+pub fn parse_whole(bytes: &[u8], place: &str, ledger: &Ledger) -> Result<(Vec<Line>, usize)> {
+    let (whole, tail) = whole_lines(bytes);
+    if whole.is_empty() && bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
+        return Err(LoreError::new(format!("{place}: starts with a BOM; ledger files are UTF-8 without one")));
+    }
+    Ok((parse_bytes(whole, 1, place, ledger)?, tail))
+}
+
+/// A fold that refuses what only a collision of ids can make: two different
+/// lines under one id, or a cycle of parents.
+pub fn fold_checked(kind: &str, key: &str, lines: &[Line]) -> Result<fold::Entry> {
+    let entry = fold::fold(lines);
+    if !entry.collisions.is_empty() {
+        return Err(LoreError::new(format!(
+            "{kind} {}: lines {} each stand for two different lines - an id collision, or a copy that was changed; nothing was read",
+            crate::py::repr_str(key),
+            entry.collisions.join(", ")
+        )));
+    }
+    if !entry.cycle.is_empty() {
+        return Err(LoreError::new(format!("{kind} {}: lines {} are on a cycle of parents; nothing was read", crate::py::repr_str(key), entry.cycle.join(", "))));
+    }
+    Ok(entry)
+}
+
+/// Runs `work` holding `<path>.lock` exclusively: the protocol every writer of
+/// a pending file follows, so a promote never drops a line written meanwhile.
+pub fn locked<T>(path: &Path, work: impl FnOnce() -> Result<T>) -> Result<T> {
+    use fs2::FileExt;
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let lock_path = PathBuf::from(name);
+    if let Some(parent) = lock_path.parent().filter(|parent| !parent.as_os_str().is_empty()) {
+        std::fs::create_dir_all(parent).map_err(|error| LoreError::new(format!("{}: {error}", parent.display())))?;
+    }
+    let lock = std::fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&lock_path)
+        .map_err(|error| LoreError::new(format!("{}: {error}", lock_path.display())))?;
+    lock.lock_exclusive().map_err(|error| LoreError::new(format!("{}: cannot lock ({error})", lock_path.display())))?;
+    let result = work();
+    let _ = fs2::FileExt::unlock(&lock);
+    result
+}
+
+/// Replaces the file at `path` with `bytes` so that a crash leaves the old
+/// file or the new one, never a part of either: a sibling is written and
+/// synced, then renamed over it.
+pub fn replace(path: &Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let mut name = path.as_os_str().to_owned();
+    name.push(".tmp");
+    let temporary = PathBuf::from(name);
+    let shown = temporary.display().to_string();
+    let mut file = std::fs::File::create(&temporary).map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
+    file.write_all(bytes).map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
+    file.sync_all().map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
+    drop(file);
+    std::fs::rename(&temporary, path).map_err(|error| LoreError::new(format!("{}: could not be replaced ({error}); it is unchanged, the new content is in {shown}", path.display())))
 }
 
 /// The ledger folder of a configuration.
@@ -382,12 +486,77 @@ pub fn journal_of(author: &str, machine: &str, at: &str) -> String {
     format!("{author}@{machine}/{}.jsonl", &at[..7])
 }
 
-/// Appends `lines` to the file at `path` under an exclusive lock, refusing a
-/// file whose last line is unfinished. One write, so a reader sees all or none
-/// of a whole line.
-pub fn append(path: &Path, lines: &[Line]) -> Result<()> {
+/// The length of what follows the last LF of an open file, looked for
+/// backwards in blocks.
+fn tail_of(file: &mut std::fs::File, length: u64) -> std::io::Result<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut tail = 0u64;
+    let mut block = vec![0u8; 4096];
+    while tail < length {
+        let start = length.saturating_sub(tail + block.len() as u64);
+        let size = (length - tail - start) as usize;
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut block[..size])?;
+        match block[..size].iter().rposition(|byte| *byte == b'\n') {
+            Some(at) => return Ok(tail + (size - at - 1) as u64),
+            None => tail += size as u64,
+        }
+    }
+    Ok(tail)
+}
+
+/// Sets aside the unfinished last line of the file at `path`: its bytes go to
+/// `<path>.torn-<n>` (synced) before the file is cut back to its last LF. What
+/// the bytes were - an interrupted write, a copy cut short, a damaged disk - is
+/// not known, so nothing of them is dropped. None when the file ends in a whole
+/// line.
+pub fn repair(path: &Path) -> Result<Option<(u64, PathBuf)>> {
     use fs2::FileExt;
     use std::io::{Read, Seek, SeekFrom, Write};
+    let shown = path.display().to_string();
+    let mut file = std::fs::OpenOptions::new().read(true).write(true).open(path).map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
+    file.lock_exclusive().map_err(|error| LoreError::new(format!("{shown}: cannot lock ({error})")))?;
+    let fail = |error: std::io::Error| LoreError::new(format!("{shown}: {error}; it was not changed"));
+    let result = (|| {
+        let length = file.metadata().map_err(fail)?.len();
+        let tail = tail_of(&mut file, length).map_err(fail)?;
+        if tail == 0 {
+            return Ok(None);
+        }
+        let mut bytes = vec![0u8; tail as usize];
+        file.seek(SeekFrom::Start(length - tail)).map_err(fail)?;
+        file.read_exact(&mut bytes).map_err(fail)?;
+        let mut number = 1;
+        let kept = loop {
+            let mut name = path.as_os_str().to_owned();
+            name.push(format!(".torn-{number}"));
+            let candidate = PathBuf::from(name);
+            match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
+                Ok(mut aside) => {
+                    aside.write_all(&bytes).and_then(|()| aside.sync_all()).map_err(fail)?;
+                    break candidate;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => number += 1,
+                Err(error) => return Err(fail(error)),
+            }
+        };
+        file.set_len(length - tail).map_err(fail)?;
+        file.sync_all().map_err(fail)?;
+        Ok(Some((tail, kept)))
+    })();
+    let _ = fs2::FileExt::unlock(&file);
+    result
+}
+
+/// Appends `lines` to the file at `path` under an exclusive lock on it, and
+/// syncs them to disk before it returns. Readers take whole lines only, so
+/// they never see part of one; a batch is not atomic, and a crash may leave
+/// some of its lines (a retry that must not write them twice goes through a
+/// pending file, whose lines keep their ids). A file whose last line is
+/// unfinished is refused: `lore ledger repair` sets those bytes aside.
+pub fn append(path: &Path, lines: &[Line]) -> Result<()> {
+    use fs2::FileExt;
+    use std::io::{Seek, SeekFrom, Write};
     if lines.is_empty() {
         return Ok(());
     }
@@ -395,25 +564,31 @@ pub fn append(path: &Path, lines: &[Line]) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| LoreError::new(format!("{}: {error}", parent.display())))?;
     }
-    let mut file = std::fs::OpenOptions::new().read(true).append(true).create(true).open(path).map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(path)
+        .map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
     file.lock_exclusive().map_err(|error| LoreError::new(format!("{shown}: cannot lock ({error})")))?;
+    let fail = |error: std::io::Error| LoreError::new(format!("{shown}: {error}; the lines were not written"));
     let result = (|| {
-        let length = file.metadata().map_err(|error| LoreError::new(format!("{shown}: {error}")))?.len();
-        if length > 0 {
-            file.seek(SeekFrom::Start(length - 1)).map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
-            let mut last = [0u8; 1];
-            file.read_exact(&mut last).map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
-            if last[0] != b'\n' {
-                return Err(LoreError::new(format!("{shown}: its last line is unfinished; nothing was written - `lore ledger check` names it")));
-            }
+        let length = file.metadata().map_err(fail)?.len();
+        let tail = tail_of(&mut file, length).map_err(fail)?;
+        if tail > 0 {
+            return Err(LoreError::new(format!(
+                "{shown} ends in an unfinished line ({tail} bytes); nothing was written - `lore ledger repair` sets those bytes aside, once you know what they are"
+            )));
         }
         let mut text = String::new();
         for line in lines {
             text.push_str(&line.text());
             text.push('\n');
         }
-        file.write_all(text.as_bytes()).map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
-        file.flush().map_err(|error| LoreError::new(format!("{shown}: {error}")))
+        file.seek(SeekFrom::Start(length)).map_err(fail)?;
+        file.write_all(text.as_bytes()).map_err(fail)?;
+        file.sync_data().map_err(fail)
     })();
     let _ = fs2::FileExt::unlock(&file);
     result
@@ -440,7 +615,7 @@ pub fn ref_findings(config: &crate::config::Config, references: &[(String, Strin
         }
         return (errs, warnings);
     };
-    let mut known: Option<std::collections::BTreeSet<(String, String)>> = None;
+    let mut cache: Option<cache::Cache> = None;
     for (rid, target) in references {
         let Some((kind, key)) = parse_ref(target) else {
             errs.push(format!("{rid}: refs.records names {} - a ledger entry is ledger:<kind>:<key>", crate::py::repr_str(target)));
@@ -453,16 +628,16 @@ pub fn ref_findings(config: &crate::config::Config, references: &[(String, Strin
         if !look {
             continue;
         }
-        if known.is_none() {
-            known = Some(match cache::load(config, ledger, None) {
-                Ok(state) => state.entries.into_keys().collect(),
+        if cache.is_none() {
+            match cache::Cache::open(config, ledger) {
+                Ok(opened) => cache = Some(opened),
                 Err(error) => {
                     warnings.push(format!("the ledger could not be read, so its entries were not looked up: {}", error.message));
                     return (errs, warnings);
                 }
-            });
+            }
         }
-        if known.as_ref().is_some_and(|known| !known.contains(&(kind.to_owned(), key.to_owned()))) {
+        if cache.as_ref().is_some_and(|cache| !cache.exists(kind, key).unwrap_or(false)) {
             warnings.push(format!("{rid}: refs.records names {}, which is not in the ledger (yet)", crate::py::repr_str(target)));
         }
     }

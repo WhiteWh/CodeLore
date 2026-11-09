@@ -169,6 +169,57 @@ pub struct Ledger {
     pub dir: String,
     /// Kind -> field -> type.
     pub kinds: BTreeMap<String, BTreeMap<String, FieldType>>,
+    /// (kind, field) declared `retired = true`: old lines keep being read and
+    /// checked against the field's type, the state no longer shows it, and no
+    /// new line may set it. The name is never reused.
+    pub retired_fields: std::collections::BTreeSet<(String, String)>,
+    /// Kinds listed in `ledger.retired`: read and checked as declared, shown
+    /// nowhere, written never.
+    pub retired_kinds: std::collections::BTreeSet<String>,
+}
+
+impl Ledger {
+    pub fn is_retired(&self, kind: &str, field: &str) -> bool {
+        self.retired_kinds.contains(kind) || self.retired_fields.contains(&(kind.to_owned(), field.to_owned()))
+    }
+}
+
+fn simple_type(name: &str) -> Option<FieldType> {
+    match name {
+        "string" => Some(FieldType::String),
+        "number" => Some(FieldType::Number),
+        "bool" => Some(FieldType::Bool),
+        "list" => Some(FieldType::List),
+        "object" => Some(FieldType::Object),
+        _ => None,
+    }
+}
+
+/// A field's declaration: a type name, or a table with `type` or `enum` and an
+/// optional `retired`. (type, retired), or None when it is neither.
+fn field_spec(value: &toml::Value) -> Option<(FieldType, bool)> {
+    match value {
+        toml::Value::String(name) => simple_type(name).map(|kind_of| (kind_of, false)),
+        toml::Value::Table(spec) => {
+            if spec.keys().any(|key| !["type", "enum", "retired"].contains(&key.as_str())) {
+                return None;
+            }
+            let retired = match spec.get("retired") {
+                None => false,
+                Some(flag) => flag.as_bool()?,
+            };
+            let kind_of = match (spec.get("type"), spec.get("enum")) {
+                (Some(name), None) => simple_type(name.as_str()?)?,
+                (None, Some(items)) => {
+                    let items = items.as_array().filter(|items| !items.is_empty() && items.iter().all(toml::Value::is_str))?;
+                    FieldType::Enum(items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())
+                }
+                _ => return None,
+            };
+            Some((kind_of, retired))
+        }
+        _ => None,
+    }
 }
 
 /// A ledger field name: `^[a-z0-9][a-z0-9_-]{0,47}$`.
@@ -180,7 +231,8 @@ pub fn field_name(text: &str) -> bool {
 }
 
 fn parse_ledger(value: &toml::Value, lore_dir: &str, bad: &mut Vec<String>) -> Ledger {
-    let mut ledger = Ledger { dir: "ledger".into(), kinds: BTreeMap::new() };
+    let mut ledger = Ledger { dir: "ledger".into(), kinds: BTreeMap::new(), retired_fields: Default::default(), retired_kinds: Default::default() };
+    let mut retired_kinds: Vec<String> = Vec::new();
     let Some(table) = value.as_table() else {
         bad.push("`[ledger]` must be a table".into());
         return ledger;
@@ -213,28 +265,15 @@ fn parse_ledger(value: &toml::Value, lore_dir: &str, bad: &mut Vec<String>) -> L
                             bad.push(format!("ledger field `{kind}.{field}` must match ^[a-z0-9][a-z0-9_-]{{0,47}}$"));
                             continue;
                         }
-                        let parsed = match kind_of {
-                            toml::Value::String(name) => match name.as_str() {
-                                "string" => Some(FieldType::String),
-                                "number" => Some(FieldType::Number),
-                                "bool" => Some(FieldType::Bool),
-                                "list" => Some(FieldType::List),
-                                "object" => Some(FieldType::Object),
-                                _ => None,
-                            },
-                            toml::Value::Table(spec) if spec.len() == 1 => spec
-                                .get("enum")
-                                .and_then(toml::Value::as_array)
-                                .filter(|items| !items.is_empty() && items.iter().all(toml::Value::is_str))
-                                .map(|items| FieldType::Enum(items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect())),
-                            _ => None,
-                        };
-                        match parsed {
-                            Some(parsed) => {
+                        match field_spec(kind_of) {
+                            Some((parsed, retired)) => {
                                 declared.insert(field.clone(), parsed);
+                                if retired {
+                                    ledger.retired_fields.insert((kind.clone(), field.clone()));
+                                }
                             }
                             None => bad.push(format!(
-                                "ledger field `{kind}.{field}` must be \"string\", \"number\", \"bool\", \"list\", \"object\" or {{ enum = [\"...\"] }}"
+                                "ledger field `{kind}.{field}` must be \"string\", \"number\", \"bool\", \"list\", \"object\", {{ enum = [\"...\"] }} or {{ type = \"...\" }}, with `retired = true` when it is retired"
                             )),
                         }
                     }
@@ -244,7 +283,18 @@ fn parse_ledger(value: &toml::Value, lore_dir: &str, bad: &mut Vec<String>) -> L
                     ledger.kinds.insert(kind.clone(), declared);
                 }
             }
+            "retired" => match value.as_array().filter(|items| items.iter().all(toml::Value::is_str)) {
+                Some(items) => retired_kinds = items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect(),
+                None => bad.push("`ledger.retired` must be a list of kinds".into()),
+            },
             _ => bad.push(format!("unknown key `ledger.{key}`")),
+        }
+    }
+    for kind in retired_kinds {
+        if ledger.kinds.contains_key(&kind) {
+            ledger.retired_kinds.insert(kind);
+        } else {
+            bad.push(format!("`ledger.retired` names {kind}, which is not declared - a retired kind keeps its declaration, so its lines can still be read"));
         }
     }
     let inside = |outer: &str, inner: &str| inner == outer || inner.starts_with(&format!("{outer}/"));

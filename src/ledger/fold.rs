@@ -5,7 +5,7 @@
 //! smaller id holds - the same on every machine, whatever order the files were
 //! read in. `at` orders nothing.
 use super::Line;
-use crate::store::canonical;
+use super::canonical;
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -31,7 +31,16 @@ pub struct Entry {
     pub dangling: Vec<(String, String)>,
     /// Lines, deduplicated, in the graph's order (ancestors first, ties by id).
     pub order: Vec<String>,
+    /// Lines on a cycle of parents, which only a hash collision can make: a
+    /// reader refuses the entry rather than fold it without them.
+    pub cycle: Vec<String>,
+    /// Ids under which two different lines came: only a collision of the
+    /// shortened hash, or a changed copy, makes one. A reader refuses the entry.
+    pub collisions: Vec<String>,
 }
+
+/// Raised when the fold's rules change, so a cache made by an older one is built again.
+pub const VERSION: u32 = 2;
 
 impl Entry {
     pub fn to_json(&self) -> Value {
@@ -51,13 +60,21 @@ impl Entry {
 /// Folds the lines of one entry. Lines may come in any order and twice.
 pub fn fold(lines: &[Line]) -> Entry {
     let mut by_id: BTreeMap<&str, &Line> = BTreeMap::new();
+    let mut collisions: Vec<String> = Vec::new();
     for line in lines {
-        by_id.entry(line.id.as_str()).or_insert(line);
+        match by_id.get(line.id.as_str()) {
+            Some(first) if *first != line => collisions.push(line.id.clone()),
+            Some(_) => {}
+            None => {
+                by_id.insert(line.id.as_str(), line);
+            }
+        }
     }
+    collisions.sort();
+    collisions.dedup();
     let nodes: Vec<&Line> = by_id.values().copied().collect();
     let count = nodes.len();
     let index: BTreeMap<&str, usize> = nodes.iter().enumerate().map(|(at, line)| (line.id.as_str(), at)).collect();
-    let words = count.div_ceil(64).max(1);
     let mut dangling = Vec::new();
     let parents: Vec<Vec<usize>> = nodes
         .iter()
@@ -75,8 +92,8 @@ pub fn fold(lines: &[Line]) -> Entry {
         })
         .collect();
     // Kahn's order, smallest id first among the ready: deterministic. A cycle
-    // (it would take a hash collision) leaves its lines out of the order and
-    // without ancestors.
+    // (it would take a hash collision) leaves its lines out of the order; they
+    // are named in `cycle`, and a reader refuses the entry.
     let mut waiting: Vec<usize> = parents.iter().map(Vec::len).collect();
     let mut children: Vec<Vec<usize>> = vec![Vec::new(); count];
     for (child, list) in parents.iter().enumerate() {
@@ -95,18 +112,6 @@ pub fn fold(lines: &[Line]) -> Entry {
             }
         }
     }
-    let mut ancestors: Vec<Vec<u64>> = vec![vec![0; words]; count];
-    for &node in &order {
-        let mut bits = vec![0u64; words];
-        for &parent in &parents[node] {
-            bits[parent / 64] |= 1 << (parent % 64);
-            for (word, value) in ancestors[parent].iter().enumerate() {
-                bits[word] |= value;
-            }
-        }
-        ancestors[node] = bits;
-    }
-    let is_ancestor = |older: usize, newer: usize| ancestors[newer][older / 64] & (1 << (older % 64)) != 0;
     let mut has_child = vec![false; count];
     for list in &parents {
         for parent in list {
@@ -114,6 +119,40 @@ pub fn fold(lines: &[Line]) -> Entry {
         }
     }
     let heads: Vec<String> = (0..count).filter(|at| !has_child[*at]).map(|at| nodes[at].id.clone()).collect();
+
+    // Linear in lines x fields: walking the graph from its heads back, each
+    // line learns which fields some descendant of it sets. A line that sets a
+    // field none of its descendants sets is one of the field's latest.
+    let mut names: Vec<&str> = nodes.iter().flat_map(|line| line.set.keys().map(String::as_str)).collect();
+    names.sort_unstable();
+    names.dedup();
+    let width = names.len().div_ceil(64).max(1);
+    let field_at = |name: &str| names.binary_search(&name).unwrap_or(0);
+    let own: Vec<Vec<u64>> = nodes
+        .iter()
+        .map(|line| {
+            let mut bits = vec![0u64; width];
+            for field in line.set.keys() {
+                let at = field_at(field);
+                bits[at / 64] |= 1 << (at % 64);
+            }
+            bits
+        })
+        .collect();
+    let mut below: Vec<Vec<u64>> = vec![vec![0u64; width]; count];
+    for &node in order.iter().rev() {
+        let mut bits = vec![0u64; width];
+        for &child in &children[node] {
+            for word in 0..width {
+                bits[word] |= own[child][word] | below[child][word];
+            }
+        }
+        below[node] = bits;
+    }
+    let set_below = |node: usize, field: &str| {
+        let at = field_at(field);
+        below[node][at / 64] & (1 << (at % 64)) != 0
+    };
 
     let mut setters: BTreeMap<&str, Vec<usize>> = BTreeMap::new();
     for (at, line) in nodes.iter().enumerate() {
@@ -124,7 +163,7 @@ pub fn fold(lines: &[Line]) -> Entry {
     let mut set = Map::new();
     let mut conflicts = BTreeMap::new();
     for (field, lines) in setters {
-        let latest: Vec<usize> = lines.iter().copied().filter(|&line| !lines.iter().any(|&other| other != line && is_ancestor(line, other))).collect();
+        let latest: Vec<usize> = lines.iter().copied().filter(|&line| !set_below(line, field)).collect();
         let values: BTreeSet<String> = latest.iter().map(|&line| canonical(&nodes[line].set[field])).collect();
         // `latest` is in id order, so its first line holds.
         let holding = nodes[latest[0]].set[field].clone();
@@ -139,6 +178,11 @@ pub fn fold(lines: &[Line]) -> Entry {
             set.insert(field.to_owned(), holding);
         }
     }
+    let mut placed = vec![false; count];
+    for &at in &order {
+        placed[at] = true;
+    }
+    let cycle = (0..count).filter(|at| !placed[*at]).map(|at| nodes[at].id.clone()).collect();
     let order = order.into_iter().map(|at| nodes[at].id.clone()).collect();
-    Entry { set, heads, conflicts, dangling, order }
+    Entry { set, heads, conflicts, dangling, order, cycle, collisions }
 }

@@ -85,19 +85,36 @@ refuses (DESIGN.md §4). **Left**: a PyPI release.
 FORMAT.md §8: journals per writer that are only appended to, so nothing ever
 merges; the state is a fold over the lines' `parents` graph, conflicts are
 found by the graph and resolved by a line, never by clocks. `lore ledger
-set|get|find|fold|log|conflicts|resolve|check|status|promote`, pending lines
-(`--to`, `--pending`, `promote`), a fold cached in the user cache and read on
-from where it stopped.
+set|get|find|fold|log|conflicts|resolve|clear|check|status|promote|ack|export|repair`.
+The state comes in one read with what it rests on (`fold --with-state`), and
+`--strict` refuses one that is not complete. Pending lines move by exact id
+under a lock, the journal written and synced first and the pending file
+replaced whole; `--keep` and `ack` split the copy from its confirmation. An
+unfinished last line is never read nor written after, and `repair` sets its
+bytes aside. A parent must be a line of its own entry, on every path and
+whichever line arrives first. Fields and kinds retire without losing their
+history. The fold is linear; the cache holds each entry's fold and where its
+lines are, and reads on from where it stopped.
 
-Checks (`tests/ledger.rs`): two writers on different fields keep both; one field
-set by two concurrent lines is a conflict and the smaller id holds; an offline
-chain against another edit is a conflict; a value set back makes no false order;
-a wrong clock and the order files are read in change nothing; unknown kinds,
-fields and types are refused by name, file and line; a missing parent applies
-and is reported; the cache reads on and notices a journal that was not only
-appended to; pending lines and promote by key; resolve ends a conflict; the
-written lines match a fixture byte for byte; a lore without `[ledger]` is what
-it was.
+Checks (`tests/ledger.rs`, `tests/ledger_contract.rs`): the fold against its
+definition on random graphs; two writers on different fields keep both; one
+field set by two concurrent lines is a conflict and the smaller id holds; an
+offline chain against another edit is a conflict; a value set back makes no
+false order; a wrong clock and the order files are read in change nothing;
+numbers read back as written; unknown kinds, fields and types are refused by
+name, file and line; a missing parent applies and the state is not complete;
+an unfinished line is neither read nor dropped; the cache reads on and notices
+a journal that was not only appended to, and a damaged cache or an unreadable
+folder is never an empty state; promote moves exact lines with their parents
+and loses none to a writer waiting on the lock; resolve keeps to the heads it
+saw; a parent is a line of its own entry; two lines under one id are refused;
+find answers as a full scan would; clear unsets what was seen; retired fields
+and kinds are read, kept and never written; the written lines match a fixture
+byte for byte; a lore without `[ledger]` is what it was.
+
+Next: holding less than the whole of a cold read in memory (1M lines take
+about 2 GB at their peak); an entry edited tens of thousands of times costs
+its whole history on each refresh that touches it.
 
 ## 0.4.1 - what the first harness found
 

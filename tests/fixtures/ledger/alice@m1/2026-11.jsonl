@@ -1,3 +1,3 @@
 {"at":"2026-11-09T12:00:00Z","by":"alice","id":"213af8e1a2eb278f","key":"a/b/c","kind":"item","parents":[],"set":{"label":"Größe ü","shared":true,"size":2.5},"v":4}
 {"at":"2026-11-09T12:01:01Z","by":"alice","id":"ed3a633f49ac027c","key":"a/b/c","kind":"item","note":"tidied","parents":["213af8e1a2eb278f"],"set":{"size":null,"tags":["b","a"]},"v":4}
-{"at":"2026-11-09T12:01:02Z","by":"alice","id":"d19637e7c1251e9f","key":"x","kind":"item","parents":["213af8e1a2eb278f"],"set":{"extra":{"a":[true,null],"z":1},"state":"todo"},"v":4}
+{"at":"2026-11-09T12:01:02Z","by":"alice","id":"da88a75a99781848","key":"a/b/c","kind":"item","parents":["213af8e1a2eb278f"],"set":{"extra":{"a":[true,null,0.00001,-0.0,1e+20,123456789012345678,0.1],"z":1},"state":"todo"},"v":4}

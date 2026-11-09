@@ -239,6 +239,8 @@ dir = "ledger"     # where the journals are; inside the root, apart from `dir`
 [ledger.kinds.item]                 # a kind of entry and its fields
 label = "string"                    # "string" | "number" | "bool" | "list" | "object"
 state = { enum = ["todo", "done"] } # or one of these strings
+size = { type = "number", retired = true }  # read and kept, no longer shown or written
+# retired = ["old-kind"]            # in [ledger]: kinds read and kept, shown nowhere
 ```
 
 A key the reader does not know **inside a known table** (`commit.mood`) is
@@ -277,11 +279,12 @@ lore's `dir` nor anything in it. `<author>` and `<machine>` match
 `[a-z0-9][a-z0-9._-]{0,63}`, so a folder name means the same on a file system
 that ignores case. Each writer writes only its own files and **only appends**
 to them; two writers never touch one file. The month is the one a line was
-appended in. Any other file in `dir` is not a journal; a reader names it.
+appended in. Any other file in `dir` is not a journal; a reader names it
+(`<file>.lock`, `<file>.tmp` and `<file>.torn-<n>`, below, excepted).
 
-**A line.** One JSON object a line, canonical as in §2 - keys sorted, no
-insignificant whitespace, UTF-8 with non-ASCII as is, LF, a final newline, no
-blank lines. Inside a file the lines are in the order they were appended, not
+**A line.** One JSON object a line, canonical - keys sorted at every depth, no
+insignificant whitespace, UTF-8 with non-ASCII as is, LF - and numbers as
+below. Inside a file the lines are in the order they were appended, not
 sorted by `id`.
 
 | field | type | rule |
@@ -302,15 +305,33 @@ strings. A reader refuses a line that breaks any of this - an undeclared kind or
 field, a value of the wrong type, an `id` that is not the line's hash, a `by`
 that is not the journal's author - by file and line, and repairs nothing.
 
+**Numbers** are written so that, read back, they give the same value and the
+same bytes: an integer (it must fit in 64 bits) exactly as it is; any other
+finite number in the fewest significant digits that read back as the same
+double, with an exponent for the very small and the very large (`0.1`,
+`0.00001`, `1e-6`, `1000000000000000.0`, `1e+16`, `-0.0`). This holds inside
+lists and objects too. A reader must parse numbers exactly - correctly rounded -
+or it will not read a line back as written.
+
 ```json
 {"at":"2026-11-09T12:00:00Z","by":"alice","id":"213af8e1a2eb278f","key":"a/b/c","kind":"item","parents":[],"set":{"label":"Größe ü","shared":true,"size":2.5},"v":4}
 ```
+
+**Whole lines only.** A reader takes the lines up to a file's last LF. What
+follows it - a line being appended, a copy cut short, damage - is not read, and
+the state read is said to be **not complete**. A writer refuses to append to a
+file that ends that way; `lore ledger repair` sets those bytes aside in
+`<file>.torn-<n>` before cutting the file back to its last LF, since what they
+were is not known. A batch of lines is not atomic: a crash may leave some of
+them. A retry that must not write a line twice goes through a pending file,
+whose lines keep their ids (below).
 
 **The fold.** An *entry* is a kind and a key. Its lines form a graph by
 `parents`: a line comes after every line it descends from. Two lines are
 *concurrent* when neither descends from the other - which also catches a chain
 of edits made offline against someone else's edit. A field's value is given by
-each line that sets the field and has no descendant that sets it too:
+each line that sets the field (a `null` too) and has no descendant that sets
+it:
 
 - one such line, or several with the same value: that value;
 - several with different values: a **conflict**. Until it is resolved the
@@ -320,19 +341,44 @@ each line that sets the field and has no descendant that sets it too:
 `at` plays no part, and a value set back (A, then B, then A) is a new line
 with its own id, not the first one again. The *heads* of an entry are its
 lines that no other line of it descends from; a writer's `parents` are the
-heads it saw. A parent not (yet) among the entry's lines - its writer's journal
-has not arrived - is passed over: the line still applies, and a reader reports
-the missing parent. A parent that is a line of another entry is an error. The
-same line in two places counts once.
+heads it saw. The same line in two places counts once; two different lines
+under one id (a collision of the shortened hash, or a changed copy) are refused,
+as is a cycle of parents. The fold is linear: walking back from the heads, each
+line learns the fields its descendants set - O((V + E) x F) for V lines, E
+parent links and F fields.
 
-A conflict is resolved by an ordinary line whose `parents` hold all the
-conflicting lines (a writer takes the entry's heads), setting the field.
+A parent must be a line of the same entry. One not among the entry's lines -
+its writer's journal has not arrived - is passed over: the line still applies,
+and the state is not complete until it comes. One that is, or later turns out
+to be, a line of another entry is refused on every read and write, whichever
+arrived first.
+
+A conflict is resolved by an ordinary line whose `parents` hold the
+conflicting lines it was shown, setting the field. A line that came meanwhile
+and was not seen stays concurrent with the resolution, and so does its
+conflict. Clearing an entry is the same: a line that unsets every field the
+writer saw set or in conflict. The entry stays, empty, with its history.
+
+**Retiring.** A field declared `{ type = "...", retired = true }` (or `{ enum =
+[...], retired = true }`) keeps being read and checked against its type, takes
+part in the graph as before, and shows in a line's history, but no longer in
+the state, and no new line may set it. A kind listed in `ledger.retired` is
+read the same way and shown nowhere but in its history. A retired name is not
+used again; a new type is a new name. Taking a declaration out of lore.toml
+makes the lines that use it unreadable, by name.
 
 **Pending lines** are lines of the same format kept in a file outside the
 journals - written ahead and not yet sent. A reader may read such a file over
-the journals; moving a line into its author's journal appends it unchanged
-(same `id`, `at` and `parents`), and the pending file, which is no journal,
-may then be written again without it.
+the journals. Every program that writes one holds `<file>.lock` while it does.
+Moving lines into the author's journal appends them unchanged (same `id`, `at`
+and `parents`) and syncs the journal first; then the pending file, which is no
+journal, is replaced whole (a sibling written, synced and renamed over it),
+under the same lock from read to replace. A crash between the two leaves a line
+in both places, and the next move finds it in the journal already. Lines move
+by exact id or by entry; a line whose parent is only in the pending file moves
+with it, or not at all. Lines may also be copied into the journal and taken out
+of the pending file later, when whoever sends them confirms it: taking out a
+line no longer there is done already.
 
 **References.** A knowledge record names a ledger entry in `refs.records` as
 `ledger:<kind>:<key>`. The kind must be declared; an entry not in the ledger is
