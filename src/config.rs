@@ -232,11 +232,15 @@ impl Config {
         }
     }
 
-    /// The embedding model this configuration selects (`auto` follows the
-    /// device: bge-m3 with a GPU, multilingual-e5-base on the CPU).
+    /// The embedding model this configuration selects. `auto` keeps the model
+    /// the project's vectors were made with; with none yet it follows the
+    /// device: bge-m3 with a GPU, multilingual-e5-base on the CPU.
     pub fn embedding_model(&self) -> crate::embed::EmbeddingModel {
         let name = self.embed_model.trim();
         if name.is_empty() || name == "auto" {
+            if let Some(model) = crate::index::stored_vector_model(&self.root).and_then(|id| crate::embed::EmbeddingModel::from_name(&id)) {
+                return model;
+            }
             let (device, _) = crate::embed::models::device();
             return crate::embed::EmbeddingModel::default_for(&device);
         }
@@ -250,7 +254,7 @@ impl Config {
     /// nomic-embed-text is trained with task prefixes; other models get none
     /// unless the configuration names them.
     pub fn prefixes(&self) -> (String, String) {
-        let nomic = self.embed_model.contains("nomic");
+        let nomic = self.embed_model.contains("nomic") || matches!(self.embedding_model(), crate::embed::EmbeddingModel::Nomic);
         (
             self.doc_prefix.clone().unwrap_or_else(|| if nomic { "search_document: ".into() } else { String::new() }),
             self.query_prefix.clone().unwrap_or_else(|| if nomic { "search_query: ".into() } else { String::new() }),

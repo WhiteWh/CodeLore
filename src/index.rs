@@ -209,6 +209,31 @@ pub fn index_dir_candidates(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
     std::iter::once(cache_dir().join(repo_key(root))).chain(std::iter::once_with(move || git_index_dir(root)).flatten())
 }
 
+/// The model the vectors already made for the repository at `root` came from
+/// (the records' index, then the code map's): what `embed.model = "auto"`
+/// keeps, so a changed device or a provider renamed in lore.toml does not
+/// switch the model and embed everything again. None when nothing is embedded.
+pub fn stored_vector_model(root: &Path) -> Option<String> {
+    for dir in index_dir_candidates(root) {
+        for (file, sql) in [
+            ("index.sqlite", "SELECT model FROM vectors GROUP BY model ORDER BY count(*) DESC LIMIT 1"),
+            ("atlas.sqlite", "SELECT substr(value, 1, instr(value || '/', '/') - 1) FROM meta WHERE key = 'vector_model'"),
+        ] {
+            let path = dir.join(file);
+            if !path.is_file() {
+                continue;
+            }
+            let Ok(db) = Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) else { continue };
+            if let Ok(model) = db.query_row(sql, [], |row| row.get::<_, String>(0)) {
+                if !model.is_empty() {
+                    return Some(model);
+                }
+            }
+        }
+    }
+    None
+}
+
 /// [`index_dir_candidates`] all at once.
 pub fn index_dirs(root: &Path) -> Vec<PathBuf> {
     index_dir_candidates(root).collect()
