@@ -46,32 +46,23 @@ lore guide                                   # what an agent needs to know
 
 ## Measured
 
-`lore` 0.4.1 against plain search, on its first production user: a private
-repository several agent sessions work in at once, 20.7 MB of markdown in
-`docs/` and about 4 500 source files. 88 faults from its troubleshooting page,
-each asked two ways - the **exact** text the fault prints, as an agent pastes
-it, and a **paraphrase** of the symptom sharing no three-word run with the page.
-A result answers when it holds a string of the fault's fix. Tokens are what an
-agent reads up to the answering result (all it was shown, on a miss), counted
-as bytes / 4.
+416 questions an agent asks in a real project - about faults, architecture,
+plans and code, each asked exactly and as a paraphrase - put to `lore` and to
+plain search and other memory tools for agents (SocratiCode, okf, agent-memory,
+MemPalace, Basic Memory) over the same project's docs and source:
 
-| search | question | answer first | in top 3 | in top 10 | tokens to the answer, median | p90 | calls | time, median |
-|---|---|---|---|---|---|---|---|---|
-| grep over the markdown | exact | 66% | 82% | 93% | ~1 120 | ~2 740 | 1.36 | 0.10 s |
-| grep over the markdown | paraphrase | 5% | 6% | 10% | ~3 050 | ~20 060 | 1.00 | 0.09 s |
-| grep over the code | exact | 2% | 3% | 3% | ~580 | ~8 050 | 1.85 | 0.34 s |
-| grep over the code | paraphrase | 0% | 0% | 0% | ~1 970 | ~11 120 | 1.00 | 0.17 s |
-| **lore**, text only | exact | **92%** | **100%** | **100%** | **~290** | **~490** | **1.00** | 0.09 s |
-| **lore**, text only | paraphrase | **45%** | **65%** | **82%** | **~600** | **~3 190** | **1.00** | 0.09 s |
+![Accuracy against cost](docs/bench/img/accuracy-vs-cost.png)
 
-grep is `git grep` as an agent's Grep tool runs it: the exact text fixed-string,
-else the two rarest words of the question; a result is the matched line with
-two lines either side. Over the code it reads the same way but rarely holds
-the fix - that lives in what was learned, not in the source. A grep that misses
-costs more than the table shows: the agent searches again. `lore` here is the
-fault records among 1 490 other rows of the same page, text search alone (no
-embedding model). Measured 2026-11-09; the method, every number and how to run
-it again: [docs/RESULTS-rust.md](docs/RESULTS-rust.md).
+| | answer within 20k tokens | answer first | tokens per answer found | query, exact / paraphrase |
+|---|---|---|---|---|
+| **`lore find`** (knowledge questions) | **77%** | **53%** | **~2 000** | 0.31 s / 0.31 s (0.08 s words only) |
+| **`lore atlas`** (code questions) | **68%** | **46%** | **~4 300** | 0.16 s / 0.18 s |
+| SocratiCode | 61% | 27% | ~4 000 | 0.06 s / 0.06 s |
+| grep over the docs | 36% | 19% | ~11 600 | 0.10 s / 0.05 s |
+| okf (whole documents) | 11% | 51% | ~256 000 | 1.4 s / 1.4 s |
+
+What each number means, how it was measured, every chart and the limits:
+[docs/BENCHMARK.md](docs/BENCHMARK.md).
 
 ## The problem it solves
 

@@ -1,0 +1,517 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CodeLore Benchmark</title>
+<style>
+  :root { --bg: #f6f5f1; --panel: #ffffff; --fg: #1d2127; --muted: #5d6470; --line: #dedbd2; --grid: #ebe8e0;
+          --c-exact: #2b6cb0; --c-para: #d97a2b; --c-md: #8a8f99; --c-lore: #2f855a; --lore-row: #eef6f1;
+          --d1: #1f4f8f; --d2: #3b78c4; --d3: #7aa8dd; --d4: #b9d2ef; --d0: #e2dfd7; --on-dark: #ffffff; --lore-band: #dcf0e3; --lore-ink: #1d6b42;
+          --sans: "Segoe UI", system-ui, -apple-system, sans-serif; --serif: Georgia, "Times New Roman", serif; color-scheme: light; }
+  @media (prefers-color-scheme: dark) { :root { --bg: #15171b; --panel: #1d2026; --fg: #e8e6e1; --muted: #a0a6b0; --line: #343842; --grid: #2a2e36;
+          --c-exact: #6aa8ee; --c-para: #f0a35e; --c-md: #9aa0aa; --c-lore: #5cc48a; --lore-row: #1f2b25; --d1: #9cc8f5; --d2: #5f9fe6; --d3: #3c74bd; --d4: #2a4b78; --d0: #343944; --on-dark: #10141a; --lore-band: #1d3527; --lore-ink: #7fe0a8; color-scheme: dark; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.5 var(--sans); }
+  .wrap { max-width: 1240px; margin: 0 auto; padding: 32px max(16px, 3vw) 64px; display: flex; flex-direction: column; gap: 28px; }
+  h1 { font: 400 32px/1.15 var(--serif); margin: 0 0 8px; text-wrap: balance; }
+  .lead { margin: 0; max-width: 78ch; color: var(--muted); }
+  .lead b { color: var(--fg); font-variant-numeric: tabular-nums; }
+  .stamp { font-size: 12px; color: var(--muted); margin-top: 6px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 20px; min-width: 0; }
+  .card h2 { font-size: 17px; font-weight: 600; margin: 0 0 4px; }
+  .sub { margin: 0 0 14px; color: var(--muted); font-size: 13px; max-width: 90ch; }
+  .controls { display: flex; flex-wrap: wrap; gap: 16px; align-items: center; margin-bottom: 14px; }
+  select { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--fg); }
+  .legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px; vertical-align: -1px; }
+  .multiples { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 520px), 1fr)); gap: 22px; }
+  .panel h3 { font-size: 14px; font-weight: 600; margin: 0 0 6px; }
+  .chart { position: relative; }
+  svg { display: block; width: 100%; height: auto; overflow: visible; }
+  svg text { font-family: var(--sans); }
+  .tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 14px rgba(0,0,0,.15); padding: 6px 9px; font-size: 12px; white-space: nowrap; opacity: 0; z-index: 3; }
+  .tip .t { color: var(--muted); }
+  .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 480px), 1fr)); gap: 22px; }
+  .tablewrap { max-height: 560px; overflow: auto; }
+  table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+  th { position: sticky; top: 0; background: var(--panel); text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th button { all: unset; cursor: pointer; font-weight: 600; }
+  th button:focus-visible { outline: 2px solid var(--c-exact); outline-offset: 2px; }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--grid); }
+  td.num, th.num { text-align: right; }
+    .intro p, .intro li { font-size: 13.5px; margin: 0 0 8px; max-width: 75ch; }
+  .intro ol { padding-left: 20px; margin: 0 0 8px; }
+  .intro code, .sub code { font-size: 12px; }
+  .scope { display: inline-block; margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+  tr.lore td:first-child, td.lore-name { color: var(--lore-ink); font-weight: 700; }
+  .pbar { display: flex; align-items: center; gap: 6px; min-width: 92px; }
+  .pbar i { display: block; height: 8px; border-radius: 2px; background: var(--c-exact); }
+  .pbar span { font-variant-numeric: tabular-nums; min-width: 3ch; text-align: right; }
+  #depth th button { white-space: nowrap; }
+  details summary { cursor: pointer; font-weight: 600; }
+  dl { display: grid; grid-template-columns: minmax(8rem, max-content) 1fr; gap: 6px 16px; font-size: 13px; }
+  dt { color: var(--muted); } dd { margin: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>CodeLore против поиска по документации и коду</h1>
+    <p class="lead" id="lead"></p>
+    <div class="stamp">Данные собраны: 2026-11-09 15:47</div>
+  </header>
+
+  <section class="grid2 intro">
+    <div class="card">
+      <h2>Что это и зачем</h2>
+      <p><b>CodeLore</b> (команда <code>lore</code>) — память проекта для агентов: неисправности, решения, разборы и планы хранятся записями в самом репозитории, а не россыпью Markdown-файлов. Эта страница — замер: насколько быстрее и дешевле агент находит нужное знание через lore, чем через обычный поиск и другие инструменты памяти.</p>
+      <p>Проверка на рабочем проекте, который ведут несколько агентских сессий: 416 вопросов, какие агент задаёт в работе, — о неисправностях, архитектуре, планах и коде, каждый точной формулировкой и пересказом своими словами. Конкуренты искали по документации и исходникам проекта до появления CodeLore, lore — по своим записям и карте кода.</p>
+      <p>Что меряем: находит ли система ответ и на каком месте; <b>сколько токенов агенту приходится прочитать</b> до ответа (это его рабочий контекст и деньги); сколько стоит записать знание; сколько ждать ответа и сборки индекса.</p>
+    </div>
+    <div class="card">
+      <h2>Как lore отвечает: всё решает он сам</h2>
+      <p>Агент пишет одну команду — <code>lore find "&lt;вопрос или текст ошибки&gt;"</code>. Дальше lore сам выбирает путь:</p>
+      <ol>
+        <li><b>Сначала текст</b> (SQLite FTS5: слова, целые термины, точные строки ошибок). Если вопрос — это ошибка, путь, имя функции или код, или в записи нашлась точная строка, ответ уходит сразу, примерно за 0,1 с, без модели.</li>
+        <li><b>Иначе — ещё и смысл.</b> Встроенная модель (nomic-embed-text, без Ollama и облака) находит записи по смыслу, оба списка сливаются по рангу. Модель держит в памяти фоновый <code>lore model serve</code>, поэтому такой поиск — около 0,3 с.</li>
+        <li><b>Код</b> — карта кода Atlas: куски файлов, символы, импорты. <code>lore atlas search</code> ищет по ней, <code>lore for &lt;файл&gt;</code> показывает, что lore знает о файле и кто его импортирует; с <code>[atlas] find = true</code> места в коде <code>lore find</code> добавляет в выдачу сам.</li>
+      </ol>
+      <p class="sub">На графиках «lore: слова + смысл» — обычный <code>lore find</code> с этим выбором пути; «только слова» — тот же поиск с <code>--text-only</code>, для сравнения; «lore atlas: код» — поиск по карте кода.</p>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Точность по категориям</h2>
+    <p class="sub">«Ответ в пределах 20 тыс. токенов» — доля вопросов, где ответ найден и прочитать до него нужно не больше, чем помещается в рабочий контекст агента. «Ответ первым» и «в top-10» считают попаданием и целый документ на 1,4 МБ. lore — то, что запускает агент: вопросы о неисправностях, архитектуре и планах — <code>lore find</code> по записям, вопросы о коде — <code>lore atlas search</code> по исходникам (в «Коде» это строка lore atlas).</p>
+    <div class="controls">
+      <label>Мера <select id="metric">
+        <option value="within20k">Ответ в пределах 20 тыс. токенов</option>
+        <option value="first">Ответ первым</option>
+        <option value="top10">Ответ в top-10</option>
+        <option value="tokens">Токенов до ответа (медиана, лог. шкала)</option>
+      </select></label>
+      <div class="legend"><span><i style="background:var(--c-exact)"></i>точный вопрос (для неисправностей — текст ошибки)</span><span><i style="background:var(--c-para)"></i>пересказ</span></div>
+    </div>
+    <div class="multiples" id="multiples"></div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>Сколько стоит записать знание</h2>
+      <p class="sub">Медиана токенов, которые пишет агент: раздел .md в документации проекта против записи lore с тем же знанием (части, перенесённые ровно в одну запись).</p>
+      <div class="legend" style="margin-bottom:10px"><span><i style="background:var(--c-md)"></i>.md</span><span><i style="background:var(--c-lore)"></i>lore</span></div>
+      <div class="chart" id="ingest"></div>
+    </div>
+    <div class="card">
+      <h2>Сколько стоит прочитать знание</h2>
+      <label class="scope">Вопросы: <select class="scope-select">
+        <option value="all">все</option><option value="faults">неисправности (176)</option><option value="architecture">архитектура (80)</option><option value="plans">планы (80)</option><option value="code">код (80)</option>
+      </select></label>
+      <p class="sub">lore — каждая команда на своих вопросах: lore find — о неисправностях, архитектуре и планах (336), lore atlas — о коде (80); остальные системы — на всех выбранных. Токенов на один найденный ответ, лог. шкала: всё, что агент прочитал по выбранным вопросам (до ответа, а где ответа нет — впустую), делённое на число найденных ответов. «По умолчанию» — агент без инструментов, grep по документации.</p>
+      <div class="legend" style="margin-bottom:10px"><span><i style="background:var(--c-lore)"></i>lore</span><span><i style="background:var(--c-md)"></i>другие</span></div>
+      <div class="chart" id="reading"></div>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="card">
+      <h2>На каком месте выдачи ответ</h2>
+      <label class="scope">Вопросы: <select class="scope-select">
+        <option value="all">все</option><option value="faults">неисправности (176)</option><option value="architecture">архитектура (80)</option><option value="plans">планы (80)</option><option value="code">код (80)</option>
+      </select></label>
+      <p class="sub">Каждая полоса — выбранные вопросы (у lore find — о знаниях, у lore atlas — о коде). Слева — доля, где правильный ответ стоит в выдаче первым; дальше — на 2–3-м, 4–5-м, 6–10-м месте; серая часть справа — ответа нет среди первых десяти. <b>Лучше — длиннее левая часть и короче серая.</b> Справа у полосы те же числа словами.</p>
+      <div class="legend" id="depth-legend" style="margin-bottom:10px"></div>
+      <div class="chart" id="depth-bars"></div>
+      <p class="sub" style="margin-top:10px">okf и MemPalace часто «находят» ответ, потому что отдают документ целиком: ответ где-то внутри файла на десятки и сотни тысяч токенов. Сколько это стоит прочитать — на графике справа.</p>
+    </div>
+    <div class="card">
+      <h2>Точность против цены</h2>
+      <p class="sub">Вопросы — по переключателю слева (lore find — о знаниях, lore atlas — о коде). По вертикали — доля вопросов, где ответ найден в пределах 20 тыс. токенов чтения; по горизонтали — токенов на один найденный ответ (лог. шкала). Лучше — выше и левее.</p>
+      <div class="legend" style="margin-bottom:10px"><span><i style="background:var(--c-lore)"></i>lore</span><span><i style="background:var(--c-md)"></i>другие</span></div>
+      <div class="chart" id="depth-scatter"></div>
+    </div>
+  </section>
+
+  <details class="card">
+    <summary>Все числа: глубина ответа и цена чтения</summary>
+    <p class="sub" style="margin-top:10px">Top-k — доля вопросов с ответом среди первых k результатов. «≤ 20k» — ответ найден и прочитать до него не больше 20 тыс. токенов. Токены — байты / 4 всего прочитанного. Нажмите на заголовок, чтобы отсортировать.</p>
+    <div class="tablewrap"><table id="depth"><thead><tr>
+      <th><button data-k="label">Система</button></th>
+      <th><button data-k="top1">Top-1</button></th><th><button data-k="top3">Top-3</button></th><th><button data-k="top5">Top-5</button></th><th><button data-k="top10">Top-10</button></th>
+      <th><button data-k="within20k">≤ 20k токенов</button></th>
+      <th class="num"><button data-k="found_median">До ответа, медиана</button></th>
+      <th class="num"><button data-k="miss_median">Впустую, медиана</button></th>
+      <th class="num"><button data-k="per_answer">На найденный ответ</button></th>
+    </tr></thead><tbody></tbody></table></div>
+  </details>
+
+  <section class="card">
+    <h2>Время индекса и записи</h2>
+    <p class="sub">Каждая сборка — с пустого кэша, по одной за раз. «Лёгкая нагрузка» — без сборок рядом, только фоновые процессы (загрузка CPU перед замером — в примечании); «под нагрузкой» — первый замер, во время сборок Zerus и Unreal. Индексы других систем на лёгкой нагрузке не пересобирались: они уже были, а их время сборки на этой машине — десятки минут.</p>
+    <div class="tablewrap"><table id="timings"><thead><tr><th>Операция</th><th>Система</th><th>Данные</th><th class="num">Лёгкая нагрузка, с</th><th class="num">Под нагрузкой, с</th><th>Примечание</th></tr></thead><tbody></tbody></table></div>
+  </section>
+
+  <section class="card" id="latency-card">
+    <h2>Скорость ответа на запрос</h2>
+    <p class="sub" id="latency-sub"></p>
+    <div class="legend" style="margin-bottom:10px"><span><i style="background:var(--c-lore)"></i>lore</span><span><i style="background:var(--c-md)"></i>другие</span></div>
+    <div class="multiples" id="latency"></div>
+  </section>
+
+  <section class="card">
+    <h2>Все строки</h2>
+    <p class="sub">Нажмите на заголовок, чтобы отсортировать.</p>
+    <div class="tablewrap"><table id="all"><thead><tr>
+      <th><button data-k="system">Система</button></th><th><button data-k="category">Категория</button></th><th><button data-k="kind">Вопрос</button></th>
+      <th class="num"><button data-k="n">n</button></th><th class="num"><button data-k="first">Первым</button></th><th class="num"><button data-k="top10">Top-10</button></th>
+      <th class="num"><button data-k="within20k">≤ 20k токенов</button></th><th class="num"><button data-k="tokens">Токенов до ответа</button></th><th><button data-k="corpus">Искали по</button></th>
+    </tr></thead><tbody></tbody></table></div>
+  </section>
+
+
+  <section class="card" id="models">
+    <h2>Модели и поиск</h2>
+    <p class="sub">Чем ищет каждая система в этом замере и откуда у неё модель. Все работают локально, без ключей и облачных API.</p>
+    <div class="tablewrap"><table><thead><tr><th>Система</th><th>Как ищет</th><th>Модель эмбеддингов</th><th>Откуда модель</th><th>Зачем она здесь</th></tr></thead><tbody>
+      <tr class="lore"><td>lore find: слова + смысл</td><td>SQLite FTS5 по словам и по целым терминам, точные строки ошибок, смысловой список; слияние по рангу (RRF)</td><td>nomic-embed-text-v1.5, 768 изм.</td><td>встроена в lore: веса скачиваются один раз с Hugging Face (размер и SHA-256 закреплены), считаются на CPU (candle) или GPU через DirectML</td><td>пересказы и вопросы своими словами; точные вопросы и код роутер отдаёт текстовому поиску без модели</td></tr>
+      <tr class="lore"><td>lore find: только слова</td><td>то же без смыслового списка</td><td>—</td><td>—</td><td>показать, что даёт один текстовый поиск</td></tr>
+      <tr class="lore"><td>lore atlas: код</td><td>FTS5 по кускам кода (слова, разбитые идентификаторы, целые термины) и по определениям символов; RRF</td><td>в замере точности не использовалась</td><td>та же встроенная nomic-embed-text-v1.5 (atlas.semantic)</td><td>точность снята по тексту; эмбеддинги карты кода рабочего проекта (31 723 куска) на GPU — 24 мин, см. «Время индекса и записи»</td></tr>
+      <tr><td>grep по md / по коду</td><td>git grep: точная строка, иначе два самых редких слова</td><td>—</td><td>—</td><td>базовая линия: так ищет агент без инструментов</td></tr>
+      <tr><td>SocratiCode</td><td>Qdrant: BM25 и плотные векторы, слияние RRF, по кускам файлов</td><td>nomic-embed-text, 768 изм.</td><td>Ollama, локально</td><td>его конфигурация по умолчанию для локальной работы</td></tr>
+      <tr><td>okf</td><td>BM25 в памяти по Markdown-концептам, пересчёт при каждом поиске</td><td>—</td><td>—</td><td>модели нет в принципе</td></tr>
+      <tr><td>agent-memory</td><td>SQLite FTS5 по разделам Markdown, ответ — пакет разделов в бюджете</td><td>—</td><td>—</td><td>модели нет в принципе</td></tr>
+      <tr><td>MemPalace</td><td>ChromaDB: векторы по кускам («ящикам») плюс BM25</td><td>all-MiniLM-L6-v2 (minilm)</td><td>ONNX-модель Chroma, скачивается при первом запуске</td><td>его модель по умолчанию</td></tr>
+      <tr><td>Basic Memory</td><td>SQLite FTS по заметкам («слова») или по векторам («смысл»)</td><td>BAAI/bge-small-en-v1.5 (для смыслового режима)</td><td>FastEmbed, ONNX, скачивается при первом запуске</td><td>его модель по умолчанию; в таблице оба режима, «слова» и «смысл»</td></tr>
+    </tbody></table></div>
+  </section>
+
+  <details class="card">
+    <summary>Как измерено</summary>
+    <dl>
+      <dt>Проект</dt><dd>Рабочий проект, который ведут несколько агентских сессий: 575 файлов документации (20 МБ) и 4 524 исходника на коммите 46e6e821, до появления CodeLore; lore проекта — 6 773 записи после переноса документации.</dd>
+      <dt>Вопросы</dt><dd>Неисправности: 88 строк страницы неисправностей, точный текст ошибки и пересказ. Архитектура, планы, код: по 40 частей документации и функций кода; пересказ не делит с источником ни одной фразы из трёх слов и не содержит ключей ответа.</dd>
+      <dt>Ответ</dt><dd>Результат отвечает, когда содержит строку исправления или имя функции из ключей вопроса; правило одинаковое для всех систем.</dd>
+      <dt>Токены</dt><dd>Байты / 4 всего, что агент прочитал до ответа; если ответ лежит в документе за фрагментом, документ читается целиком.</dd>
+      <dt>Конкуренты</dt><dd>Каждый проиндексировал файлы своим обычным способом, с настройками по умолчанию. projectmem не умеет брать документы и не участвует. SocratiCode по неисправностям — прогон 2026-10-24 на тех же вопросах.</dd>
+      <dt>Чего нет</dt><dd>Один проект; время — на рабочей машине, без полностью свободного железа; где lore с моделью посчитан на 1 527 записях — это видно в колонке «Искали по»; Atlas — без модели.</dd>
+    </dl>
+  </details>
+</div>
+<script>
+const DATA = {"accuracy": [{"key": "lore find: слова + смысл|faults|exact", "system": "lore find: слова + смысл", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.9545, "top10": 1.0, "within20k": 1.0, "tokens": 276, "corpus": "записи lore"}, {"key": "lore find: слова + смысл|faults|para", "system": "lore find: слова + смысл", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.5341, "top10": 0.875, "within20k": 0.875, "tokens": 451, "corpus": "записи lore"}, {"key": "lore find: слова + смысл|architecture|exact", "system": "lore find: слова + смысл", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.675, "top10": 0.975, "within20k": 0.975, "tokens": 574, "corpus": "записи lore"}, {"key": "lore find: слова + смысл|architecture|para", "system": "lore find: слова + смысл", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.25, "top10": 0.575, "within20k": 0.575, "tokens": 1847, "corpus": "записи lore"}, {"key": "lore find: слова + смысл|plans|exact", "system": "lore find: слова + смысл", "category": "планы", "kind": "точный", "n": 40, "first": 0.225, "top10": 0.625, "within20k": 0.625, "tokens": 2349, "corpus": "записи lore"}, {"key": "lore find: слова + смысл|plans|para", "system": "lore find: слова + смысл", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.025, "top10": 0.2, "within20k": 0.2, "tokens": 4083, "corpus": "записи lore"}, {"key": "lore find: только слова|faults|exact", "system": "lore find: только слова", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.9432, "top10": 1.0, "within20k": 1.0, "tokens": 276, "corpus": "записи lore проекта (6 773)"}, {"key": "lore find: только слова|faults|para", "system": "lore find: только слова", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.4091, "top10": 0.7159, "within20k": 0.7159, "tokens": 936, "corpus": "записи lore проекта (6 773)"}, {"key": "lore find: только слова|architecture|exact", "system": "lore find: только слова", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.625, "top10": 0.975, "within20k": 0.975, "tokens": 602, "corpus": "записи lore проекта (6 773)"}, {"key": "lore find: только слова|architecture|para", "system": "lore find: только слова", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.1, "top10": 0.475, "within20k": 0.475, "tokens": 3844, "corpus": "записи lore проекта (6 773)"}, {"key": "lore find: только слова|plans|exact", "system": "lore find: только слова", "category": "планы", "kind": "точный", "n": 40, "first": 0.275, "top10": 0.55, "within20k": 0.55, "tokens": 2868, "corpus": "записи lore проекта (6 773)"}, {"key": "lore find: только слова|plans|para", "system": "lore find: только слова", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.05, "top10": 0.15, "within20k": 0.15, "tokens": 4081, "corpus": "записи lore проекта (6 773)"}, {"key": "grep по md|faults|exact", "system": "grep по md", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.6591, "top10": 0.9318, "within20k": 0.9773, "tokens": 1122, "corpus": "docs/*.md 46e6e821"}, {"key": "grep по md|faults|para", "system": "grep по md", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.0455, "top10": 0.1023, "within20k": 0.1705, "tokens": 3053, "corpus": "docs/*.md 46e6e821"}, {"key": "grep по md|architecture|exact", "system": "grep по md", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.075, "top10": 0.225, "within20k": 0.3, "tokens": 1718, "corpus": "docs/*.md 46e6e821"}, {"key": "grep по md|architecture|para", "system": "grep по md", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.0, "top10": 0.0, "within20k": 0.0, "tokens": 332, "corpus": "docs/*.md 46e6e821"}, {"key": "grep по md|plans|exact", "system": "grep по md", "category": "планы", "kind": "точный", "n": 40, "first": 0.075, "top10": 0.25, "within20k": 0.3, "tokens": 1429, "corpus": "docs/*.md 46e6e821"}, {"key": "grep по md|plans|para", "system": "grep по md", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.025, "top10": 0.05, "within20k": 0.075, "tokens": 1812, "corpus": "docs/*.md 46e6e821"}, {"key": "grep по md|code|exact", "system": "grep по md", "category": "код", "kind": "точный", "n": 40, "first": 0.175, "top10": 0.325, "within20k": 0.4, "tokens": 2202, "corpus": "docs/*.md 46e6e821"}, {"key": "grep по md|code|para", "system": "grep по md", "category": "код", "kind": "пересказ", "n": 40, "first": 0.05, "top10": 0.125, "within20k": 0.125, "tokens": 398, "corpus": "docs/*.md 46e6e821"}, {"key": "grep по коду|faults|exact", "system": "grep по коду", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.0227, "top10": 0.0341, "within20k": 0.0341, "tokens": 583, "corpus": "исходники 46e6e821"}, {"key": "grep по коду|faults|para", "system": "grep по коду", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.0, "top10": 0.0, "within20k": 0.0, "tokens": 1969, "corpus": "исходники 46e6e821"}, {"key": "grep по коду|architecture|exact", "system": "grep по коду", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.025, "top10": 0.05, "within20k": 0.075, "tokens": 1174, "corpus": "исходники 46e6e821"}, {"key": "grep по коду|architecture|para", "system": "grep по коду", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.025, "top10": 0.025, "within20k": 0.025, "tokens": 209, "corpus": "исходники 46e6e821"}, {"key": "grep по коду|plans|exact", "system": "grep по коду", "category": "планы", "kind": "точный", "n": 40, "first": 0.025, "top10": 0.1, "within20k": 0.15, "tokens": 964, "corpus": "исходники 46e6e821"}, {"key": "grep по коду|plans|para", "system": "grep по коду", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.025, "top10": 0.025, "within20k": 0.025, "tokens": 446, "corpus": "исходники 46e6e821"}, {"key": "grep по коду|code|exact", "system": "grep по коду", "category": "код", "kind": "точный", "n": 40, "first": 0.2, "top10": 0.4, "within20k": 0.6, "tokens": 455, "corpus": "исходники 46e6e821"}, {"key": "grep по коду|code|para", "system": "grep по коду", "category": "код", "kind": "пересказ", "n": 40, "first": 0.0, "top10": 0.075, "within20k": 0.15, "tokens": 1058, "corpus": "исходники 46e6e821"}, {"key": "SocratiCode|faults|exact", "system": "SocratiCode", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.3182, "top10": 0.7727, "within20k": 0.7727, "tokens": 1032, "corpus": "docs + исходники"}, {"key": "SocratiCode|faults|para", "system": "SocratiCode", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.2045, "top10": 0.4886, "within20k": 0.4886, "tokens": 3639, "corpus": "docs + исходники"}, {"key": "SocratiCode|architecture|exact", "system": "SocratiCode", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.475, "top10": 0.7, "within20k": 0.7, "tokens": 724, "corpus": "docs + исходники"}, {"key": "SocratiCode|architecture|para", "system": "SocratiCode", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.075, "top10": 0.325, "within20k": 0.325, "tokens": 4670, "corpus": "docs + исходники"}, {"key": "SocratiCode|plans|exact", "system": "SocratiCode", "category": "планы", "kind": "точный", "n": 40, "first": 0.475, "top10": 0.825, "within20k": 0.825, "tokens": 1034, "corpus": "docs + исходники"}, {"key": "SocratiCode|plans|para", "system": "SocratiCode", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.075, "top10": 0.525, "within20k": 0.525, "tokens": 4354, "corpus": "docs + исходники"}, {"key": "SocratiCode|code|exact", "system": "SocratiCode", "category": "код", "kind": "точный", "n": 40, "first": 0.5, "top10": 0.8, "within20k": 0.8, "tokens": 619, "corpus": "docs + исходники"}, {"key": "SocratiCode|code|para", "system": "SocratiCode", "category": "код", "kind": "пересказ", "n": 40, "first": 0.075, "top10": 0.425, "within20k": 0.425, "tokens": 3849, "corpus": "docs + исходники"}, {"key": "okf|faults|exact", "system": "okf", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.5795, "top10": 0.9545, "within20k": 0.0341, "tokens": 343479, "corpus": "docs/*.md 46e6e821"}, {"key": "okf|faults|para", "system": "okf", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.6364, "top10": 1.0, "within20k": 0.0, "tokens": 343479, "corpus": "docs/*.md 46e6e821"}, {"key": "okf|architecture|exact", "system": "okf", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.425, "top10": 1.0, "within20k": 0.375, "tokens": 24046, "corpus": "docs/*.md 46e6e821"}, {"key": "okf|architecture|para", "system": "okf", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.125, "top10": 0.725, "within20k": 0.125, "tokens": 43086, "corpus": "docs/*.md 46e6e821"}, {"key": "okf|plans|exact", "system": "okf", "category": "планы", "kind": "точный", "n": 40, "first": 0.6, "top10": 0.975, "within20k": 0.425, "tokens": 31678, "corpus": "docs/*.md 46e6e821"}, {"key": "okf|plans|para", "system": "okf", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.4, "top10": 0.775, "within20k": 0.1, "tokens": 57969, "corpus": "docs/*.md 46e6e821"}, {"key": "okf|code|exact", "system": "okf", "category": "код", "kind": "точный", "n": 40, "first": 0.6, "top10": 0.875, "within20k": 0.05, "tokens": 343477, "corpus": "docs/*.md 46e6e821"}, {"key": "okf|code|para", "system": "okf", "category": "код", "kind": "пересказ", "n": 40, "first": 0.45, "top10": 0.875, "within20k": 0.025, "tokens": 343479, "corpus": "docs/*.md 46e6e821"}, {"key": "agent-memory|faults|exact", "system": "agent-memory", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.1477, "top10": 0.1932, "within20k": 0.1932, "tokens": 5801, "corpus": "docs/*.md 46e6e821"}, {"key": "agent-memory|faults|para", "system": "agent-memory", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.0455, "top10": 0.1136, "within20k": 0.1136, "tokens": 5787, "corpus": "docs/*.md 46e6e821"}, {"key": "agent-memory|architecture|exact", "system": "agent-memory", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.85, "top10": 0.975, "within20k": 0.975, "tokens": 682, "corpus": "docs/*.md 46e6e821"}, {"key": "agent-memory|architecture|para", "system": "agent-memory", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.15, "top10": 0.45, "within20k": 0.45, "tokens": 5714, "corpus": "docs/*.md 46e6e821"}, {"key": "agent-memory|plans|exact", "system": "agent-memory", "category": "планы", "kind": "точный", "n": 40, "first": 0.925, "top10": 0.975, "within20k": 0.975, "tokens": 785, "corpus": "docs/*.md 46e6e821"}, {"key": "agent-memory|plans|para", "system": "agent-memory", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.275, "top10": 0.425, "within20k": 0.425, "tokens": 5631, "corpus": "docs/*.md 46e6e821"}, {"key": "agent-memory|code|exact", "system": "agent-memory", "category": "код", "kind": "точный", "n": 40, "first": 0.3, "top10": 0.4, "within20k": 0.4, "tokens": 5679, "corpus": "docs/*.md 46e6e821"}, {"key": "agent-memory|code|para", "system": "agent-memory", "category": "код", "kind": "пересказ", "n": 40, "first": 0.125, "top10": 0.225, "within20k": 0.225, "tokens": 5724, "corpus": "docs/*.md 46e6e821"}, {"key": "MemPalace|faults|exact", "system": "MemPalace", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.6023, "top10": 0.8977, "within20k": 0.3409, "tokens": 343616, "corpus": "docs/*.md 46e6e821"}, {"key": "MemPalace|faults|para", "system": "MemPalace", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.5455, "top10": 0.9545, "within20k": 0.2955, "tokens": 343696, "corpus": "docs/*.md 46e6e821"}, {"key": "MemPalace|architecture|exact", "system": "MemPalace", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.775, "top10": 0.975, "within20k": 0.775, "tokens": 261, "corpus": "docs/*.md 46e6e821"}, {"key": "MemPalace|architecture|para", "system": "MemPalace", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.375, "top10": 0.7, "within20k": 0.4, "tokens": 2310, "corpus": "docs/*.md 46e6e821"}, {"key": "MemPalace|plans|exact", "system": "MemPalace", "category": "планы", "kind": "точный", "n": 40, "first": 0.875, "top10": 1.0, "within20k": 0.875, "tokens": 259, "corpus": "docs/*.md 46e6e821"}, {"key": "MemPalace|plans|para", "system": "MemPalace", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.375, "top10": 0.725, "within20k": 0.275, "tokens": 12586, "corpus": "docs/*.md 46e6e821"}, {"key": "MemPalace|code|exact", "system": "MemPalace", "category": "код", "kind": "точный", "n": 40, "first": 0.525, "top10": 0.825, "within20k": 0.4, "tokens": 6679, "corpus": "docs/*.md 46e6e821"}, {"key": "MemPalace|code|para", "system": "MemPalace", "category": "код", "kind": "пересказ", "n": 40, "first": 0.425, "top10": 0.8, "within20k": 0.3, "tokens": 25722, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (слова)|faults|exact", "system": "Basic Memory (слова)", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.5114, "top10": 0.8977, "within20k": 0.1136, "tokens": 344590, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (слова)|faults|para", "system": "Basic Memory (слова)", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.4659, "top10": 0.6705, "within20k": 0.0682, "tokens": 344590, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (слова)|architecture|exact", "system": "Basic Memory (слова)", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.4, "top10": 0.625, "within20k": 0.2, "tokens": 11700, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (слова)|architecture|para", "system": "Basic Memory (слова)", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.05, "top10": 0.225, "within20k": 0.1, "tokens": 11601, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (слова)|plans|exact", "system": "Basic Memory (слова)", "category": "планы", "kind": "точный", "n": 40, "first": 0.525, "top10": 0.575, "within20k": 0.35, "tokens": 3437, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (слова)|plans|para", "system": "Basic Memory (слова)", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.2, "top10": 0.4, "within20k": 0.325, "tokens": 11355, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (слова)|code|exact", "system": "Basic Memory (слова)", "category": "код", "kind": "точный", "n": 40, "first": 0.425, "top10": 0.65, "within20k": 0.15, "tokens": 16278, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (слова)|code|para", "system": "Basic Memory (слова)", "category": "код", "kind": "пересказ", "n": 40, "first": 0.225, "top10": 0.45, "within20k": 0.275, "tokens": 11636, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (смысл)|faults|exact", "system": "Basic Memory (смысл)", "category": "неисправности", "kind": "ошибка", "n": 88, "first": 0.5114, "top10": 0.9545, "within20k": 0.6932, "tokens": 6356, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (смысл)|faults|para", "system": "Basic Memory (смысл)", "category": "неисправности", "kind": "пересказ", "n": 88, "first": 0.5227, "top10": 0.7841, "within20k": 0.5455, "tokens": 6440, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (смысл)|architecture|exact", "system": "Basic Memory (смысл)", "category": "архитектура", "kind": "точный", "n": 40, "first": 0.4, "top10": 0.9, "within20k": 0.7, "tokens": 5494, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (смысл)|architecture|para", "system": "Basic Memory (смысл)", "category": "архитектура", "kind": "пересказ", "n": 40, "first": 0.05, "top10": 0.525, "within20k": 0.3, "tokens": 19812, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (смысл)|plans|exact", "system": "Basic Memory (смысл)", "category": "планы", "kind": "точный", "n": 40, "first": 0.65, "top10": 0.95, "within20k": 0.775, "tokens": 2286, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (смысл)|plans|para", "system": "Basic Memory (смысл)", "category": "планы", "kind": "пересказ", "n": 40, "first": 0.2, "top10": 0.625, "within20k": 0.5, "tokens": 17175, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (смысл)|code|exact", "system": "Basic Memory (смысл)", "category": "код", "kind": "точный", "n": 40, "first": 0.45, "top10": 0.775, "within20k": 0.45, "tokens": 19937, "corpus": "docs/*.md 46e6e821"}, {"key": "Basic Memory (смысл)|code|para", "system": "Basic Memory (смысл)", "category": "код", "kind": "пересказ", "n": 40, "first": 0.225, "top10": 0.525, "within20k": 0.3, "tokens": 19294, "corpus": "docs/*.md 46e6e821"}, {"key": "lore atlas: код|code|exact", "system": "lore atlas: код", "category": "код", "kind": "точный", "n": 40, "first": 0.8, "top10": 0.925, "within20k": 0.925, "tokens": 324, "corpus": "исходники 46e6e821 (lore atlas)"}, {"key": "lore atlas: код|code|para", "system": "lore atlas: код", "category": "код", "kind": "пересказ", "n": 40, "first": 0.125, "top10": 0.425, "within20k": 0.425, "tokens": 5553, "corpus": "исходники 46e6e821 (lore atlas)"}], "ingest_tokens": [{"kind": "неисправность", "parts": 246, "md": 461, "lore": 334}, {"kind": "тема (архитектура)", "parts": 1554, "md": 403, "lore": 420}, {"kind": "рецепт", "parts": 97, "md": 413, "lore": 396}, {"kind": "решение", "parts": 28, "md": 500, "lore": 276}, {"kind": "план", "parts": 541, "md": 452, "lore": 619}, {"kind": "пункт плана", "parts": 117, "md": 265, "lore": 211}], "timings": [{"key": "lore_text", "op": "полная сборка индекса", "system": "lore (текст)", "corpus": "6 773 записи lore", "load": null, "id": "t01", "idle": 1.99, "idle_load": 64}, {"key": "lore_vectors_gpu", "op": "полная сборка индекса", "system": "lore (текст + векторы, GPU DirectML)", "corpus": "6 773 записи lore", "load": null, "id": "t02", "idle": 181.72, "idle_load": 51}, {"key": "lore_vectors_cpu", "op": "полная сборка индекса", "system": "lore (текст + векторы, CPU)", "corpus": "6 773 записи lore", "load": 2097, "note_load": "начат на GPU, видеокарта отвалилась под Unreal, досчитан на CPU", "id": "t03", "idle": null, "idle_load": null}, {"key": "atlas_text", "op": "полная сборка индекса", "system": "lore Atlas (текст)", "corpus": "4 524 исходника, 39 698 кусков", "load": 75.6, "id": "t04", "idle": 69.2, "idle_load": 34}, {"key": "atlas_vectors", "op": "эмбеддинги карты кода", "system": "lore Atlas (векторы, GPU DirectML)", "corpus": "карта кода проекта сейчас: 31 723 куска (1 216 уже были)", "load": 14400, "note_load": "до исправления пачек (8b80385): ~128 кусков/мин, оценка по прерванному прогону", "id": "t05", "idle": 1461.1, "idle_load": 13}, {"key": null, "op": "полная сборка индекса", "system": "okf", "corpus": "575 md, 20 МБ", "load": 0, "note": "индекса нет: BM25 считается при каждом поиске", "id": "t06", "idle": 0, "idle_load": null}, {"key": "agent_memory", "op": "полная сборка индекса", "system": "agent-memory", "corpus": "575 md, 20 МБ", "load": 598, "id": "t07", "idle": null, "idle_load": null}, {"key": "mempalace", "op": "полная сборка индекса", "system": "MemPalace", "corpus": "575 md, 20 МБ", "load": 1712, "id": "t08", "idle": null, "idle_load": null}, {"key": "socraticode", "op": "полная сборка индекса", "system": "SocratiCode", "corpus": "5 230 файлов, 33 696 кусков (эмбеддинги Ollama)", "load": 2140.6, "id": "t09", "idle": null, "idle_load": null}, {"key": "lore_add", "op": "запись одной единицы знания", "system": "lore add", "corpus": "в lore из 6 773 записей: валидация, дубли, коммит", "load": 6.48, "id": "t10", "idle": 1.65, "idle_load": 34}, {"key": null, "op": "запись одной единицы знания", "system": "правка .md", "corpus": "дописать раздел в файл", "load": 0, "note": "без проверки и индекса", "id": "t11", "idle": 0, "idle_load": null}, {"key": "lore_find_after_add", "op": "до первого поиска новой записи", "system": "lore find", "corpus": "после lore add, с обновлением индекса", "load": 1.91, "id": "t12", "idle": 0.98, "idle_load": 34}], "latency": {"meta": {"rounds": 1, "queries": 40}, "rows": [{"system": "lore find: только слова", "kind": "точный", "n": 15, "median_ms": 80, "p90_ms": 182}, {"system": "lore find: только слова", "kind": "пересказ", "n": 15, "median_ms": 82, "p90_ms": 138}, {"system": "lore find: слова + смысл", "kind": "точный", "n": 15, "median_ms": 310, "p90_ms": 342}, {"system": "lore find: слова + смысл", "kind": "пересказ", "n": 15, "median_ms": 308, "p90_ms": 434}, {"system": "lore atlas: код", "kind": "точный", "n": 5, "median_ms": 162, "p90_ms": 197}, {"system": "lore atlas: код", "kind": "пересказ", "n": 5, "median_ms": 184, "p90_ms": 200}, {"system": "grep по md", "kind": "точный", "n": 20, "median_ms": 95, "p90_ms": 150}, {"system": "grep по md", "kind": "пересказ", "n": 20, "median_ms": 47, "p90_ms": 323}, {"system": "grep по коду", "kind": "точный", "n": 20, "median_ms": 198, "p90_ms": 333}, {"system": "grep по коду", "kind": "пересказ", "n": 20, "median_ms": 102, "p90_ms": 341}, {"system": "SocratiCode", "kind": "точный", "n": 20, "median_ms": 59, "p90_ms": 78}, {"system": "SocratiCode", "kind": "пересказ", "n": 20, "median_ms": 60, "p90_ms": 85}, {"system": "okf", "kind": "точный", "n": 20, "median_ms": 1398, "p90_ms": 1595}, {"system": "okf", "kind": "пересказ", "n": 20, "median_ms": 1373, "p90_ms": 1657}, {"system": "agent-memory", "kind": "точный", "n": 20, "median_ms": 1192, "p90_ms": 2278}, {"system": "agent-memory", "kind": "пересказ", "n": 20, "median_ms": 946, "p90_ms": 1731}, {"system": "MemPalace", "kind": "точный", "n": 20, "median_ms": 3170, "p90_ms": 5199}, {"system": "MemPalace", "kind": "пересказ", "n": 20, "median_ms": 3222, "p90_ms": 6012}]}, "reading": {"all": [{"system": "lore find: слова + смысл", "n": 336, "mean": 1514, "median": 542, "answered": 0.7738, "per_answer": 1957, "top1": 0.5298, "top3": 0.6756, "top5": 0.7202, "top10": 0.7738, "found_median": 409, "miss_median": 4160, "within20k": 0.7738}, {"system": "lore find: только слова", "n": 336, "mean": 1784, "median": 712, "answered": 0.7054, "per_answer": 2530, "top1": 0.4792, "top3": 0.5893, "top5": 0.6518, "top10": 0.7054, "found_median": 398, "miss_median": 4127, "within20k": 0.7054}, {"system": "grep по md", "n": 416, "mean": 4156, "median": 1459, "answered": 0.3582, "per_answer": 11603, "top1": 0.1875, "top3": 0.2452, "top5": 0.274, "top10": 0.3125, "found_median": 1120, "miss_median": 2032, "within20k": 0.3582}, {"system": "grep по коду", "n": 416, "mean": 2503, "median": 881, "answered": 0.1058, "per_answer": 23667, "top1": 0.0337, "top3": 0.0529, "top5": 0.0673, "top10": 0.0721, "found_median": 252, "miss_median": 1066, "within20k": 0.1058}, {"system": "SocratiCode", "n": 416, "mean": 2481, "median": 1863, "answered": 0.613, "per_answer": 4047, "top1": 0.2716, "top3": 0.4856, "top5": 0.5457, "top10": 0.613, "found_median": 823, "miss_median": 4786, "within20k": 0.613}, {"system": "okf", "n": 416, "mean": 234560, "median": 343477, "answered": 0.9159, "per_answer": 256108, "top1": 0.5072, "top3": 0.738, "top5": 0.8221, "top10": 0.9159, "found_median": 343479, "miss_median": 328, "within20k": 0.113}, {"system": "agent-memory", "n": 416, "mean": 4300, "median": 5684, "answered": 0.3966, "per_answer": 10841, "top1": 0.2933, "top3": 0.3702, "top5": 0.387, "top10": 0.3966, "found_median": 1484, "miss_median": 5815, "within20k": 0.3966}, {"system": "MemPalace", "n": 416, "mean": 118530, "median": 9259, "answered": 0.875, "per_answer": 135463, "top1": 0.5649, "top3": 0.7308, "top5": 0.8029, "top10": 0.875, "found_median": 25831, "miss_median": 2294, "within20k": 0.4255}, {"system": "Basic Memory (слова)", "n": 416, "mean": 131645, "median": 11710, "answered": 0.613, "per_answer": 214763, "top1": 0.3822, "top3": 0.5192, "top5": 0.5625, "top10": 0.613, "found_median": 344590, "miss_median": 11605, "within20k": 0.1731}, {"system": "Basic Memory (смысл)", "n": 416, "mean": 61174, "median": 11251, "answered": 0.7812, "per_answer": 78303, "top1": 0.4087, "top3": 0.6226, "top5": 0.6947, "top10": 0.7812, "found_median": 6137, "miss_median": 20349, "within20k": 0.5529}, {"system": "lore atlas: код", "n": 80, "mean": 2870, "median": 1198, "answered": 0.675, "per_answer": 4252, "top1": 0.4625, "top3": 0.525, "top5": 0.625, "top10": 0.675, "found_median": 396, "miss_median": 6418, "within20k": 0.675}], "faults": [{"system": "lore find: слова + смысл", "n": 176, "mean": 716, "median": 319, "answered": 0.9375, "per_answer": 763, "top1": 0.7443, "top3": 0.858, "top5": 0.8977, "top10": 0.9375, "found_median": 296, "miss_median": 3569, "within20k": 0.9375}, {"system": "lore find: только слова", "n": 176, "mean": 1016, "median": 322, "answered": 0.858, "per_answer": 1184, "top1": 0.6761, "top3": 0.7614, "top5": 0.8182, "top10": 0.858, "found_median": 291, "miss_median": 3717, "within20k": 0.858}, {"system": "grep по md", "n": 176, "mean": 3786, "median": 1485, "answered": 0.5739, "per_answer": 6597, "top1": 0.3523, "top3": 0.4375, "top5": 0.4716, "top10": 0.517, "found_median": 1173, "miss_median": 3659, "within20k": 0.5739}, {"system": "grep по коду", "n": 176, "mean": 3010, "median": 1172, "answered": 0.017, "per_answer": 176578, "top1": 0.0114, "top3": 0.017, "top5": 0.017, "top10": 0.017, "found_median": 83, "miss_median": 1188, "within20k": 0.017}, {"system": "SocratiCode", "n": 176, "mean": 2382, "median": 1863, "answered": 0.6307, "per_answer": 3777, "top1": 0.2614, "top3": 0.483, "top5": 0.5682, "top10": 0.6307, "found_median": 850, "miss_median": 4643, "within20k": 0.6307}, {"system": "okf", "n": 176, "mean": 321048, "median": 343479, "answered": 0.9773, "per_answer": 328514, "top1": 0.608, "top3": 0.8807, "top5": 0.9432, "top10": 0.9773, "found_median": 343479, "miss_median": 453, "within20k": 0.017}, {"system": "agent-memory", "n": 176, "mean": 5227, "median": 5796, "answered": 0.1534, "per_answer": 34072, "top1": 0.0966, "top3": 0.142, "top5": 0.1534, "top10": 0.1534, "found_median": 2291, "miss_median": 5822, "within20k": 0.1534}, {"system": "MemPalace", "n": 176, "mean": 195417, "median": 343696, "answered": 0.9261, "per_answer": 211002, "top1": 0.5739, "top3": 0.733, "top5": 0.8182, "top10": 0.9261, "found_median": 343696, "miss_median": 2262, "within20k": 0.3182}, {"system": "Basic Memory (слова)", "n": 176, "mean": 229017, "median": 344590, "answered": 0.7841, "per_answer": 292080, "top1": 0.4886, "top3": 0.6648, "top5": 0.7216, "top10": 0.7841, "found_median": 344590, "miss_median": 11652, "within20k": 0.0909}, {"system": "Basic Memory (смысл)", "n": 176, "mean": 78410, "median": 6439, "answered": 0.8693, "per_answer": 90197, "top1": 0.517, "top3": 0.7273, "top5": 0.7898, "top10": 0.8693, "found_median": 4118, "miss_median": 19585, "within20k": 0.6193}], "architecture": [{"system": "lore find: слова + смысл", "n": 80, "mean": 1714, "median": 820, "answered": 0.775, "per_answer": 2212, "top1": 0.4625, "top3": 0.7, "top5": 0.7375, "top10": 0.775, "found_median": 624, "miss_median": 4747, "within20k": 0.775}, {"system": "lore find: только слова", "n": 80, "mean": 2110, "median": 1096, "answered": 0.725, "per_answer": 2910, "top1": 0.3625, "top3": 0.5875, "top5": 0.6625, "top10": 0.725, "found_median": 701, "miss_median": 4955, "within20k": 0.725}, {"system": "grep по md", "n": 80, "mean": 3982, "median": 916, "answered": 0.15, "per_answer": 26550, "top1": 0.0375, "top3": 0.075, "top5": 0.0875, "top10": 0.1125, "found_median": 330, "miss_median": 1327, "within20k": 0.15}, {"system": "grep по коду", "n": 80, "mean": 2760, "median": 665, "answered": 0.05, "per_answer": 55208, "top1": 0.025, "top3": 0.0375, "top5": 0.0375, "top10": 0.0375, "found_median": 120, "miss_median": 716, "within20k": 0.05}, {"system": "SocratiCode", "n": 80, "mean": 2874, "median": 3106, "answered": 0.5125, "per_answer": 5607, "top1": 0.275, "top3": 0.4375, "top5": 0.4625, "top10": 0.5125, "found_median": 524, "miss_median": 4957, "within20k": 0.5125}, {"system": "okf", "n": 80, "mean": 123499, "median": 27657, "answered": 0.8625, "per_answer": 143188, "top1": 0.275, "top3": 0.5125, "top5": 0.65, "top10": 0.8625, "found_median": 55930, "miss_median": 319, "within20k": 0.25}, {"system": "agent-memory", "n": 80, "mean": 3043, "median": 2732, "answered": 0.7125, "per_answer": 4270, "top1": 0.5, "top3": 0.6375, "top5": 0.7, "top10": 0.7125, "found_median": 1343, "miss_median": 5793, "within20k": 0.7125}, {"system": "MemPalace", "n": 80, "mean": 38530, "median": 2185, "answered": 0.8375, "per_answer": 46006, "top1": 0.575, "top3": 0.7125, "top5": 0.7875, "top10": 0.8375, "found_median": 479, "miss_median": 2305, "within20k": 0.5875}, {"system": "Basic Memory (слова)", "n": 80, "mean": 60742, "median": 11626, "answered": 0.425, "per_answer": 142921, "top1": 0.225, "top3": 0.3375, "top5": 0.35, "top10": 0.425, "found_median": 41585, "miss_median": 11323, "within20k": 0.15}, {"system": "Basic Memory (смысл)", "n": 80, "mean": 40886, "median": 17806, "answered": 0.7125, "per_answer": 57384, "top1": 0.225, "top3": 0.525, "top5": 0.6125, "top10": 0.7125, "found_median": 6706, "miss_median": 20221, "within20k": 0.5}], "plans": [{"system": "lore find: слова + смысл", "n": 80, "mean": 3072, "median": 3522, "answered": 0.4125, "per_answer": 7446, "top1": 0.125, "top3": 0.25, "top5": 0.3125, "top10": 0.4125, "found_median": 1496, "miss_median": 4188, "within20k": 0.4125}, {"system": "lore find: только слова", "n": 80, "mean": 3151, "median": 3532, "answered": 0.35, "per_answer": 9002, "top1": 0.1625, "top3": 0.2125, "top5": 0.275, "top10": 0.35, "found_median": 847, "miss_median": 4039, "within20k": 0.35}, {"system": "grep по md", "n": 80, "mean": 4115, "median": 1604, "answered": 0.1875, "per_answer": 21949, "top1": 0.05, "top3": 0.1, "top5": 0.1125, "top10": 0.15, "found_median": 1065, "miss_median": 1980, "within20k": 0.1875}, {"system": "grep по коду", "n": 80, "mean": 1950, "median": 516, "answered": 0.0875, "per_answer": 22286, "top1": 0.025, "top3": 0.0375, "top5": 0.0625, "top10": 0.0625, "found_median": 307, "miss_median": 688, "within20k": 0.0875}, {"system": "SocratiCode", "n": 80, "mean": 2495, "median": 1555, "answered": 0.675, "per_answer": 3696, "top1": 0.275, "top3": 0.55, "top5": 0.6, "top10": 0.675, "found_median": 1036, "miss_median": 5109, "within20k": 0.675}, {"system": "okf", "n": 80, "mean": 136199, "median": 41004, "answered": 0.875, "per_answer": 155656, "top1": 0.5, "top3": 0.6375, "top5": 0.7375, "top10": 0.875, "found_median": 55945, "miss_median": 292, "within20k": 0.2625}, {"system": "agent-memory", "n": 80, "mean": 2954, "median": 1968, "answered": 0.7, "per_answer": 4221, "top1": 0.6, "top3": 0.6625, "top5": 0.6625, "top10": 0.7, "found_median": 1224, "miss_median": 5780, "within20k": 0.7}, {"system": "MemPalace", "n": 80, "mean": 40932, "median": 2650, "answered": 0.8625, "per_answer": 47458, "top1": 0.625, "top3": 0.775, "top5": 0.825, "top10": 0.8625, "found_median": 4730, "miss_median": 2378, "within20k": 0.575}, {"system": "Basic Memory (слова)", "n": 80, "mean": 35058, "median": 7235, "answered": 0.4875, "per_answer": 71913, "top1": 0.3625, "top3": 0.4125, "top5": 0.4625, "top10": 0.4875, "found_median": 4672, "miss_median": 11358, "within20k": 0.3375}, {"system": "Basic Memory (смысл)", "n": 80, "mean": 42336, "median": 8370, "answered": 0.7875, "per_answer": 53760, "top1": 0.425, "top3": 0.6, "top5": 0.675, "top10": 0.7875, "found_median": 4538, "miss_median": 20666, "within20k": 0.6375}], "code": [{"system": "grep по md", "n": 80, "mean": 5185, "median": 1280, "answered": 0.2625, "per_answer": 19752, "top1": 0.1125, "top3": 0.1375, "top5": 0.1875, "top10": 0.225, "found_median": 778, "miss_median": 1981, "within20k": 0.2625}, {"system": "grep по коду", "n": 80, "mean": 1685, "median": 833, "answered": 0.375, "per_answer": 4493, "top1": 0.1, "top3": 0.1625, "top5": 0.2125, "top10": 0.2375, "found_median": 343, "miss_median": 1106, "within20k": 0.375}, {"system": "SocratiCode", "n": 80, "mean": 2291, "median": 1714, "answered": 0.6125, "per_answer": 3740, "top1": 0.2875, "top3": 0.475, "top5": 0.525, "top10": 0.6125, "found_median": 681, "miss_median": 4435, "within20k": 0.6125}, {"system": "okf", "n": 80, "mean": 253710, "median": 343479, "answered": 0.875, "per_answer": 289954, "top1": 0.525, "top3": 0.75, "top5": 0.8125, "top10": 0.875, "found_median": 343479, "miss_median": 331, "within20k": 0.0375}, {"system": "agent-memory", "n": 80, "mean": 4864, "median": 5695, "answered": 0.3125, "per_answer": 15564, "top1": 0.2125, "top3": 0.3125, "top5": 0.3125, "top10": 0.3125, "found_median": 2806, "miss_median": 5816, "within20k": 0.3125}, {"system": "MemPalace", "n": 80, "mean": 106979, "median": 14015, "answered": 0.8125, "per_answer": 131667, "top1": 0.475, "top3": 0.7, "top5": 0.7625, "top10": 0.8125, "found_median": 62515, "miss_median": 2302, "within20k": 0.35}, {"system": "Basic Memory (слова)", "n": 80, "mean": 84919, "median": 11640, "answered": 0.55, "per_answer": 154399, "top1": 0.325, "top3": 0.4875, "top5": 0.525, "top10": 0.55, "found_median": 85969, "miss_median": 11624, "within20k": 0.2125}, {"system": "Basic Memory (смысл)", "n": 80, "mean": 62382, "median": 19752, "answered": 0.65, "per_answer": 95973, "top1": 0.3375, "top3": 0.5125, "top5": 0.5875, "top10": 0.65, "found_median": 9708, "miss_median": 20059, "within20k": 0.375}, {"system": "lore atlas: код", "n": 80, "mean": 2870, "median": 1198, "answered": 0.675, "per_answer": 4252, "top1": 0.4625, "top3": 0.525, "top5": 0.625, "top10": 0.675, "found_median": 396, "miss_median": 6418, "within20k": 0.675}]}};
+const CATS = ['неисправности', 'архитектура', 'планы', 'код'];
+const KINDS = ['точный', 'пересказ'];
+const kindOf = (k) => (k === 'пересказ' ? 'пересказ' : 'точный');
+const pct = (v) => `${Math.round(v * 100)}%`;
+const int = (n) => String(Math.round(n)).replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+const NS = 'http://www.w3.org/2000/svg';
+const el = (tag, attrs = {}, parent) => { const e = document.createElementNS(NS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (parent) parent.append(e); return e; };
+const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+const measure = (svg, text, size) => { const t = el('text', {'font-size': size, visibility: 'hidden'}, svg); t.textContent = text; const w = t.getComputedTextLength(); t.remove(); return w; };
+const find = (key) => DATA.accuracy.find((r) => r.key === key);
+
+const lead = document.getElementById('lead');
+{
+  const lo = find('lore find: только слова|faults|exact'), gr = find('grep по md|faults|exact'), ok = find('okf|faults|exact');
+  lead.textContent = 'Рабочий проект, 416 вопросов агента о неисправностях, архитектуре, планах и коде — точной формулировкой и пересказом. Конкуренты искали по документации и исходникам до появления CodeLore, lore — по своим записям. ' +
+    (lo && gr && ok ? `На точных вопросах о неисправностях lore даёт ответ в пределах 20 тыс. токенов в ${pct(lo.within20k)} случаев, grep по документации — в ${pct(gr.within20k)}, okf, отдающий файлы целиком, — в ${pct(ok.within20k)}.` : '');
+}
+
+function bars(box, rows, labels, groupOf, seriesKeys, valueOf, colorOf, opts) {
+  box.replaceChildren();
+  const W = Math.max(320, box.clientWidth || 520), band = opts.band || 30, H = labels.length * band + 26;
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img'}, box);
+  const labelW = Math.max(...labels.map((s) => measure(svg, s, 12))) + 12;
+  const x0 = labelW, x1 = W - 46;
+  const sx = opts.log ? (v) => x0 + (Math.log10(Math.max(opts.min, v)) - Math.log10(opts.min)) / (Math.log10(opts.max) - Math.log10(opts.min)) * (x1 - x0)
+                      : (v) => x0 + v / opts.max * (x1 - x0);
+  for (const t of opts.ticks) {
+    el('line', {x1: sx(t), x2: sx(t), y1: 0, y2: H - 22, stroke: css('--grid')}, svg);
+    const tt = el('text', {x: sx(t), y: H - 6, 'text-anchor': 'middle', 'font-size': 11, fill: css('--muted')}, svg); tt.textContent = opts.tickFmt(t);
+  }
+  const step = (H - 26) / labels.length, inner = step * 0.78, sub = inner / seriesKeys.length;
+  const tip = document.createElement('div'); tip.className = 'tip'; box.append(tip);
+  labels.forEach((lab, i) => {
+    const y = 4 + i * step;
+    const isLore = lab.startsWith('lore');
+    const lt = el('text', {x: labelW - 8, y: y + inner / 2, dy: '0.35em', 'text-anchor': 'end', 'font-size': 12, fill: css(isLore ? '--lore-ink' : '--fg'), 'font-weight': isLore ? 700 : 400}, svg); lt.textContent = lab;
+    seriesKeys.forEach((sk, j) => {
+      const r = rows.find((row) => groupOf(row) === lab && row.__s === sk);
+      if (!r) return;
+      const v = valueOf(r), yy = y + j * sub;
+      const rect = el('rect', {x: x0, y: yy + 1, height: Math.max(2, sub - 2), width: Math.max(0, sx(v) - x0), rx: 2, fill: opts.colorRow ? opts.colorRow(r) : colorOf(sk)}, svg);
+      const vt = el('text', {x: sx(v) + 4, y: yy + sub / 2, dy: '0.35em', 'font-size': 10, fill: css('--muted')}, svg); vt.textContent = opts.valFmt(v);
+      rect.addEventListener('pointermove', (ev) => {
+        const b = box.getBoundingClientRect();
+        tip.replaceChildren(); const t1 = document.createElement('div'); t1.className = 't'; t1.textContent = opts.tipTitle(r); tip.append(t1);
+        for (const line of opts.tipLines(r)) { const d = document.createElement('div'); d.textContent = line; tip.append(d); }
+        tip.style.opacity = 1; const tw = tip.offsetWidth;
+        tip.style.left = `${Math.min(Math.max(0, ev.clientX - b.left + 12), b.width - tw)}px`; tip.style.top = `${ev.clientY - b.top + 12}px`;
+      });
+      rect.addEventListener('pointerleave', () => { tip.style.opacity = 0; });
+    });
+  });
+}
+
+function drawMultiples() {
+  const metric = document.getElementById('metric').value, isTok = metric === 'tokens';
+  const host = document.getElementById('multiples'); host.replaceChildren();
+  const maxTok = Math.max(...DATA.accuracy.map((r) => r.tokens), 1000);
+  // every panel goes into the grid first, so each is measured at its final width
+  const panels = [];
+  for (const cat of CATS) {
+    const rows = DATA.accuracy.filter((r) => r.category === cat).map((r) => ({...r, __s: kindOf(r.kind)}));
+    if (!rows.length) continue;
+    const panel = document.createElement('div'); panel.className = 'panel';
+    const h = document.createElement('h3'); h.textContent = cat[0].toUpperCase() + cat.slice(1);
+    const box = document.createElement('div'); box.className = 'chart'; panel.append(h, box); host.append(panel);
+    panels.push([box, rows]);
+  }
+  for (const [box, rows] of panels) {
+    // best first: the mean of the exact and the paraphrase row under the chosen
+    // measure (for tokens, fewer is better)
+    const score = (sys) => { const v = rows.filter((r) => r.system === sys).map((r) => r[metric]); return v.reduce((a, b) => a + b, 0) / v.length; };
+    const systems = [...new Set(rows.map((r) => r.system))].sort((a, b) => (isTok ? score(a) - score(b) : score(b) - score(a)));
+    bars(box, rows, systems, (r) => r.system, KINDS, (r) => (isTok ? Math.max(100, r.tokens) : r[metric]),
+      (k) => (k === 'точный' ? css('--c-exact') : css('--c-para')),
+      { log: isTok, min: 100, max: isTok ? maxTok * 1.3 : 1, ticks: isTok ? [100, 1000, 10000, 100000].filter((t) => t < maxTok * 1.3) : [0, 0.25, 0.5, 0.75, 1],
+        tickFmt: isTok ? (t) => (t >= 1000 ? `${t / 1000}k` : t) : pct,
+        valFmt: isTok ? (v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : Math.round(v)) : pct,
+        tipTitle: (r) => `${r.system} · ${r.kind}`,
+        tipLines: (r) => [`первым ${pct(r.first)} · top-10 ${pct(r.top10)} · ≤20k ${pct(r.within20k)}`, `токенов до ответа ~${int(r.tokens)} · n=${r.n}`, `искали по: ${r.corpus}`] });
+  }
+}
+
+function drawIngest() {
+  const rows = [];
+  for (const r of DATA.ingest_tokens) { rows.push({...r, __s: 'md', v: r.md}); rows.push({...r, __s: 'lore', v: r.lore}); }
+  const max = Math.max(...rows.map((r) => r.v)) * 1.15;
+  bars(document.getElementById('ingest'), rows, DATA.ingest_tokens.map((r) => r.kind), (r) => r.kind, ['md', 'lore'], (r) => r.v,
+    (k) => (k === 'md' ? css('--c-md') : css('--c-lore')),
+    { band: 36, max, ticks: [0, 200, 400, 600].filter((t) => t < max), tickFmt: (t) => t, valFmt: (v) => Math.round(v),
+      tipTitle: (r) => r.kind, tipLines: (r) => [`.md ${r.md} · lore ${r.lore} токенов (медиана)`, `частей: ${r.parts}; lore / md = ${(r.lore / r.md).toFixed(2)}`] });
+}
+
+const secs = (v) => (v === null || v === undefined ? 'не мерили' : v === 0 ? '—' : v >= 100 ? int(v) : v.toFixed(v >= 10 ? 1 : 2));
+let depthSort = {k: 'within20k', dir: -1};
+function drawDepth() {
+  const label = (r) => r.system === 'grep по md' ? 'grep по md (по умолчанию)' : r.system;
+  const rows = READ().map((r) => ({...r, label: label(r)}));
+  const k = depthSort.k;
+  rows.sort((a, b) => (typeof a[k] === 'number' ? a[k] - b[k] : String(a[k]).localeCompare(String(b[k]), 'ru')) * depthSort.dir);
+  const tb = document.querySelector('#depth tbody'); tb.replaceChildren();
+  for (const r of rows) {
+    const tr = document.createElement('tr'); if (r.system.startsWith('lore')) tr.className = 'lore';
+    const name = document.createElement('td'); name.textContent = r.label; tr.append(name);
+    for (const key of ['top1', 'top3', 'top5', 'top10', 'within20k']) {
+      const td = document.createElement('td'); td.className = 'num'; td.textContent = pct(r[key]); tr.append(td);
+    }
+    for (const key of ['found_median', 'miss_median', 'per_answer']) {
+      const td = document.createElement('td'); td.className = 'num'; td.textContent = int(r[key]); tr.append(td);
+    }
+    tb.append(tr);
+  }
+}
+const depthLabel = (r) => r.system === 'grep по md' ? 'grep по md (по умолчанию)' : r.system;
+const READ = () => DATA.reading[document.querySelector('.scope-select').value] || DATA.reading.all;
+const DEPTH = [
+  {k: 'd1', name: 'ответ на 1-м месте', of: (r) => r.top1, color: '--d1'},
+  {k: 'd2', name: '2–3-й', of: (r) => r.top3 - r.top1, color: '--d2'},
+  {k: 'd3', name: '4–5-й', of: (r) => r.top5 - r.top3, color: '--d3'},
+  {k: 'd4', name: '6–10-й', of: (r) => r.top10 - r.top5, color: '--d4'},
+  {k: 'd0', name: 'нет в первых 10', of: (r) => 1 - r.top10, color: '--d0'},
+];
+
+function drawDepthBars() {
+  const legend = document.getElementById('depth-legend'); legend.replaceChildren();
+  for (const s of DEPTH) { const span = document.createElement('span'); const i = document.createElement('i'); i.style.background = `var(${s.color})`; span.append(i, s.name); legend.append(span); }
+  const box = document.getElementById('depth-bars'); box.replaceChildren();
+  const rows = READ().slice().sort((a, b) => b.top1 - a.top1 || b.top10 - a.top10);
+  const W = Math.max(320, box.clientWidth || 520), band = 30, H = rows.length * band + 26;
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Где ответ в выдаче, по системам'}, box);
+  const labelW = Math.max(...rows.map((r) => measure(svg, depthLabel(r), 12))) + 12;
+  const sideW = measure(svg, 'первым 56% · в top-10 92%', 11) + 14;
+  const x0 = labelW, x1 = W - sideW, sx = (v) => v * (x1 - x0);
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    el('line', {x1: x0 + sx(t), x2: x0 + sx(t), y1: 0, y2: H - 22, stroke: css('--grid')}, svg);
+    const tt = el('text', {x: x0 + sx(t), y: H - 6, 'text-anchor': 'middle', 'font-size': 11, fill: css('--muted')}, svg); tt.textContent = pct(t);
+  }
+  const tip = document.createElement('div'); tip.className = 'tip'; box.append(tip);
+  rows.forEach((r, i) => {
+    const y = 4 + i * band, h = band * 0.62;
+    const isLore = r.system.startsWith('lore');
+    const lt = el('text', {x: labelW - 8, y: y + h / 2, dy: '0.35em', 'text-anchor': 'end', 'font-size': 12, fill: css(isLore ? '--lore-ink' : '--fg'), 'font-weight': isLore ? 700 : 400}, svg); lt.textContent = depthLabel(r);
+    let at = x0;
+    for (const s of DEPTH) {
+      const v = Math.max(0, s.of(r)), w = sx(v);
+      if (w <= 0.5) continue;
+      // 2px of surface between segments
+      const rect = el('rect', {x: at, y, width: Math.max(0.5, w - 2), height: h, rx: 2, fill: css(s.color)}, svg);
+      rect.addEventListener('pointermove', (ev) => {
+        const b = box.getBoundingClientRect();
+        tip.replaceChildren(); const t1 = document.createElement('div'); t1.className = 't'; t1.textContent = depthLabel(r); tip.append(t1);
+        for (const line of [`${s.name}: ${pct(v)}`, `в top-1 ${pct(r.top1)} · top-3 ${pct(r.top3)} · top-5 ${pct(r.top5)} · top-10 ${pct(r.top10)}`, `вопросов: ${r.n}`]) { const d = document.createElement('div'); d.textContent = line; tip.append(d); }
+        tip.style.opacity = 1; const tw = tip.offsetWidth;
+        tip.style.left = `${Math.min(Math.max(0, ev.clientX - b.left + 12), b.width - tw)}px`; tip.style.top = `${ev.clientY - b.top + 12}px`;
+      });
+      rect.addEventListener('pointerleave', () => { tip.style.opacity = 0; });
+      at += w;
+    }
+    const side = el('text', {x: x1 + 8, y: y + h / 2, dy: '0.35em', 'font-size': 11, fill: css('--muted')}, svg);
+    side.textContent = `первым ${pct(r.top1)} · в top-10 ${pct(r.top10)}`;
+  });
+}
+
+function drawDepthScatter() {
+  const box = document.getElementById('depth-scatter'); box.replaceChildren();
+  const rows = READ().slice();
+  const W = Math.max(320, box.clientWidth || 520), H = Math.round(Math.min(460, W * 0.75));
+  const svg = el('svg', {viewBox: `0 0 ${W} ${H}`, role: 'img', 'aria-label': 'Точность против цены чтения'}, box);
+  const m = {l: 44, r: 16, t: 10, b: 34};
+  const lo = Math.log10(1000), hi = Math.log10(Math.max(...rows.map((r) => r.per_answer)) * 1.5);
+  const sx = (v) => m.l + (Math.log10(Math.max(1000, v)) - lo) / (hi - lo) * (W - m.l - m.r);
+  const sy = (v) => H - m.b - v * (H - m.t - m.b);
+  for (const t of [1000, 3000, 10000, 30000, 100000, 300000].filter((t) => Math.log10(t) <= hi)) {
+    el('line', {x1: sx(t), x2: sx(t), y1: m.t, y2: H - m.b, stroke: css('--grid')}, svg);
+    const tt = el('text', {x: sx(t), y: H - m.b + 16, 'text-anchor': 'middle', 'font-size': 11, fill: css('--muted')}, svg); tt.textContent = `${t / 1000}k`;
+  }
+  for (const t of [0, 0.25, 0.5, 0.75, 1]) {
+    el('line', {x1: m.l, x2: W - m.r, y1: sy(t), y2: sy(t), stroke: css('--grid')}, svg);
+    const tt = el('text', {x: m.l - 6, y: sy(t), dy: '0.35em', 'text-anchor': 'end', 'font-size': 11, fill: css('--muted')}, svg); tt.textContent = pct(t);
+  }
+  const xl = el('text', {x: W - m.r, y: H - 4, 'text-anchor': 'end', 'font-size': 11, fill: css('--muted')}, svg); xl.textContent = 'токенов на найденный ответ →';
+  const tip = document.createElement('div'); tip.className = 'tip'; box.append(tip);
+  // Labels: the first free spot around the dot - right, left, above, below,
+  // then further out - clear of every dot and every label already placed; a
+  // label that had to move away gets a thin line to its dot.
+  const dots = rows.map((r) => ({x: sx(r.per_answer), y: sy(r.within20k)}));
+  const placed = [];
+  const overlaps = (b) => placed.some((p) => b.x < p.x + p.w + 4 && b.x + b.w + 4 > p.x && b.y < p.y + p.h && b.y + b.h > p.y)
+    || dots.some((d) => d.x > b.x - 7 && d.x < b.x + b.w + 7 && d.y > b.y - 7 && d.y < b.y + b.h + 7)
+    || b.x < m.l || b.x + b.w > W - m.r || b.y < m.t || b.y + b.h > H - m.b;
+  const order = rows.map((r, i) => i).sort((a, b) => rows[b].within20k - rows[a].within20k);
+  for (const i of order) {
+    const {x, y} = dots[i];
+    el('circle', {cx: x, cy: y, r: rows[i].system.startsWith('lore') ? 9 : 6, fill: css(rows[i].system.startsWith('lore') ? '--c-lore' : '--c-md'), stroke: css('--panel'), 'stroke-width': 2}, svg);
+  }
+  order.forEach((i) => {
+    const r = rows[i], {x, y} = dots[i], lore = r.system.startsWith('lore');
+    const text = depthLabel(r), w = measure(svg, text, 12), h = 14;
+    const spots = [];
+    for (const d of [0, 1, 2, 3]) {
+      const dx = 10 + d * 6, dy = 14 + d * 12;
+      spots.push([x + dx, y - h / 2], [x - dx - w, y - h / 2], [x - w / 2, y - dy - h / 2], [x - w / 2, y + dy - h / 2],
+                 [x + dx, y - dy - h / 2], [x + dx, y + dy - h / 2], [x - dx - w, y - dy - h / 2], [x - dx - w, y + dy - h / 2]);
+    }
+    let lb = null;
+    // a spot is good when its box is free and the line from the dot to it
+    // crosses no other label
+    const lineHits = (b) => {
+      const ax = Math.max(b.x, Math.min(x, b.x + b.w)), ay = b.y + b.h / 2 < y ? b.y + b.h : b.y;
+      for (let k = 1; k < 12; k++) {
+        const px = x + (ax - x) * k / 12, py = y + (ay - y) * k / 12;
+        if (placed.some((q) => px > q.x - 2 && px < q.x + q.w + 2 && py > q.y - 2 && py < q.y + q.h + 2)) return true;
+      }
+      return false;
+    };
+    for (const [bx, by] of spots) { const b = {x: bx, y: by, w, h}; if (!overlaps(b) && !lineHits(b)) { lb = b; break; } }
+    lb = lb || {x: x + 10, y: y - h / 2, w, h};
+    placed.push(lb);
+    const near = Math.abs(lb.y + h / 2 - y) < 3 && (Math.abs(lb.x - x) < 14 || Math.abs(lb.x + w - x) < 14);
+    if (!near) {
+      const ax = Math.max(lb.x, Math.min(x, lb.x + w)), ay = lb.y + h / 2 < y ? lb.y + h : lb.y;
+      el('line', {x1: x, y1: y, x2: ax, y2: ay, stroke: css('--muted'), 'stroke-width': 1}, svg);
+    }
+    const lt = el('text', {x: lb.x, y: lb.y + h / 2, dy: '0.35em', 'font-size': lore ? 13 : 12, fill: css(lore ? '--lore-ink' : '--fg'), 'font-weight': lore ? 700 : 400}, svg); lt.textContent = text;
+    const hit = el('circle', {cx: x, cy: y, r: 14, fill: 'transparent'}, svg);
+    hit.addEventListener('pointermove', (ev) => {
+      const b = box.getBoundingClientRect();
+      tip.replaceChildren(); const t1 = document.createElement('div'); t1.className = 't'; t1.textContent = text; tip.append(t1);
+      for (const line of [`в пределах 20k: ${pct(r.within20k)} · top-10: ${pct(r.top10)}`, `на найденный ответ ~${int(r.per_answer)} токенов`, `до ответа (медиана) ${int(r.found_median)} · впустую ${int(r.miss_median)}`]) { const d = document.createElement('div'); d.textContent = line; tip.append(d); }
+      tip.style.opacity = 1; const tw = tip.offsetWidth;
+      tip.style.left = `${Math.min(Math.max(0, ev.clientX - b.left + 12), b.width - tw)}px`; tip.style.top = `${ev.clientY - b.top + 12}px`;
+    });
+    hit.addEventListener('pointerleave', () => { tip.style.opacity = 0; });
+  });
+}
+
+document.querySelectorAll('#depth [data-k]').forEach((b) => b.addEventListener('click', () => {
+  const k = b.dataset.k; depthSort = {k, dir: depthSort.k === k ? -depthSort.dir : (k === 'label' ? 1 : (['found_median', 'miss_median', 'per_answer'].includes(k) ? 1 : -1))}; drawDepth();
+}));
+
+function drawReading() {
+  const label = (r) => r.system === 'grep по md' ? 'grep по md (по умолчанию)' : r.system;
+  const rows = READ().slice().sort((a, b) => a.per_answer - b.per_answer).map((r) => ({...r, __s: 'v', label: label(r)}));
+  const max = Math.max(...rows.map((r) => r.per_answer)) * 1.6;
+  bars(document.getElementById('reading'), rows, rows.map((r) => r.label), (r) => r.label, ['v'], (r) => Math.max(100, r.per_answer),
+    () => css('--c-md'),
+    { band: 30, log: true, min: 100, max, ticks: [100, 1000, 10000, 100000].filter((t) => t < max), colorRow: (r) => (r.system.startsWith('lore') ? css('--c-lore') : css('--c-md')),
+      tickFmt: (t) => (t >= 1000 ? `${t / 1000}k` : t), valFmt: (v) => (v >= 1000 ? `${(v / 1000).toFixed(v >= 10000 ? 0 : 1)}k` : Math.round(v)),
+      tipTitle: (r) => r.label,
+      tipLines: (r) => [`на найденный ответ ~${int(r.per_answer)} токенов`, `на вопрос: в среднем ${int(r.mean)}, медиана ${int(r.median)}`, `ответ найден в ${pct(r.answered)} из ${r.n}; в пределах 20k — ${pct(r.within20k)}`] });
+}
+
+function drawTimings() {
+  const tb = document.querySelector('#timings tbody'); tb.replaceChildren();
+  for (const r of DATA.timings) {
+    const tr = document.createElement('tr'); const lore = r.system.startsWith('lore');
+    const note = [r.note, r.note_load ? `под нагрузкой: ${r.note_load}` : '', r.idle_load !== null && r.idle_load !== undefined ? `CPU перед замером ${r.idle_load}%` : ''].filter(Boolean).join('; ');
+    for (const [i, v] of [r.op, r.system, r.corpus, secs(r.idle), secs(r.load), note].entries()) {
+      const td = document.createElement('td'); if (i === 3 || i === 4) td.className = 'num'; if (i === 1 && lore) td.className = 'lore-name'; td.textContent = v; tr.append(td);
+    }
+    tb.append(tr);
+  }
+}
+
+function drawLatency() {
+  const L = DATA.latency, host = document.getElementById('latency');
+  if (!L.rows.length) { document.getElementById('latency-card').hidden = true; return; }
+  document.getElementById('latency-sub').textContent = `Медиана времени одного запроса, лог. шкала, сверху — быстрее. ${L.meta.queries} вопросов (поровну о неисправностях, архитектуре, планах и коде; половина — точной формулировкой, половина — пересказом); lore find — на вопросах о знаниях, lore atlas — на вопросах о коде, остальные — на всех. Каждый вопрос задан каждой системе 3 раза (системам, отвечающим секундами, — 2), взята лучшая попытка. Время — то, что ждёт агент: запуск CLI целиком; у grep — вызовы git grep; у SocratiCode — эмбеддинг запроса в Ollama и запрос к Qdrant (его MCP-сервер уже запущен). Basic Memory не вошёл: из CLI он отвечает 9–13 с на запрос.`;
+  host.replaceChildren();
+  const max = Math.max(...L.rows.map((r) => r.median_ms)) * 1.6;
+  const panels = [];
+  for (const [kind, title] of [['точный', 'Точный вопрос: текст ошибки, имя, термин'], ['пересказ', 'Пересказ: своими словами']]) {
+    const rows = L.rows.filter((r) => r.kind === kind).map((r) => ({...r, __s: 'v'}));
+    const panel = document.createElement('div'); panel.className = 'panel';
+    const h = document.createElement('h3'); h.textContent = title;
+    const box = document.createElement('div'); box.className = 'chart'; panel.append(h, box); host.append(panel);
+    panels.push([box, rows]);
+  }
+  for (const [box, rows] of panels) {
+    const systems = rows.slice().sort((a, b) => a.median_ms - b.median_ms).map((r) => r.system);
+    bars(box, rows, systems, (r) => r.system, ['v'], (r) => Math.max(10, r.median_ms), () => css('--c-md'),
+      { band: 30, log: true, min: 10, max, ticks: [10, 100, 1000, 10000].filter((t) => t < max),
+        colorRow: (r) => (r.system.startsWith('lore') ? css('--c-lore') : css('--c-md')),
+        tickFmt: (t) => (t >= 1000 ? `${t / 1000} с` : `${t} мс`), valFmt: (v) => (v >= 1000 ? `${(v / 1000).toFixed(1)} с` : `${Math.round(v)} мс`),
+        tipTitle: (r) => `${r.system} · ${r.kind}`, tipLines: (r) => [`медиана ${int(r.median_ms)} мс · p90 ${int(r.p90_ms)} мс`, `вопросов: ${r.n}`] });
+  }
+}
+
+let sort = {k: 'within20k', dir: -1};
+function drawTable() {
+  const tb = document.querySelector('#all tbody'); tb.replaceChildren();
+  const rows = DATA.accuracy.slice().sort((a, b) => (typeof a[sort.k] === 'number' ? a[sort.k] - b[sort.k] : String(a[sort.k]).localeCompare(String(b[sort.k]), 'ru')) * sort.dir);
+  for (const r of rows) {
+    const tr = document.createElement('tr'); if (r.system.startsWith('lore')) tr.className = 'lore';
+    for (const [i, v] of [r.system, r.category, r.kind, r.n, pct(r.first), pct(r.top10), pct(r.within20k), int(r.tokens), r.corpus].entries()) {
+      const td = document.createElement('td'); if (i >= 3 && i <= 7) td.className = 'num'; td.textContent = v; tr.append(td);
+    }
+    tb.append(tr);
+  }
+}
+document.querySelectorAll('#all [data-k]').forEach((b) => b.addEventListener('click', () => {
+  const k = b.dataset.k; sort = {k, dir: sort.k === k ? -sort.dir : (['system', 'category', 'kind', 'corpus'].includes(k) ? 1 : -1)}; drawTable();
+}));
+document.getElementById('metric').addEventListener('change', drawMultiples);
+document.querySelectorAll('.scope-select').forEach((sel) => sel.addEventListener('change', () => {
+  document.querySelectorAll('.scope-select').forEach((other) => { other.value = sel.value; });
+  drawReading(); drawDepthBars(); drawDepthScatter(); drawDepth();
+}));
+const all = () => { drawMultiples(); drawIngest(); drawReading(); drawDepthBars(); drawDepthScatter(); drawDepth(); drawTimings(); drawLatency(); drawTable(); };
+let t; window.addEventListener('resize', () => { clearTimeout(t); t = setTimeout(() => { drawMultiples(); drawIngest(); drawReading(); drawDepthBars(); drawDepthScatter(); drawLatency(); }, 150); });
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', all);
+all();
+</script>
+</body>
+</html>
