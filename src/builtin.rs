@@ -280,7 +280,10 @@ impl Finder for Builtin {
             if !text_only && !filters.semantic {
                 let (hits, notes) = finder::find_records(&index, query, &wanted, limit, None)?;
                 let exact_hit = hits.first().is_some_and(|(hit, _)| hit.via.iter().any(|via| via == "signal" || via == "phrase"));
-                if exact_hit || crate::stats::classify(query) == "exact" {
+                // A query shaped like code is answered by the text alone only
+                // when the text found something: a path or a symbol no record
+                // carries goes on to meaning, as a sentence does.
+                if exact_hit || (crate::stats::classify(query) == "exact" && !hits.is_empty()) {
                     let found = hits.into_iter().map(|(hit, record)| Found { record, score: hit.score, via: hit.via, meaning: hit.meaning, store: None }).collect();
                     return Ok((found, notes));
                 }

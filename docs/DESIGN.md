@@ -57,8 +57,8 @@ re-read whole (they are small) and its rows replaced. No watcher, no daemon.
 
 **Text.** Two FTS5 tables. `words` holds the prose, stemmed (`porter
 unicode61`, `_` kept inside a word), with columns weighted for BM25: `signals`
-10, `title` 5, the record's main sentence (`symptom`, `what`, `question`,
-`goal`) 3, everything else 1. `terms` holds only the code-like tokens pulled out
+50, `title` 20, the record's main sentence (`symptom`, `what`, `question`,
+`goal`) 1, everything else 1 (`finder::WEIGHTS`). `terms` holds only the code-like tokens pulled out
 of every field and of `refs` - dotted names, paths, `snake_case`, hex codes,
 `ALLCAPS` - with `.`, `/`, `:`, `-` and `_` kept inside a token, so
 `scene.depth_buffer`, `src/render/post.py`, `ERR_DEVICE_LOST` and `0x80070005`

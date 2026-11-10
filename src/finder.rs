@@ -124,25 +124,73 @@ pub fn visible(index: &Index, filters: &Filters) -> Result<Vec<(String, Value)>,
     Ok(out)
 }
 
-/// The ids a table's MATCH ranks best, at most four pages deep; a query SQLite
-/// refuses finds nothing.
-fn fts(index: &Index, table: &str, query: &str, weighted: bool) -> Vec<String> {
+/// The ids a table's MATCH ranks best that `keep` lets through, at most
+/// [`DEPTH`] of them. The filter is applied while reading the ranked rows, not
+/// after a fixed number of them: in a narrow `--area` the best match of the
+/// area may rank below hundreds of matches elsewhere. A query SQLite refuses
+/// (FTS5 syntax) finds nothing; any other error (a busy or damaged index) is
+/// one, never an empty answer.
+fn fts(index: &Index, table: &str, query: &str, weighted: bool, keep: &dyn Fn(&str) -> bool) -> Result<Vec<String>, LoreError> {
     if query.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let rank = if weighted {
+    let sql = format!("SELECT id FROM {table} WHERE {table} MATCH ?1 ORDER BY {}", rank_of(table, weighted));
+    let run = || -> rusqlite::Result<Vec<String>> {
+        let mut statement = index.db().prepare(&sql)?;
+        let mut rows = statement.query(params![query])?;
+        let mut kept = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            if keep(&id) {
+                kept.push(id);
+                if kept.len() >= DEPTH {
+                    break;
+                }
+            }
+        }
+        Ok(kept)
+    };
+    run().or_else(refused_query).map_err(sql_error)
+}
+
+/// [`fts`] with the visibility filter inside the query: the facts table holds
+/// what `--area`, `--kind`, `--status` and `--plan` ask about.
+fn fts_visible(index: &Index, table: &str, query: &str, weighted: bool, visible: &VisibleSql) -> Result<Vec<String>, LoreError> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let at = visible.args.len() + 1;
+    let sql = format!(
+        "SELECT {table}.id FROM {table} JOIN facts ON facts.id = {table}.id WHERE {table} MATCH ?{at} AND {} ORDER BY {} LIMIT {DEPTH}",
+        visible.condition,
+        rank_of(table, weighted)
+    );
+    let run = || -> rusqlite::Result<Vec<String>> {
+        let mut statement = index.db().prepare(&sql)?;
+        let rows = statement.query_map(rusqlite::params_from_iter(visible.args.iter().map(String::as_str).chain(std::iter::once(query))), |row| row.get::<_, String>(0))?;
+        let mut seen = HashSet::new();
+        Ok(rows.collect::<rusqlite::Result<Vec<String>>>()?.into_iter().filter(|id| seen.insert(id.clone())).collect())
+    };
+    run().or_else(refused_query).map_err(sql_error)
+}
+
+fn rank_of(table: &str, weighted: bool) -> String {
+    if weighted {
         let weights: Vec<String> = WEIGHTS.iter().map(|weight| format!("{weight:?}")).collect();
         format!("bm25({table}, 0, {})", weights.join(", "))
     } else {
         format!("bm25({table})")
-    };
-    let sql = format!("SELECT id FROM {table} WHERE {table} MATCH ?1 ORDER BY {rank} LIMIT ?2");
-    let run = || -> rusqlite::Result<Vec<String>> {
-        let mut statement = index.db().prepare(&sql)?;
-        let rows = statement.query_map(params![query, (DEPTH * 4) as i64], |row| row.get::<_, String>(0))?;
-        rows.collect()
-    };
-    run().unwrap_or_default()
+    }
+}
+
+/// A MATCH query FTS5 cannot parse finds nothing; other errors stay errors.
+fn refused_query(error: rusqlite::Error) -> rusqlite::Result<Vec<String>> {
+    let text = error.to_string();
+    if text.contains("fts5: syntax error") || text.contains("no such column") || text.contains("unterminated string") || text.contains("unknown special query") {
+        Ok(Vec::new())
+    } else {
+        Err(error)
+    }
 }
 
 /// The FTS5 query of a text's words: lower-cased, each once, at most 64.
@@ -304,11 +352,11 @@ fn find_ranked(
     mut notes: Vec<String>,
 ) -> Result<(Vec<Hit>, Vec<String>), LoreError> {
     let visible_ids: HashSet<&str> = visible.iter().map(|(id, _)| id.as_str()).collect();
-    let take = |ids: Vec<String>| -> Vec<String> { ids.into_iter().filter(|id| visible_ids.contains(id.as_str())).take(DEPTH).collect() };
+    let keep = |id: &str| visible_ids.contains(id);
     let mut lists: Vec<(&str, Vec<String>)> = Vec::new();
     let mut cosines: HashMap<String, f64> = HashMap::new();
-    lists.push(("words", take(fts(index, "words", &word_query(query), true))));
-    lists.push(("terms", take(fts(index, "terms", &term_query(query), false))));
+    lists.push(("words", fts(index, "words", &word_query(query), true, &keep)?));
+    lists.push(("terms", fts(index, "terms", &term_query(query), false, &keep)?));
     if let (Some(semantic), Some((_model, loaded))) = (semantic, vectors) {
         let truncated: String = query.chars().take(4000).collect();
         match semantic.embedder.embed(&[format!("{}{truncated}", semantic.query_prefix)]) {
@@ -419,21 +467,6 @@ fn sql_error(error: rusqlite::Error) -> LoreError {
     LoreError::new(format!("index: {error}"))
 }
 
-/// The ids among `ids` a search may return.
-fn visible_among(index: &Index, visible: &VisibleSql, ids: &[String]) -> Result<HashSet<String>, LoreError> {
-    if ids.is_empty() {
-        return Ok(HashSet::new());
-    }
-    let first = visible.args.len() + 1;
-    let marks = (first..first + ids.len()).map(|at| format!("?{at}")).collect::<Vec<_>>().join(",");
-    let sql = format!("SELECT facts.id FROM facts WHERE facts.id IN ({marks}) AND {}", visible.condition);
-    let mut statement = index.db().prepare(&sql).map_err(sql_error)?;
-    let rows = statement
-        .query_map(rusqlite::params_from_iter(visible.args.iter().chain(ids.iter())), |row| row.get::<_, String>(0))
-        .map_err(sql_error)?;
-    Ok(rows.flatten().collect())
-}
-
 /// Every id a search may return, in the order the index holds them.
 fn visible_ids(index: &Index, visible: &VisibleSql) -> Result<Vec<String>, LoreError> {
     let sql = format!("SELECT facts.id FROM facts WHERE {} ORDER BY facts.seq", visible.condition);
@@ -513,12 +546,9 @@ pub fn find_records(
         },
         None => None,
     };
-    let word_ids = fts(index, "words", &word_query(query), true);
-    let term_ids = fts(index, "terms", &term_query(query), false);
-    let candidates: Vec<String> = word_ids.iter().chain(term_ids.iter()).cloned().collect();
-    let allowed = visible_among(index, &visible, &candidates)?;
-    let take = |ids: Vec<String>| -> Vec<String> { ids.into_iter().filter(|id| allowed.contains(id)).take(DEPTH).collect() };
-    let mut lists: Vec<(&str, Vec<String>)> = vec![("words", take(word_ids)), ("terms", take(term_ids))];
+    let word_ids = fts_visible(index, "words", &word_query(query), true, &visible)?;
+    let term_ids = fts_visible(index, "terms", &term_query(query), false, &visible)?;
+    let mut lists: Vec<(&str, Vec<String>)> = vec![("words", word_ids), ("terms", term_ids)];
     let mut cosines: HashMap<String, f64> = HashMap::new();
     if let (Some(semantic), Some(vectors)) = (semantic, loaded.as_ref()) {
         let visible_set: HashSet<String> = visible_ids(index, &visible)?.into_iter().collect();

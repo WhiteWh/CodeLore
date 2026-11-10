@@ -144,8 +144,12 @@ pub fn session() -> String {
 /// or a quoted phrase. Everything else is a paraphrase. Documented here so the
 /// mix can be read beside the rule that made it.
 pub fn classify(query: &str) -> &'static str {
-    let code = OnceLock::new();
-    let code = code.get_or_init(|| {
+    // Compiled once per process, not once per call.
+    static CODE: OnceLock<regex::Regex> = OnceLock::new();
+    static PATH: OnceLock<regex::Regex> = OnceLock::new();
+    static SYMBOL: OnceLock<regex::Regex> = OnceLock::new();
+    static QUOTED: OnceLock<regex::Regex> = OnceLock::new();
+    let code = CODE.get_or_init(|| {
         regex::Regex::new(
             r"(?x)
               \b0x[0-9A-Fa-f]{4,}\b
@@ -155,17 +159,19 @@ pub fn classify(query: &str) -> &'static str {
         )
         .expect("the code pattern is valid")
     });
-    let path = OnceLock::new();
-    let path = path.get_or_init(|| {
+    // A path: a file name with an extension, two separators or more, or one
+    // that starts like a path (./ ../ ~/ C:\). One slash between two words is
+    // prose - "read/write", "and/or".
+    let path = PATH.get_or_init(|| {
         regex::Regex::new(
             r"(?x)
-              (?:[A-Za-z0-9_.-]+[\\/])+[A-Za-z0-9_.\\/-]+
+              (?:[A-Za-z0-9_.-]+[\\/]){2,}[A-Za-z0-9_.-]+
+            | (?:^|\s)(?:\.{1,2}|~|[A-Za-z]:)[\\/][A-Za-z0-9_.\\/-]+
             | \b[A-Za-z0-9_-]+\.(?:rs|py|ts|tsx|js|json|toml|md|txt|sql|yml|yaml|cs|cpp|h|hpp|go|java|kt|swift)\b",
         )
         .expect("the path pattern is valid")
     });
-    let symbol = OnceLock::new();
-    let symbol = symbol.get_or_init(|| {
+    let symbol = SYMBOL.get_or_init(|| {
         regex::Regex::new(
             r"(?x)
               \b[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]+)+\b
@@ -174,8 +180,7 @@ pub fn classify(query: &str) -> &'static str {
         )
         .expect("the symbol pattern is valid")
     });
-    let quoted = OnceLock::new();
-    let quoted = quoted.get_or_init(|| regex::Regex::new(r#""[^"]{4,}""#).expect("the quoted pattern is valid"));
+    let quoted = QUOTED.get_or_init(|| regex::Regex::new(r#""[^"]{4,}""#).expect("the quoted pattern is valid"));
     if code.is_match(query) || path.is_match(query) || symbol.is_match(query) || quoted.is_match(query) {
         "exact"
     } else {
@@ -498,10 +503,12 @@ mod tests {
             "GetData",
             "the file C:\\x\\y.rs",
             "\"a quoted phrase\"",
+            "./build.bat fails",
+            "tools/report/main",
         ] {
             assert_eq!(classify(exact), "exact", "{exact}");
         }
-        for paraphrase in ["the atlas checksum mismatch", "why does the build stop", "a hang on exit"] {
+        for paraphrase in ["the atlas checksum mismatch", "why does the build stop", "a hang on exit", "read/write fails", "save and/or load"] {
             assert_eq!(classify(paraphrase), "paraphrase", "{paraphrase}");
         }
     }
