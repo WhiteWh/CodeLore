@@ -31,7 +31,10 @@ are the project's own words - `git`, `render`, `build` - declared in
 - No comments, no blank lines, a final newline.
 
 A reader must refuse a file that breaks any of this, by name and line - it does
-not repair.
+not repair. `lore fmt` mends what a merge that joins both sides' lines leaves
+(a concatenation, where no merge driver runs): it sorts the file and keeps one
+of each record that is there twice the same; two different records under one
+id are a conflict it leaves to a person, naming both lines.
 
 ## 3. Fields every record has
 

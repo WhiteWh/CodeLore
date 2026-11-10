@@ -138,9 +138,15 @@ pub fn parse_lines<'a>(bytes: &'a [u8], place: &str) -> Result<Vec<(Value, &'a s
     let keys: Vec<(u8, u64, String)> = records.iter().map(|(record, _)| sort_key(record)).collect();
     for index in 1..keys.len() {
         if keys[index] < keys[index - 1] {
-            errs.push(format!("line {}: out of order ({} after {})", index + 1, repr_opt(records[index].0.get("id")), repr_opt(records[index - 1].0.get("id"))));
+            errs.push(format!(
+                "line {}: out of order ({} after {}) - lines joined by a merge; `lore fmt` sorts the file",
+                index + 1,
+                repr_opt(records[index].0.get("id")),
+                repr_opt(records[index - 1].0.get("id"))
+            ));
         } else if keys[index] == keys[index - 1] {
-            errs.push(format!("line {}: id {} twice", index + 1, repr_opt(records[index].0.get("id"))));
+            let how = if records[index].1 == records[index - 1].1 { "the same record - `lore fmt` keeps one" } else { "two different records - keep one by hand, then `lore fmt`" };
+            errs.push(format!("line {}: id {} twice ({how})", index + 1, repr_opt(records[index].0.get("id"))));
         }
     }
     if errs.is_empty() { Ok(records) } else { Err(LoreError::with(format!("{place} is refused"), errs)) }

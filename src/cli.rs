@@ -1786,9 +1786,30 @@ fn cmd_fmt(args: &Args, env: &Env, io: &mut Io) -> Result<i32> {
                 continue;
             }
             let value: Value = serde_json::from_str(line).map_err(|error| LoreError::new(format!("{}: line {} is not JSON ({}); fmt does not guess", path.display(), index + 1, json_reason(&error))))?;
-            records.push(value);
+            records.push((index + 1, value));
         }
-        let data = serialize(&records);
+        // A merge that joins two sides' lines leaves a record twice: the same
+        // record is kept once; two different records under one id are a
+        // conflict fmt does not decide.
+        let mut kept: Vec<Value> = Vec::new();
+        let mut first: BTreeMap<String, (usize, String)> = BTreeMap::new();
+        let mut clashes: Vec<String> = Vec::new();
+        for (number, value) in records {
+            let id = value.get("id").map(crate::py::repr).unwrap_or_default();
+            let text = store::canonical(&value);
+            match first.get(&id) {
+                Some((_, seen)) if *seen == text => continue,
+                Some((at, _)) => clashes.push(format!("{}: id {id} is two different records (lines {at} and {number}) - keep one by hand, then run fmt", store::relative(&config.root, &path))),
+                None => {
+                    first.insert(id, (number, text));
+                }
+            }
+            kept.push(value);
+        }
+        if !clashes.is_empty() {
+            return Err(LoreError::with("fmt does not guess; nothing was rewritten in this file", clashes));
+        }
+        let data = serialize(&kept);
         if data != raw {
             std::fs::write(&path, &data).map_err(|error| LoreError::new(format!("{}: {error}", path.display())))?;
             changed += 1;
