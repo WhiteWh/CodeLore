@@ -21,6 +21,7 @@ pub mod finder;
 pub mod gitio;
 pub mod history;
 pub mod index;
+pub mod ledger;
 pub mod ops;
 pub mod plans;
 pub mod private;

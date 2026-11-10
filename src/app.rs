@@ -37,6 +37,7 @@ pub fn main() -> ! {
         cwd: std::env::current_dir().unwrap_or_default(),
         stdin,
         lore_by: std::env::var("LORE_BY").ok(),
+        machine: std::env::var("LORE_MACHINE").ok(),
         finder: Some(&BUILTIN),
         roots: roots(),
         history: history_source(),

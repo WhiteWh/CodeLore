@@ -202,7 +202,8 @@ pub fn relations(by_id: &BTreeMap<String, Value>) -> Vec<String> {
     let mut errs = Vec::new();
     let items: BTreeMap<String, Value> = by_id.iter().filter(|(_, record)| text(record, "kind") == Some("item")).map(|(id, record)| (id.clone(), record.clone())).collect();
     for (rid, record) in by_id {
-        for target in refs_list(record, "records") {
+        // `ledger:<kind>:<key>` names a ledger entry, which `lore check` looks up.
+        for target in refs_list(record, "records").into_iter().filter(|target| !target.starts_with(crate::ledger::REF_PREFIX)) {
             if !by_id.contains_key(&target) {
                 errs.push(format!("{rid}: refs.records names {}, which does not exist", repr_str(&target)));
             }
@@ -442,10 +443,11 @@ pub fn apply(config: &Config, build: &Builder, options: &Options) -> Result<Outc
             }
             errs.extend(signal_errors(&record, old));
             if text(&record, "kind") == Some("source") {
-                errs.extend(cover::ledger_errors(config, &record, old, rev));
+                errs.extend(cover::parts_errors(config, &record, old, rev));
             }
             put.push(record);
         }
+        errs.extend(crate::ledger::ref_findings(config, &crate::ledger::refs_of(&put), false).0);
         if errs.is_empty() {
             let pairs: Vec<(Value, Option<Value>)> = put.iter().map(|record| (record.clone(), text(record, "id").and_then(|id| existing.get(id)).cloned())).collect();
             errs.extend(ref_errors(config, &pairs, rev, roots));

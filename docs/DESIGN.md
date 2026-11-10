@@ -86,7 +86,7 @@ change re-embeds once. Cosine similarity against all vectors, top 50.
 meaning lists; a whole phrase adds half a point, an exact signal a full point,
 longest match first. Filters (`--kind`, `--area`, `--status`, `--plan`) apply before ranking;
 the default hides `obsolete`, `superseded`, `reversed` and closed plans' items
-unless `--all`, and source records - ledgers of documents, not knowledge -
+unless `--all`, and source records - parts lists of documents, not knowledge -
 unless `--kind source`.
 
 **No model.** If the model is not installed, `find` runs on text alone and the
@@ -237,7 +237,7 @@ trust. A `covered` source whose document has since changed is a warning.
 
 `lore check --evidence` asks more of a cited commit than that it exists: that it
 touches one of the record's `refs.files`, or that its hash is written in a
-source document whose ledger names the record. A hash made up by an agent is
+source document whose parts list names the record. A hash made up by an agent is
 caught by existence; one that happens to exist is caught here.
 
 ## 7a. Sources
@@ -247,9 +247,9 @@ records hold each part of the document, which parts were skipped and why. The
 parts are found in the Markdown (headings, table rows, numbered items, and what
 a heading says itself when it has parts under it - FORMAT.md §4), named the way
 they are written so a person can find the place. `lore cover <doc>` lists what
-is unaccounted for, `--add` merges ledger entries, `--history` marks a document
+is unaccounted for, `--add` merges parts list entries, `--history` marks a document
 that holds nothing current with the records that carry what still stands. The
-ledger lives in the store, not beside a migration script, so an archived
+parts list lives in the store, not beside a migration script, so an archived
 document still says where each of its facts went when no record links it.
 
 ## 8. Agents

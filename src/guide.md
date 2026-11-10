@@ -107,7 +107,7 @@ table rows and numbered items, each named as `lore cover` prints it.
 
     lore cover <doc.md>                   # what is not accounted for yet; exit 1 until all is
     lore cover <doc.md> --list            # every part, with the records or the skip it has
-    lore cover <doc.md> --add <<'EOF'     # the ledger, JSONL; one commit
+    lore cover <doc.md> --add <<'EOF'     # the parts list, JSONL; one commit
     {"part": "<as printed>", "records": ["<id>", "<id>"]}
     {"part": "<as printed>", "skip": "<why nothing in it is current>", "records": ["<id>"]}
     EOF

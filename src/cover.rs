@@ -236,12 +236,12 @@ pub struct Coverage {
     pub parts: Vec<Part>,
     /// The parts an entry still has to name.
     pub uncovered: Vec<Part>,
-    /// Ledger entries that name no part.
+    /// Parts list entries that name no part.
     pub unknown: Vec<String>,
 }
 
-pub fn coverage(parts: &[Part], ledger: &[Value]) -> Coverage {
-    let entry_names: Vec<&str> = ledger.iter().filter_map(|entry| entry.get("part").and_then(Value::as_str)).collect();
+pub fn coverage(parts: &[Part], listed: &[Value]) -> Coverage {
+    let entry_names: Vec<&str> = listed.iter().filter_map(|entry| entry.get("part").and_then(Value::as_str)).collect();
     let named: BTreeSet<String> = entry_names.iter().map(|name| part_key(name)).collect();
     let known: BTreeSet<String> = parts.iter().map(|part| part_key(&part.name)).collect();
     let by_entry = |mut at: Option<usize>| -> bool {
@@ -295,7 +295,7 @@ pub fn doc_text(data: &[u8]) -> String {
 
 /// What a source record may not say about its document: an entry this change
 /// adds that names no part of it, or `covered` while a part is unaccounted for.
-pub fn ledger_errors(config: &Config, record: &Value, old: Option<&Value>, rev: Option<&str>) -> Vec<String> {
+pub fn parts_errors(config: &Config, record: &Value, old: Option<&Value>, rev: Option<&str>) -> Vec<String> {
     let rid = record.get("id").map(|id| id.as_str().map(str::to_owned).unwrap_or_else(|| id.to_string())).unwrap_or_else(|| "None".into());
     let Some(path) = record.get("path").and_then(Value::as_str).filter(|path| !bad_path(path)) else {
         return vec![format!("{rid}: `path` is the document's path from the repository root, with forward slashes")];
@@ -307,7 +307,7 @@ pub fn ledger_errors(config: &Config, record: &Value, old: Option<&Value>, rev: 
         }
         return Vec::new();
     };
-    let ledger: Vec<Value> = record.get("parts").and_then(Value::as_array).into_iter().flatten().filter(|entry| entry.is_object()).cloned().collect();
+    let listed: Vec<Value> = record.get("parts").and_then(Value::as_array).into_iter().flatten().filter(|entry| entry.is_object()).cloned().collect();
     let before: BTreeSet<String> = old
         .and_then(|old| old.get("parts"))
         .and_then(Value::as_array)
@@ -316,7 +316,7 @@ pub fn ledger_errors(config: &Config, record: &Value, old: Option<&Value>, rev: 
         .filter_map(|entry| entry.get("part").and_then(Value::as_str))
         .map(part_key)
         .collect();
-    let found = coverage(&parts_of(&doc_text(&data)), &ledger);
+    let found = coverage(&parts_of(&doc_text(&data)), &listed);
     let mut errs: Vec<String> = found
         .unknown
         .iter()

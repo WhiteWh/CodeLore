@@ -18,6 +18,7 @@ fn run(root: &Path, argv: &[&str], stdin: &str) -> cli::Output {
         cwd: root.to_path_buf(),
         stdin: stdin.as_bytes().to_vec(),
         lore_by: Some("tester".into()),
+        machine: None,
         finder: Some(&BUILTIN),
         roots: None,
         now: None,
