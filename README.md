@@ -184,7 +184,9 @@ DirectML.dll are fetched beside the weights. Where no GPU answers, the same
 binary runs on the CPU (`LORE_DEVICE=cpu` forces that); `lore model status`
 says which. It needs the Visual C++ runtime (MSVCP140.dll), which most Windows
 machines have. A GPU batch holds at most 4 096 padded tokens, so long code pieces
-go a few at a time and short records many (`LORE_EMBED_TOKENS` changes it); on an
+go a few at a time and short records many (`LORE_EMBED_TOKENS` changes it), and a
+text is cut at 2 048 tokens (`LORE_EMBED_MAX_TOKENS`): one piece of long generated
+lines at the model's 8 192 took most of an 8 GB card; on an
 8 GB laptop card that is ~900 code pieces a minute, seven times the speed of
 fixed batches of 32. A search embeds its one query on the CPU, and the first
 search starts `lore model serve`: the model held in memory on 127.0.0.1 (a

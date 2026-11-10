@@ -59,6 +59,12 @@ pub fn wants_stdin(args: &[String]) -> bool {
         return true;
     }
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    // `add` and `update` with no `-s`: the record or the patch comes as JSON
+    // on stdin, whether or not `--json-in` says so (`--json` alone only shapes
+    // the output, and was taken for the input often enough).
+    if matches!(command_word(&words), Some("add" | "update")) && !words.iter().any(|word| matches!(*word, "-s" | "--set") || word.starts_with("--set=")) {
+        return true;
+    }
     let after = |first: &str, second: &str| words.windows(2).position(|pair| pair[0] == first && pair[1] == second).map(|at| at + 2);
     if after("brief", "set").is_some() {
         return true;
@@ -81,6 +87,24 @@ pub fn wants_stdin(args: &[String]) -> bool {
         return true;
     }
     false
+}
+
+/// The command: the first word that is neither an option nor the value of a
+/// global option that takes one.
+fn command_word<'a>(words: &[&'a str]) -> Option<&'a str> {
+    let mut at = 0;
+    while at < words.len() {
+        let word = words[at];
+        if matches!(word, "-C" | "--by" | "--trailer") {
+            at += 2;
+            continue;
+        }
+        if !word.starts_with('-') {
+            return Some(word);
+        }
+        at += 1;
+    }
+    None
 }
 
 /// After `lore init`: the configured model starts downloading in the background,

@@ -197,3 +197,53 @@ fn an_unknown_table_is_a_warning_not_a_refusal() {
     assert!(out.stderr.contains("unknown key `from_the_future` is ignored"), "{}", out.stderr);
     serde_json::from_str::<Value>(&out.stdout).expect("stdout stays one JSON document");
 }
+
+#[test]
+fn lore_for_neither_builds_the_map_nor_waits_for_it() {
+    let repo = Repo::new(true);
+    // A fresh clone: the map is not built, and `for` does not build it.
+    let started = std::time::Instant::now();
+    let text = repo.run(&["for", "src/store.rs"]).stdout;
+    assert!(text.contains("the code map is not built yet"), "{text}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(20));
+    let plain = repo.json(&["for", "src/store.rs"]);
+    assert!(plain.is_array(), "the JSON keeps its shape: {plain}");
+    // Once built, it is used.
+    repo.json(&["atlas", "deps", "src/store.rs"]);
+    let text = repo.run(&["for", "src/store.rs"]).stdout;
+    assert!(text.contains("is imported by"), "{text}");
+}
+
+struct Counting(std::sync::atomic::AtomicUsize);
+
+impl codelore::embed::Embeddings for Counting {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>, codelore::LoreError> {
+        self.0.fetch_add(texts.len(), std::sync::atomic::Ordering::SeqCst);
+        Ok(texts.iter().map(|text| (0..768).map(|at| ((text.len() + at) % 7) as f32).collect()).collect())
+    }
+}
+
+#[test]
+fn a_second_clone_takes_the_vectors_the_first_made() {
+    let first = Repo::new(true);
+    let second = Repo::new(true);
+    // Content of this run only, so an earlier run's vectors are not found.
+    let unique = format!("pub fn only_in_this_run() -> &'static str {{ \"{}\" }}\n", first.root.display().to_string().replace('\\', "/"));
+    for repo in [&first, &second] {
+        std::fs::write(repo.root.join("src/unique.rs"), &unique).unwrap();
+    }
+    let embedded = |repo: &Repo| {
+        let config = codelore::config::load(&repo.root).unwrap();
+        let mut atlas = codelore::atlas::store::Atlas::open_at(&repo.root.join(".map.sqlite"), &repo.root).unwrap();
+        atlas.refresh(&config).unwrap();
+        let counting = Counting(std::sync::atomic::AtomicUsize::new(0));
+        let (_, left) = atlas.ensure_vectors(&counting, "test-model", "", None, &mut |_, _| {}).unwrap();
+        assert_eq!(left, 0);
+        (counting.0.load(std::sync::atomic::Ordering::SeqCst), atlas.vector_count("test-model"))
+    };
+    let (made, held) = embedded(&first);
+    assert!(made > 0 && held > 0);
+    let (made_again, held_again) = embedded(&second);
+    assert_eq!(made_again, 0, "the second clone embeds nothing");
+    assert_eq!(held_again, held);
+}

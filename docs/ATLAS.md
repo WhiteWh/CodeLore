@@ -22,7 +22,7 @@ hash. What is revised is everything around them.
 | | SocratiCode | Atlas |
 |---|---|---|
 | runtime | Node MCP server + Qdrant + Ollama, usually Docker | the `lore` binary; nothing else runs |
-| vectors | Qdrant collections | the same SQLite file as the text index, in the user cache |
+| vectors | Qdrant collections | the same SQLite file as the text index, in the user cache; each piece's vector also in one cache shared by every clone, by model and piece hash, so a second clone of a tree embeds almost nothing |
 | embeddings | Ollama / OpenAI / Google / LM Studio | the built-in model already in `lore` (nomic-embed-text-v1.5, e5, bge-m3 on candle; CPU or CUDA) |
 | freshness | a file watcher, a daemon, locks between MCP processes | git's blob ids compared on every command; no watcher, no daemon, no lock |
 | parsing | ast-grep grammars per language | line patterns per language: no grammar to ship; a missed definition costs a chunk boundary, never the file |
@@ -40,7 +40,9 @@ says *where*; the lore says *what we know about it*. Joined:
   Knowledge that rots silently is the problem CodeLore exists for; the map can
   see it rot.
 - `lore for <file>` - besides the records about the file, who imports it and
-  what the lore says about those files.
+  what the lore says about those files. It reads the map as it is: it never
+  builds one from nothing (a fresh clone's first build takes minutes; `lore
+  index` does it) and never waits while another process writes it.
 - `lore find` (with `atlas.find = true`) - the best code places under the
   records.
 

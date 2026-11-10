@@ -100,6 +100,20 @@ pub enum ModelSource<'a> {
     Local(&'a Path),
 }
 
+/// Tokens of one text that are embedded, at most: the model's own limit, cut
+/// to [`TOKEN_CAP`] (`LORE_EMBED_MAX_TOKENS` changes it, at least 128). A
+/// model's memory grows with the square of a text's length: one code piece of
+/// long generated lines at nomic's 8192 tokens took 6-7 GB of an 8 GB card,
+/// and what is past the first couple of thousand tokens hardly moves the
+/// vector. Records are shorter than the cap.
+pub fn token_cap(model_limit: usize) -> usize {
+    let cap = std::env::var("LORE_EMBED_MAX_TOKENS").ok().and_then(|value| value.trim().parse::<usize>().ok()).map_or(TOKEN_CAP, |value| value.max(128));
+    model_limit.min(cap)
+}
+
+/// The default of [`token_cap`]; part of the shared vector cache's key.
+pub const TOKEN_CAP: usize = 2048;
+
 /// The user cache root CodeLore uses: `LORE_CACHE`, else the platform cache
 /// folder under `codelore`.
 pub fn cache_root() -> PathBuf {

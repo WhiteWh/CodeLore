@@ -130,14 +130,16 @@ fn rebuild_discards_the_old_index_and_builds_the_one_new_one() -> Result<(), Lor
 #[test]
 fn the_git_folder_is_found_only_when_the_iterator_reaches_it() {
     let work = tempfile::tempdir().unwrap();
-    // Outside a repository there is one place; `git` is asked only for the second.
-    assert_eq!(index::index_dirs(work.path()).len(), 1);
+    // Outside a repository: the user cache, then the temporary folder; `git`
+    // is asked only when the iterator gets past the first.
+    assert_eq!(index::index_dirs(work.path()).len(), 2);
     let first = index::index_dir_candidates(work.path()).next().unwrap();
     assert!(first.ends_with(index::repo_key(work.path())));
     let init = std::process::Command::new("git").arg("-C").arg(work.path()).args(["init", "-q"]).status();
     if init.map(|status| status.success()).unwrap_or(false) {
         let dirs = index::index_dirs(work.path());
-        assert_eq!(dirs.len(), 2);
+        assert_eq!(dirs.len(), 3);
+        assert!(dirs[2].starts_with(std::env::temp_dir()), "the temporary folder comes last");
         assert_eq!(dirs[0], first);
         assert!(dirs[1].ends_with("codelore") && dirs[1].to_string_lossy().contains(".git"), "{:?}", dirs[1]);
     }

@@ -76,3 +76,40 @@ fn only_the_commands_that_take_input_read_stdin() {
         assert!(!wants(line), "{line} does not read stdin");
     }
 }
+
+#[test]
+fn add_and_update_without_fields_take_their_json_on_stdin() {
+    let wants = |line: &str| codelore::app::wants_stdin(&line.split_whitespace().map(str::to_owned).collect::<Vec<_>>());
+    for line in ["add fault --json", "-C repo --json --by me add fault", "update some-id", "--json update some-id"] {
+        assert!(wants(line), "{line} reads stdin");
+    }
+    for line in ["add fault -s title=x", "update some-id --set fix=y", "update some-id --set=fix=y", "find add", "show update"] {
+        assert!(!wants(line), "{line} does not read stdin");
+    }
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    git(root, &["init", "-q", "-b", "main"]);
+    git(root, &["config", "user.name", "T"]);
+    git(root, &["config", "user.email", "t@example.invalid"]);
+    std::fs::write(root.join("README.md"), "# Notes\n").unwrap();
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "init"]);
+    let init = lore(root).args(["init", "--areas", "build"]).stdin(Stdio::null()).output().unwrap();
+    assert!(init.status.success(), "{}", String::from_utf8_lossy(&init.stderr));
+    git(root, &["add", "-A"]);
+    git(root, &["commit", "-qm", "lore init"]);
+    // `--json` shapes the output; the record still comes from stdin.
+    let mut add = lore(root).args(["add", "fault", "--json", "--new"]).stdin(Stdio::piped()).spawn().unwrap();
+    let record = r#"{"area":"build","title":"the linker runs out of memory","symptom":"link.exe stops with an out-of-memory error","cause":"the 32-bit linker is picked","fix":"use the 64-bit host toolchain","check":"the build links"}"#;
+    add.stdin.take().unwrap().write_all(record.as_bytes()).unwrap();
+    let added = finishes(add, "add fault --json", Duration::from_secs(60));
+    assert!(added.status.success(), "{}{}", String::from_utf8_lossy(&added.stdout), String::from_utf8_lossy(&added.stderr));
+    let id = serde_json::from_slice::<serde_json::Value>(&added.stdout).unwrap()["records"][0]["id"].as_str().unwrap().to_owned();
+    let mut update = lore(root).args(["update", &id]).stdin(Stdio::piped()).spawn().unwrap();
+    update.stdin.take().unwrap().write_all(br#"{"fix": "pick the 64-bit linker"}"#).unwrap();
+    let updated = finishes(update, "update", Duration::from_secs(60));
+    assert!(updated.status.success(), "{}{}", String::from_utf8_lossy(&updated.stdout), String::from_utf8_lossy(&updated.stderr));
+    let shown = lore(root).args(["--json", "show", &id]).stdin(Stdio::null()).output().unwrap();
+    assert_eq!(serde_json::from_slice::<serde_json::Value>(&shown.stdout).unwrap()["fix"], "pick the 64-bit linker");
+}

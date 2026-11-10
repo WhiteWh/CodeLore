@@ -61,10 +61,10 @@ impl OnnxModel {
             .or_else(|| session.outputs().first().map(|output| output.name().to_owned()))
             .ok_or_else(|| Error::Model("the ONNX export has no output".into()))?;
         let tokenizer = Tokenizer::from_file(dir.join("tokenizer.json")).map_err(|error| Error::Model(format!("cannot read tokenizer.json: {error}")))?;
-        let max_tokens = match kind {
+        let max_tokens = crate::embed::token_cap(match kind {
             EmbeddingModel::Nomic => 8192,
             EmbeddingModel::BgeM3 | EmbeddingModel::E5Base => 512,
-        };
+        });
         Ok(Self { session: Mutex::new(session), tokenizer, max_tokens, kind, token_types, output })
     }
 

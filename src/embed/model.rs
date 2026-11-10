@@ -67,7 +67,7 @@ impl Model {
         };
         let tokenizer = Tokenizer::from_file(dir.join("tokenizer.json"))
             .map_err(|error| Error::Model(format!("cannot read tokenizer.json: {error}")))?;
-        Ok(Self { backend, tokenizer, device, max_tokens, kind })
+        Ok(Self { backend, tokenizer, device, max_tokens: crate::embed::token_cap(max_tokens), kind })
     }
 
     pub fn kind(&self) -> EmbeddingModel {

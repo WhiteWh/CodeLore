@@ -38,8 +38,8 @@ is a default feature, inert until a project sets `[atlas] enabled`.
 |---|---|---|
 | records | `<repo>/lore/*.jsonl` | yes - the only source of truth |
 | configuration | `<repo>/lore.toml` | yes |
-| index | `$LORE_CACHE/<repo-key>/`, else the user cache: `%LOCALAPPDATA%\codelore\<repo-key>\index.sqlite`, `~/.cache/codelore/<repo-key>/`; where that cannot be written, `.git/codelore/` | no |
-| embedding cache | beside the index, keyed by model and content hash | no |
+| index | `$LORE_CACHE/<repo-key>/`, else the user cache: `%LOCALAPPDATA%\codelore\<repo-key>\index.sqlite`, `~/.cache/codelore/<repo-key>/`; where that cannot be written, `.git/codelore/`, then `<temp>/codelore/<repo-key>/` | no |
+| embedding cache | beside the index, keyed by model and content hash; the code map's vectors also in `<cache>/atlas-vectors.sqlite`, shared by every clone on the account | no |
 | embedding model | `$LORE_MODELS/<model>/`, else `<platform cache>/models/<model>/` - one folder for every `lore` on the account, whatever `LORE_CACHE` says; pinned files, fetched on first use | no |
 | DirectML runtime (`directml` builds) | `<models>/runtimes/directml-ort-1.31.0/DirectML.dll`, pinned | no |
 

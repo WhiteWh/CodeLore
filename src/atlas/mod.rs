@@ -46,6 +46,24 @@ pub fn open_fresh(config: &Config) -> Result<(Atlas, store::Refresh), LoreError>
     Ok((atlas, refresh))
 }
 
+/// What `lore for` says when the map is on but not built yet.
+pub const NOT_BUILT: &str = "code: the code map is not built yet - `lore index` builds it (minutes on a large tree)";
+
+/// The map for a side section of `find` or `for`: never built from nothing
+/// here (a fresh clone's first build takes minutes, and is `lore index`'s
+/// job), and never waited for while another process is writing it - then it
+/// is read as it is. None when the map is off or not built yet.
+fn open_side(config: &Config) -> Option<Atlas> {
+    if off_reason(config).is_some() {
+        return None;
+    }
+    let mut atlas = store::open(config).ok()?;
+    atlas.meta("graph")?;
+    atlas.wait_at_most(std::time::Duration::from_millis(300));
+    let _ = atlas.refresh(config);
+    Some(atlas)
+}
+
 /// The embedder for code pieces, when the project and the machine have one; the
 /// notes say why not. `wait`: a missing model is fetched now (index) rather
 /// than in the background (search).
@@ -92,7 +110,12 @@ pub fn for_lines(config: &Config, records: &[serde_json::Value], target: &str) -
     if !config.atlas.in_for || off_reason(config).is_some() {
         return None;
     }
-    let (atlas, _) = open_fresh(config).ok()?;
+    if off_reason(config).is_some() {
+        return None;
+    }
+    let Some(atlas) = open_side(config) else {
+        return Some(vec![NOT_BUILT.to_owned()]);
+    };
     let path = cli::relative_target(config, target);
     if !atlas.has_file(&path) {
         return None;
@@ -119,7 +142,7 @@ pub fn find_lines(config: &Config, query: &str) -> Option<Vec<String>> {
     if !config.atlas.in_find || off_reason(config).is_some() {
         return None;
     }
-    let (atlas, _) = open_fresh(config).ok()?;
+    let atlas = open_side(config)?;
     let hits = atlas.search(query, 3, &Filter::default(), None).ok()?;
     if hits.is_empty() {
         return None;

@@ -549,6 +549,12 @@ fn stdin_text(env: &Env) -> Result<String> {
     String::from_utf8(data.to_vec()).map_err(|error| LoreError::new(format!("stdin is not UTF-8 ({error})")))
 }
 
+/// No `-s` was given and stdin holds something: the JSON record or patch
+/// there is the input, `--json-in` or not.
+fn stdin_given(ctx: &Ctx) -> bool {
+    ctx.args.many("set").is_empty() && !ctx.env.stdin.iter().all(u8::is_ascii_whitespace)
+}
+
 fn read_stdin_json(env: &Env) -> Result<Value> {
     let text = stdin_text(env)?;
     if text.trim().is_empty() {
@@ -1234,7 +1240,7 @@ fn cmd_exists(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
 fn new_from_args(ctx: &Ctx, kind: &str) -> Result<Vec<Value>> {
     let mut records: Vec<Value> = if ctx.args.flag("batch") {
         read_stdin_jsonl(ctx.env)?
-    } else if ctx.args.flag("json-in") {
+    } else if ctx.args.flag("json-in") || stdin_given(ctx) {
         match read_stdin_json(ctx.env)? {
             Value::Array(items) => items,
             other => vec![other],
@@ -1321,6 +1327,39 @@ fn cmd_add(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
 }
 
 fn cmd_update(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
+    update_inner(ctx, io).map_err(|error| explain_absent(ctx, error))
+}
+
+/// In shared-tree mode a record is updated as the branch lore writes to has
+/// it, not as the working tree does: one that `lore show` finds in the working
+/// tree (not committed yet, an unfinished merge, another branch checked out)
+/// "does not exist" there. Says so, and what to do.
+fn explain_absent(ctx: &Ctx, mut error: LoreError) -> LoreError {
+    if ctx.config.commit_mode != "shared-tree" {
+        return error;
+    }
+    let Ok(here) = crate::store::load_worktree(&ctx.config.root, &ctx.config.dir) else { return error };
+    let here = here.by_id();
+    let branch = &ctx.config.branch;
+    let explain = |line: &str| -> Option<String> {
+        let id = line.strip_suffix(" does not exist")?;
+        let bare = id.trim_matches(['\'', '"']);
+        here.contains_key(bare).then(|| {
+            format!("{id} is in the working tree but not on branch {branch}, which lore writes to (commit.mode = shared-tree) - commit or merge it into {branch} first, then update it")
+        })
+    };
+    if let Some(text) = explain(&error.message) {
+        error.message = text;
+    }
+    for detail in &mut error.details {
+        if let Some(text) = explain(detail) {
+            *detail = text;
+        }
+    }
+    error
+}
+
+fn update_inner(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     let id = ctx.args.positional.first().cloned();
     let sets = ctx.args.many("set");
     if ctx.args.flag("batch") {
@@ -1338,7 +1377,7 @@ fn cmd_update(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
         let build = ops::updater_many(maps);
         return ctx.write(io, &build, None, Vec::new());
     }
-    if ctx.args.flag("json-in") {
+    if ctx.args.flag("json-in") || stdin_given(ctx) {
         if !sets.is_empty() {
             return Err(LoreError::new("--json-in reads the patch from stdin: give no -s"));
         }

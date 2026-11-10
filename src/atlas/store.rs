@@ -154,6 +154,11 @@ impl Atlas {
         Ok(Self { db, path: path.to_path_buf(), root: root.to_path_buf() })
     }
 
+    /// How long a write waits for another process's lock before it gives up.
+    pub fn wait_at_most(&self, limit: Duration) {
+        let _ = self.db.busy_timeout(limit);
+    }
+
     pub fn meta(&self, key: &str) -> Option<String> {
         self.db.query_row("SELECT value FROM meta WHERE key=?1", [key], |row| row.get(0)).optional().ok().flatten()
     }
@@ -261,7 +266,23 @@ impl Atlas {
             self.db.execute("DELETE FROM vectors", []).map_err(error)?;
             self.set_meta("vector_model", &format!("{model}/{dimension}"))?;
         }
-        let todo = self.missing_vectors(model)?;
+        let mut todo = self.missing_vectors(model)?;
+        // Vectors another clone (or an earlier map of this one) already made
+        // are taken from the shared cache rather than made again: a piece's
+        // hash covers its path, symbols and text, so a clone of the same tree
+        // finds nearly all of them there.
+        let shared = SharedVectors::open(&format!("{model}/{dimension}/t{}", crate::embed::token_cap(usize::MAX)));
+        if let Some(shared) = &shared {
+            let found = shared.take(&todo);
+            if !found.is_empty() {
+                let tx = self.db.unchecked_transaction().map_err(error)?;
+                for (hash, blob) in &found {
+                    tx.execute("INSERT OR REPLACE INTO vectors VALUES(?1, ?2, ?3)", params![model, hash, blob]).map_err(error)?;
+                }
+                tx.commit().map_err(error)?;
+                todo.retain(|(hash, _)| !found.contains_key(hash));
+            }
+        }
         let take = budget.map_or(todo.len(), |budget| budget.min(todo.len()));
         if budget.is_some() && todo.len() > take {
             return Ok((0, todo.len()));
@@ -271,11 +292,16 @@ impl Atlas {
             let texts: Vec<String> = batch.iter().map(|(_, text)| format!("{doc_prefix}{text}")).collect();
             let vectors = embedder.embed(&texts)?;
             let tx = self.db.unchecked_transaction().map_err(error)?;
+            let mut made: Vec<(&str, Vec<u8>)> = Vec::with_capacity(batch.len());
             for ((hash, _), vector) in batch.iter().zip(vectors) {
                 let blob: Vec<u8> = vector.iter().flat_map(|value| value.to_le_bytes()).collect();
                 tx.execute("INSERT OR REPLACE INTO vectors VALUES(?1, ?2, ?3)", params![model, hash, blob]).map_err(error)?;
+                made.push((hash.as_str(), blob));
             }
             tx.commit().map_err(error)?;
+            if let Some(shared) = &shared {
+                shared.put(&made);
+            }
             done += batch.len();
             progress(done, take);
         }
@@ -524,6 +550,46 @@ pub struct Filter {
 }
 
 /// Words of a query, identifiers split too, for the `code_words` table.
+/// Code-piece vectors shared by every map on this account, by model (with its
+/// dimension and token cap) and piece hash: `atlas-vectors.sqlite` in the user
+/// cache. Best effort - a cache that cannot be opened or written is passed
+/// over, and the map makes its own vectors.
+struct SharedVectors {
+    db: Connection,
+    model: String,
+}
+
+impl SharedVectors {
+    fn open(model: &str) -> Option<Self> {
+        let dir = crate::index::cache_dir();
+        std::fs::create_dir_all(&dir).ok()?;
+        let db = Connection::open(dir.join("atlas-vectors.sqlite")).ok()?;
+        db.busy_timeout(Duration::from_secs(10)).ok()?;
+        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS vectors(model TEXT, hash TEXT, vec BLOB, PRIMARY KEY(model, hash)) WITHOUT ROWID;").ok()?;
+        Some(Self { db, model: model.to_owned() })
+    }
+
+    /// The vectors the cache holds for these pieces.
+    fn take(&self, pieces: &[(String, String)]) -> HashMap<String, Vec<u8>> {
+        let mut found = HashMap::new();
+        let Ok(mut statement) = self.db.prepare("SELECT vec FROM vectors WHERE model = ?1 AND hash = ?2") else { return found };
+        for (hash, _) in pieces {
+            if let Ok(Some(blob)) = statement.query_row(params![self.model, hash], |row| row.get::<_, Vec<u8>>(0)).optional() {
+                found.insert(hash.clone(), blob);
+            }
+        }
+        found
+    }
+
+    fn put(&self, made: &[(&str, Vec<u8>)]) {
+        let Ok(tx) = self.db.unchecked_transaction() else { return };
+        for (hash, blob) in made {
+            let _ = tx.execute("INSERT OR REPLACE INTO vectors VALUES(?1, ?2, ?3)", params![self.model, hash, blob]);
+        }
+        let _ = tx.commit();
+    }
+}
+
 fn word_query(text: &str) -> String {
     let mut seen: Vec<String> = Vec::new();
     for found in word_re().find_iter(text) {
