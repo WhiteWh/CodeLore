@@ -5,7 +5,7 @@
 //! constant, or neither repository's test stays green.
 use sha2::{Digest, Sha256};
 
-const VECTORS_SHA256: &str = "8afb2ee5536b5ec8f7aa4266695904070ea4abd610e8dee572b85c4c0aefdc0a";
+const VECTORS_SHA256: &str = "dc44e984cd0d507751339cec34a1b5eec32a7de0463c5bff75c82f56267d9cf3";
 
 #[test]
 fn the_shared_secret_vectors_are_the_ones_zerus_pins() {
