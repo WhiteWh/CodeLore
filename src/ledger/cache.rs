@@ -194,25 +194,60 @@ struct Fresh {
 }
 
 impl Cache {
-    /// The cache of `config`'s ledger, brought up to date with the journals.
+    /// The cache of `config`'s ledger, brought up to date with the journals:
+    /// in the user cache (`LORE_CACHE`), else in the system's temporary
+    /// folder, else - a sandbox that lets neither be written - in memory,
+    /// folded from the journals on every command, with a warning.
     pub fn open(config: &Config, ledger: &Ledger) -> Result<Self> {
-        let dir = crate::index::cache_dir().join(crate::index::repo_key(&config.root));
-        std::fs::create_dir_all(&dir).map_err(|error| LoreError::new(format!("{}: {error}; set LORE_CACHE to a writable folder", dir.display())))?;
-        for old in OLD_FILES {
-            for suffix in ["", "-wal", "-shm"] {
-                let _ = std::fs::remove_file(dir.join(format!("{old}{suffix}")));
+        let key = crate::index::repo_key(&config.root);
+        let mut tried = Vec::new();
+        for dir in [crate::index::cache_dir().join(&key), std::env::temp_dir().join("codelore").join(&key)] {
+            let path = dir.join(FILE_NAME);
+            let opened = std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display())).and_then(|()| Self::connect(&path).map_err(|error| error.message));
+            match opened {
+                Ok(db) => {
+                    for old in OLD_FILES {
+                        for suffix in ["", "-wal", "-shm"] {
+                            let _ = std::fs::remove_file(dir.join(format!("{old}{suffix}")));
+                        }
+                    }
+                    let mut cache = Self::with_db(db, &path, &config.root, ledger)?;
+                    if !tried.is_empty() {
+                        cache.warnings.insert(0, format!("the ledger cache is in {} ({} could not be written)", dir.display(), tried.join("; ")));
+                    }
+                    return Ok(cache);
+                }
+                Err(error) => tried.push(error),
             }
         }
-        Self::open_at(&dir.join(FILE_NAME), &config.root, ledger)
+        let path = PathBuf::from(":memory:");
+        let db = Connection::open_in_memory().map_err(db_error(&path))?;
+        Self::schema(&db, &path)?;
+        let mut cache = Self::with_db(db, &path, &config.root, ledger)?;
+        cache.warnings.insert(
+            0,
+            format!("no folder for the ledger cache could be written ({}); the ledger is folded in memory, from every journal on every command - set LORE_CACHE to a writable folder", tried.join("; ")),
+        );
+        Ok(cache)
     }
 
     pub fn open_at(path: &Path, root: &Path, ledger: &Ledger) -> Result<Self> {
+        let db = Self::connect(path)?;
+        Self::with_db(db, path, root, ledger)
+    }
+
+    /// The cache file opened, its tables made.
+    fn connect(path: &Path) -> Result<Connection> {
         let db = Connection::open(path).map_err(db_error(path))?;
         db.busy_timeout(std::time::Duration::from_secs(60)).map_err(db_error(path))?;
+        db.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL;").map_err(db_error(path))?;
+        Self::schema(&db, path)?;
+        Ok(db)
+    }
+
+    fn schema(db: &Connection, path: &Path) -> Result<()> {
         db.execute_batch(
-            "PRAGMA journal_mode = WAL;
-             PRAGMA synchronous = NORMAL;
-             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+            "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
                  lines INTEGER NOT NULL, prefix TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS entries (kind TEXT NOT NULL, key TEXT NOT NULL, state TEXT NOT NULL,
@@ -222,7 +257,11 @@ impl Cache {
              CREATE TABLE IF NOT EXISTS missing (parent TEXT NOT NULL, line TEXT NOT NULL, kind TEXT NOT NULL, key TEXT NOT NULL, place TEXT NOT NULL);
              CREATE INDEX IF NOT EXISTS missing_parent ON missing (parent);",
         )
-        .map_err(db_error(path))?;
+        .map_err(db_error(path))
+    }
+
+    /// The cache on an open database, brought up to date with the journals.
+    fn with_db(db: Connection, path: &Path, root: &Path, ledger: &Ledger) -> Result<Self> {
         let mut cache = Self { db, path: path.to_path_buf(), folder: super::folder(root, ledger), warnings: Vec::new(), incomplete: Vec::new() };
         if let Err(error) = cache.refresh(ledger) {
             if error.message.starts_with("the ledger cache is damaged") {

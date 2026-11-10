@@ -40,4 +40,8 @@ A pending line whose parent or id belongs to another entry is refused before
 it is read or moved. A write that fails part way names its lines and says the
 outcome is not confirmed: look for them with `log`, do not write them again.
 
+The folded state is cached in the user cache (`LORE_CACHE`), else the system's
+temporary folder; where neither can be written it is folded in memory on every
+command - slower, the same answer, with a warning.
+
 A knowledge record names a ledger entry in `refs.records` as `ledger:<kind>:<key>`.
