@@ -186,7 +186,10 @@ fn rank_of(table: &str, weighted: bool) -> String {
 /// A MATCH query FTS5 cannot parse finds nothing; other errors stay errors.
 fn refused_query(error: rusqlite::Error) -> rusqlite::Result<Vec<String>> {
     let text = error.to_string();
-    if text.contains("fts5: syntax error") || text.contains("no such column") || text.contains("unterminated string") || text.contains("unknown special query") {
+    // Every token reaches MATCH quoted (word_query, term_query), so a column
+    // filter (`foo:bar`) cannot come from a query: "no such column" is a
+    // damaged index, and stays an error.
+    if text.contains("fts5: syntax error") || text.contains("unterminated string") {
         Ok(Vec::new())
     } else {
         Err(error)

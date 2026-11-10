@@ -281,9 +281,11 @@ impl Finder for Builtin {
                 let (hits, notes) = finder::find_records(&index, query, &wanted, limit, None)?;
                 let exact_hit = hits.first().is_some_and(|(hit, _)| hit.via.iter().any(|via| via == "signal" || via == "phrase"));
                 // A query shaped like code is answered by the text alone only
-                // when the text found something: a path or a symbol no record
-                // carries goes on to meaning, as a sentence does.
-                if exact_hit || (crate::stats::classify(query) == "exact" && !hits.is_empty()) {
+                // when a record carries one of its code terms whole (the terms
+                // list): the words list matches any of its parts ("src", "rs"),
+                // so a path or a symbol no record carries goes on to meaning.
+                let term_hit = hits.iter().any(|(hit, _)| hit.via.iter().any(|via| via == "terms"));
+                if exact_hit || (crate::stats::classify(query) == "exact" && term_hit) {
                     let found = hits.into_iter().map(|(hit, record)| Found { record, score: hit.score, via: hit.via, meaning: hit.meaning, store: None }).collect();
                     return Ok((found, notes));
                 }

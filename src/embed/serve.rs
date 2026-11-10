@@ -34,9 +34,17 @@ fn state_dir() -> PathBuf {
     models_root().join("serve")
 }
 
-/// Where a running server of `model` says its port and token.
-fn state_file(model: EmbeddingModel) -> PathBuf {
-    state_dir().join(format!("{}-{PROTOCOL}.json", model.id()))
+/// Where a running server of `model` for `build` says its port and token:
+/// one file per build, so two `lore` binaries on one machine (a package's and
+/// one built here) each keep a server instead of taking the file in turns.
+pub fn state_file(model: EmbeddingModel, build: &str) -> PathBuf {
+    state_dir().join(format!("{}-{PROTOCOL}-{}.json", model.id(), short(build)))
+}
+
+/// Eight hex digits of a build, for file names.
+fn short(build: &str) -> String {
+    use sha1::{Digest, Sha1};
+    format!("{:x}", Sha1::digest(build.as_bytes()))[..8].to_owned()
 }
 
 /// What a server's vectors depend on besides the model: the binary that
@@ -82,7 +90,7 @@ pub struct Remote {
 
 /// The running server of `model`, when one answers.
 pub fn connect(model: EmbeddingModel) -> Option<Remote> {
-    let text = std::fs::read_to_string(state_file(model)).ok()?;
+    let text = std::fs::read_to_string(state_file(model, &build())).ok()?;
     let state: serde_json::Value = serde_json::from_str(&text).ok()?;
     if state["build"].as_str() != Some(build().as_str()) {
         return None;
@@ -133,18 +141,19 @@ pub fn run(model: EmbeddingModel) -> i32 {
     };
     let Ok(addr) = listener.local_addr() else { return 1 };
     let token = token();
-    let state = state_file(model);
+    let served = served_build();
+    let state = state_file(model, &served);
     let written = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(state_dir())?;
         let temp = state.with_extension(format!("{}.tmp", std::process::id()));
-        std::fs::write(&temp, serde_json::json!({"port": addr.port(), "token": token, "pid": std::process::id(), "build": served_build()}).to_string())?;
+        std::fs::write(&temp, serde_json::json!({"port": addr.port(), "token": token, "pid": std::process::id(), "build": served}).to_string())?;
         std::fs::rename(&temp, &state)
     })();
     if let Err(error) = written {
         eprintln!("lore: model serve: cannot write {}: {error}", state.display());
         return 1;
     }
-    let _ = std::fs::remove_file(starting_marker(model));
+    let _ = std::fs::remove_file(starting_marker(model, &served));
     let _ = listener.set_nonblocking(true);
     let started = Instant::now();
     let last = Arc::new(AtomicU64::new(0));
@@ -232,15 +241,15 @@ fn server_exe() -> std::io::Result<PathBuf> {
     Ok(copy)
 }
 
-fn starting_marker(model: EmbeddingModel) -> PathBuf {
-    state_dir().join(format!("{}-{PROTOCOL}.starting", model.id()))
+fn starting_marker(model: EmbeddingModel, build: &str) -> PathBuf {
+    state_dir().join(format!("{}-{PROTOCOL}-{}.starting", model.id(), short(build)))
 }
 
 /// Starts `lore model serve` for `model` in the background, unless one is
 /// starting already (a marker under a minute old). `spawn` is the caller's
 /// detached spawn.
 pub fn start(model: EmbeddingModel, spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<()>) {
-    let marker = starting_marker(model);
+    let marker = starting_marker(model, &build());
     let fresh = std::fs::metadata(&marker).and_then(|meta| meta.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age.as_secs() < 60);
     if fresh {
         return;

@@ -181,7 +181,11 @@ pub fn classify(query: &str) -> &'static str {
         .expect("the symbol pattern is valid")
     });
     let quoted = QUOTED.get_or_init(|| regex::Regex::new(r#""[^"]{4,}""#).expect("the quoted pattern is valid"));
-    if code.is_match(query) || path.is_match(query) || symbol.is_match(query) || quoted.is_match(query) {
+    // Words of prose written in camel case are names, not symbols.
+    const NAMES: [&str; 14] =
+        ["JavaScript", "TypeScript", "GitHub", "GitLab", "PowerShell", "YouTube", "LinkedIn", "WordPress", "PlayStation", "MacBook", "PostgreSQL", "MySQL", "SharePoint", "OneDrive"];
+    let symbol_found = symbol.find_iter(query).any(|found| !NAMES.contains(&found.as_str()));
+    if code.is_match(query) || path.is_match(query) || symbol_found || quoted.is_match(query) {
         "exact"
     } else {
         "paraphrase"
@@ -508,7 +512,7 @@ mod tests {
         ] {
             assert_eq!(classify(exact), "exact", "{exact}");
         }
-        for paraphrase in ["the atlas checksum mismatch", "why does the build stop", "a hang on exit", "read/write fails", "save and/or load"] {
+        for paraphrase in ["the atlas checksum mismatch", "why does the build stop", "a hang on exit", "read/write fails", "save and/or load", "the GitHub page in PowerShell"] {
             assert_eq!(classify(paraphrase), "paraphrase", "{paraphrase}");
         }
     }

@@ -21,7 +21,7 @@ fn a_query_embedded_by_the_server_is_the_local_vector() {
         .stdin(std::process::Stdio::null())
         .spawn()
         .expect("lore model serve starts");
-    let state = embed::models_root().join("serve").join(format!("{}-v1.json", model.id()));
+    let state = embed::serve::state_file(model, &embed::serve::build());
     let started = Instant::now();
     let remote = loop {
         let ours = std::fs::read_to_string(&state).is_ok_and(|text| text.contains(&format!("\"pid\":{}", child.id())));
@@ -33,19 +33,21 @@ fn a_query_embedded_by_the_server_is_the_local_vector() {
         assert!(started.elapsed() < Duration::from_secs(60), "the server never answered");
         std::thread::sleep(Duration::from_millis(100));
     };
-    let text = format!("{}why does the probe view lose its direction", model.query_prefix());
-    let served = remote.embed(&[text.clone()]).expect("the server embeds");
-    let local = Embedder::open_model_for_queries(model, ModelSource::Cache).unwrap().embed_prefixed(&[text.as_str()]).unwrap();
-    let diff = served[0].iter().zip(&local[0]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
-    assert!(diff < 1e-5, "server and local vectors differ by {diff}");
-
-    // a request without the token gets nothing
+    // Read now: the server ends after three idle seconds, and opening the
+    // local model below can take longer than that on a busy machine.
     let port: u16 = serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(&state).unwrap()).unwrap()["port"].as_u64().unwrap() as u16;
+    // a request without the token gets nothing
     let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
     stream.write_all(b"{\"token\":\"guess\",\"texts\":[\"x\"]}\n").unwrap();
     let mut line = String::new();
     BufReader::new(stream).read_line(&mut line).unwrap();
     assert!(line.contains("wrong token") && !line.contains("vectors"), "{line}");
+
+    let text = format!("{}why does the probe view lose its direction", model.query_prefix());
+    let served = remote.embed(&[text.clone()]).expect("the server embeds");
+    let local = Embedder::open_model_for_queries(model, ModelSource::Cache).unwrap().embed_prefixed(&[text.as_str()]).unwrap();
+    let diff = served[0].iter().zip(&local[0]).map(|(a, b)| (a - b).abs()).fold(0f32, f32::max);
+    assert!(diff < 1e-5, "server and local vectors differ by {diff}");
 
     // idle for 3 s: it ends and takes its state file with it
     let started = Instant::now();
