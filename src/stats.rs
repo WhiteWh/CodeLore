@@ -143,7 +143,10 @@ pub fn session() -> String {
 /// extension), a symbol (a dotted name, a snake_case or CamelCase identifier),
 /// or a quoted phrase. Everything else is a paraphrase. Documented here so the
 /// mix can be read beside the rule that made it.
-pub fn classify(query: &str) -> &'static str {
+/// The parts of a query that make it code-shaped: hex and error codes,
+/// paths, symbols (dotted, snake_case, camel case that is no name of prose),
+/// quoted phrases.
+pub fn code_parts(query: &str) -> Vec<String> {
     // Compiled once per process, not once per call.
     static CODE: OnceLock<regex::Regex> = OnceLock::new();
     static PATH: OnceLock<regex::Regex> = OnceLock::new();
@@ -184,11 +187,21 @@ pub fn classify(query: &str) -> &'static str {
     // Words of prose written in camel case are names, not symbols.
     const NAMES: [&str; 14] =
         ["JavaScript", "TypeScript", "GitHub", "GitLab", "PowerShell", "YouTube", "LinkedIn", "WordPress", "PlayStation", "MacBook", "PostgreSQL", "MySQL", "SharePoint", "OneDrive"];
-    let symbol_found = symbol.find_iter(query).any(|found| !NAMES.contains(&found.as_str()));
-    if code.is_match(query) || path.is_match(query) || symbol_found || quoted.is_match(query) {
-        "exact"
-    } else {
+    let mut parts: Vec<String> = Vec::new();
+    for pattern in [code, path, quoted] {
+        parts.extend(pattern.find_iter(query).map(|found| found.as_str().trim().to_owned()));
+    }
+    parts.extend(symbol.find_iter(query).map(|found| found.as_str()).filter(|found| !NAMES.contains(found)).map(str::to_owned));
+    parts
+}
+
+/// The class of a query: "exact" when it holds a code part (see
+/// [`code_parts`]), else "paraphrase".
+pub fn classify(query: &str) -> &'static str {
+    if code_parts(query).is_empty() {
         "paraphrase"
+    } else {
+        "exact"
     }
 }
 

@@ -49,4 +49,10 @@ fn a_path_no_record_carries_goes_on_to_meaning() {
         "cause": "c", "fix": "f", "check": "k", "status": "live", "created": "2026-11-08", "updated": "2026-11-08", "by": "me"});
     Store::new(&root).write("lore/core.jsonl", &[record]).unwrap();
     assert!(!notes("src/render/post_chain.rs").contains("semantic search is off"), "a whole term answers at once");
+    // Only the parts that made the query code-shaped count: a record with
+    // another code term of it ("GPU") does not keep it on the text.
+    let record = json!({"v": 3, "id": "gpu-only", "kind": "fault", "area": "core", "title": "the GPU hangs", "symptom": "GPU stalls on load",
+        "cause": "c", "fix": "f", "check": "k", "status": "live", "created": "2026-11-08", "updated": "2026-11-08", "by": "me"});
+    Store::new(&root).write("lore/core.jsonl", &[record]).unwrap();
+    assert!(notes("why does build_index fail on GPU").contains("semantic search is off"), "build_index is in no record");
 }

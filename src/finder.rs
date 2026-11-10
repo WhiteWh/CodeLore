@@ -153,6 +153,17 @@ fn fts(index: &Index, table: &str, query: &str, weighted: bool, keep: &dyn Fn(&s
     run().or_else(refused_query).map_err(sql_error)
 }
 
+/// Whether a record the filters let through carries one of `parts` (a
+/// query's code parts) as a whole code term.
+pub fn carries_terms(index: &Index, filters: &Filters, parts: &[String]) -> Result<bool, LoreError> {
+    let terms: Vec<String> = parts.iter().flat_map(|part| terms_of(part)).collect();
+    if terms.is_empty() {
+        return Ok(false);
+    }
+    let query = terms.iter().take(32).map(|term| quote(term)).collect::<Vec<_>>().join(" OR ");
+    Ok(!fts_visible(index, "terms", &query, false, &visible_sql(filters))?.is_empty())
+}
+
 /// [`fts`] with the visibility filter inside the query: the facts table holds
 /// what `--area`, `--kind`, `--status` and `--plan` ask about.
 fn fts_visible(index: &Index, table: &str, query: &str, weighted: bool, visible: &VisibleSql) -> Result<Vec<String>, LoreError> {
