@@ -10,7 +10,7 @@ commands write files and nothing else - keeping the files is their owner's job.
     lore ledger set <kind> <key> field=value ... [--unset field] [--note "..."]
     lore ledger set --batch < lines.jsonl     # {"kind", "key", "set", "parents"?, "note"?} a line
     lore ledger get <kind> <key>              # the values in force, any conflict, and whether complete
-    lore ledger find <kind> --where field=value [--missing field]
+    lore ledger find <kind> --where field=value [--missing field]   # --json: {complete, gaps, entries}
     lore ledger fold [--with-state]           # the whole state in one read; --with-state adds heads,
                                               # conflicts, missing parents and `complete`
     lore ledger log <kind> <key>              # who set what, and when
@@ -21,7 +21,8 @@ commands write files and nothing else - keeping the files is their owner's job.
 
 `--strict` (get, find, fold, check) refuses a state that is not complete: a
 parent whose journal has not arrived, or a journal that ends in an unfinished
-line. A write to a journal that ends that way is refused; `lore ledger repair`
+line. For find that is asked of the whole kind, so an empty answer is complete
+or says it is not. A write to a journal that ends that way is refused; `lore ledger repair`
 sets the unfinished bytes aside in `<file>.torn-<n>`.
 
 Who writes: `--by` or `LORE_BY` (`[a-z0-9][a-z0-9._-]*`); the machine is the
@@ -35,5 +36,8 @@ lines into your journal - `--id` exact ones (a pending parent must come along),
 `--key`/`--kind` whole entries; `--keep` copies them and leaves the file, and
 `ack <file> --id ...` takes them out once whoever sends them confirms it.
 `export <file> --id ...` prints the chosen lines without changing anything.
+A pending line whose parent or id belongs to another entry is refused before
+it is read or moved. A write that fails part way names its lines and says the
+outcome is not confirmed: look for them with `log`, do not write them again.
 
 A knowledge record names a ledger entry in `refs.records` as `ledger:<kind>:<key>`.

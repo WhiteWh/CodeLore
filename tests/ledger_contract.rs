@@ -150,7 +150,8 @@ fn the_state_comes_in_one_read_with_what_it_rests_on() {
     assert_eq!(repo.json(&["ledger", "get", "item", "k", "--strict"])["complete"], json!(true));
     assert_eq!(repo.json(&["ledger", "get", "item", "j"])["complete"], json!(false));
     let found = repo.json(&["ledger", "find", "item", "--where", "label=j"]);
-    assert_eq!(found[0]["dangling"][0]["parent"], json!("0123456789abcdef"));
+    assert_eq!(found["entries"][0]["dangling"][0]["parent"], json!("0123456789abcdef"));
+    assert_eq!(found["complete"], json!(false));
     // check --strict makes the missing parent an error.
     let (code, _, _) = repo.run("alice", NOON, &["ledger", "check", "--strict"], "");
     assert_eq!(code, 1);
@@ -384,7 +385,7 @@ fn find_answers_as_a_full_scan_would() {
             if code != 0 {
                 continue; // a value that is not of the field's type
             }
-            let got: Vec<String> = serde_json::from_str::<Value>(&out).unwrap().as_array().unwrap().iter().map(|row| row["key"].as_str().unwrap().to_owned()).collect();
+            let got: Vec<String> = serde_json::from_str::<Value>(&out).unwrap()["entries"].as_array().unwrap().iter().map(|row| row["key"].as_str().unwrap().to_owned()).collect();
             let want_value = match codelore::config::load(&repo.root).unwrap().ledger.unwrap().kinds["item"][field] {
                 codelore::config::FieldType::String => Value::String(value.to_owned()),
                 _ => serde_json::from_str(value).unwrap(),
@@ -395,11 +396,11 @@ fn find_answers_as_a_full_scan_would() {
     }
     // --missing: no top-level value, even with a nested one of the same name.
     let found = repo.json(&["ledger", "--pending", &arg, "find", "item", "--missing", "size"]);
-    let got: Vec<&str> = found.as_array().unwrap().iter().map(|row| row["key"].as_str().unwrap()).collect();
+    let got: Vec<&str> = found["entries"].as_array().unwrap().iter().map(|row| row["key"].as_str().unwrap()).collect();
     assert_eq!(got, vec!["bare", "flag"]);
     // The pending line changed n2's size to 1: found by it, though the journal says 2.
     let found = repo.json(&["ledger", "--pending", &arg, "find", "item", "--where", "size=1"]);
-    assert!(found.as_array().unwrap().iter().any(|row| row["key"] == json!("n2")));
+    assert!(found["entries"].as_array().unwrap().iter().any(|row| row["key"] == json!("n2")));
 }
 
 #[test]
@@ -498,4 +499,148 @@ fn a_batch_keeps_each_entry_heads_as_it_goes() {
     let entry = repo.json(&["ledger", "get", "item", "k"]);
     assert_eq!(entry["heads"], json!([ids[2]]));
     assert_eq!(entry["conflicts"]["label"].as_array().unwrap().len(), 2, "size was set after both; label still differs");
+}
+
+fn write_pending(path: &std::path::Path, lines: &[&Line]) {
+    let text: String = lines.iter().map(|line| format!("{}\n", line.text())).collect();
+    std::fs::write(path, text).unwrap();
+}
+
+#[test]
+fn a_pending_line_is_held_to_the_journals_graph_before_it_is_read_or_moved() {
+    // journal -> pending: a pending line names a parent that a journal shows
+    // is another entry's line.
+    let repo = Repo::new();
+    let a = repo.set("alice", NOON, &["item", "a", "label=A"]);
+    let journal_before = std::fs::read(repo.journal("alice")).unwrap();
+    let file = repo.root.join("f.jsonl");
+    let arg = file.to_string_lossy().into_owned();
+    let b = new_line("b", json!({"label": "B"}), &[&a], "alice", 9);
+    write_pending(&file, &[&b]);
+    let pending_before = std::fs::read(&file).unwrap();
+    for argv in [
+        vec!["ledger", "--pending", &arg, "get", "item", "b"],
+        vec!["ledger", "--pending", &arg, "find", "item", "--where", "label=B"],
+        vec!["ledger", "--pending", &arg, "fold"],
+        vec!["ledger", "export", &arg, "--id", &b.id],
+        vec!["ledger", "promote", &arg],
+        vec!["ledger", "promote", &arg, "--id", &b.id, "--keep"],
+    ] {
+        assert!(repo.refused("alice", &argv).contains("which is a line of item 'a'"), "{argv:?}");
+    }
+    assert_eq!(std::fs::read(&file).unwrap(), pending_before, "a refusal leaves the pending file as it was");
+    assert_eq!(std::fs::read(repo.journal("alice")).unwrap(), journal_before, "and the journal");
+    assert_eq!(repo.json(&["ledger", "fold", "--with-state"])["complete"], json!(true), "the journals still read");
+
+    // pending -> pending: both lines only pending.
+    let repo = Repo::new();
+    let file = repo.root.join("f.jsonl");
+    let arg = file.to_string_lossy().into_owned();
+    let a = new_line("a", json!({"label": "A"}), &[], "alice", 1);
+    let b = new_line("b", json!({"label": "B"}), &[&a.id], "alice", 2);
+    write_pending(&file, &[&a, &b]);
+    assert!(repo.refused("alice", &["ledger", "--pending", &arg, "get", "item", "a"]).contains("which is a line of item 'a'"));
+    assert!(repo.refused("alice", &["ledger", "promote", &arg, "--id", &a.id, "--id", &b.id]).contains("which is a line of item 'a'"));
+    assert!(!repo.journal("alice").exists());
+
+    // A pending line that a journal line of another entry waits for as its parent.
+    let repo = Repo::new();
+    let file = repo.root.join("f.jsonl");
+    let arg = file.to_string_lossy().into_owned();
+    let late = new_line("d", json!({"label": "D"}), &[], "alice", 1);
+    repo.write_line("bob", &new_line("c", json!({"label": "C"}), &[&late.id], "bob", 2));
+    write_pending(&file, &[&late]);
+    for argv in [vec!["ledger", "--pending", &arg, "get", "item", "d"], vec!["ledger", "promote", &arg]] {
+        assert!(repo.refused("alice", &argv).contains("which is a pending line of item 'd'"), "{argv:?}");
+    }
+    assert!(!repo.journal("alice").exists());
+
+    // A pending line whose parent is its own entry's journal line reads and moves.
+    let repo = Repo::new();
+    let k = repo.set("alice", NOON, &["item", "k", "label=one"]);
+    let file = repo.root.join("f.jsonl");
+    let arg = file.to_string_lossy().into_owned();
+    let next = new_line("k", json!({"label": "two"}), &[&k], "alice", 30);
+    write_pending(&file, &[&next]);
+    assert_eq!(repo.json(&["ledger", "--pending", &arg, "get", "item", "k"])["set"]["label"], json!("two"));
+    assert_eq!(repo.json(&["ledger", "promote", &arg])["moved"], json!([next.id]));
+}
+
+#[test]
+fn find_is_complete_only_when_the_whole_kind_is() {
+    let repo = Repo::new();
+    repo.set("alice", NOON, &["item", "a", "label=A"]);
+    // b's parent has not arrived: it may set b's label to A, or set size.
+    repo.write_line("bob", &new_line("b", json!({"label": "B"}), &["1111111111111111"], "bob", 3));
+    let found = repo.json(&["ledger", "find", "item", "--where", "label=Z"]);
+    assert_eq!(found["entries"], json!([]));
+    assert_eq!(found["complete"], json!(false), "an empty answer is not complete either");
+    assert!(found["gaps"][0].as_str().unwrap().contains("1111111111111111"));
+    for argv in [vec!["ledger", "find", "item", "--where", "label=Z", "--strict"], vec!["ledger", "find", "item", "--missing", "size", "--strict"]] {
+        assert!(repo.refused("alice", &argv).contains("not complete (--strict)"), "{argv:?}");
+    }
+    let (code, out, _) = repo.run("alice", NOON, &["ledger", "find", "item", "--where", "label=Z"], "");
+    assert_eq!(code, 0);
+    assert!(out.contains("nothing found") && out.contains("not complete:"), "{out}");
+    // A kind with no missing parent is complete.
+    let repo = Repo::new();
+    repo.set("alice", NOON, &["item", "a", "label=A"]);
+    let found = repo.json(&["ledger", "find", "item", "--where", "label=Z", "--strict"]);
+    assert_eq!(found, json!({"complete": true, "gaps": [], "entries": []}));
+}
+
+#[test]
+fn a_failed_write_says_what_may_have_happened() {
+    let repo = Repo::new();
+    repo.set("alice", NOON, &["item", "k", "label=one"]);
+    // Cut off half way: some bytes are in, the outcome is not confirmed.
+    codelore::ledger::inject_fault(Some("append:write"));
+    let (code, out, err) = repo.run("alice", NOON + 1, &["ledger", "set", "item", "k", "label=two"], "");
+    codelore::ledger::inject_fault(None);
+    assert_eq!(code, 1);
+    let said = format!("{out}{err}");
+    assert!(said.contains("not confirmed") && said.contains("do not write them again") && !said.contains("were not written"), "{said}");
+    assert!(said.lines().map(|line| line.trim().trim_start_matches("- ")).any(|id| id.len() == 16 && id.chars().all(|c| c.is_ascii_hexdigit())), "the line's id is named: {said}");
+    assert!(!std::fs::read(repo.journal("alice")).unwrap().ends_with(b"\n"), "half a line is in");
+    // repair sets the half line aside; a failed cut says where the bytes are.
+    codelore::ledger::inject_fault(Some("repair:cut"));
+    let said = repo.refused("alice", &["ledger", "repair"]);
+    codelore::ledger::inject_fault(None);
+    assert!(said.contains("may or may not have been cut") && said.contains(".torn-1"), "{said}");
+    let (code, out, _) = repo.run("alice", NOON, &["--json", "ledger", "repair"], "");
+    assert_eq!(code, 0, "{out}");
+    assert!(std::fs::read(repo.journal("alice")).unwrap().ends_with(b"\n"));
+    // Written, then the sync fails: written but not confirmed.
+    codelore::ledger::inject_fault(Some("append:sync"));
+    let said = repo.refused("alice", &["ledger", "set", "item", "k", "label=three"]);
+    codelore::ledger::inject_fault(None);
+    assert!(said.contains("written but are not confirmed on disk"), "{said}");
+    assert_eq!(repo.json(&["ledger", "get", "item", "k"])["set"]["label"], json!("three"));
+}
+
+#[test]
+fn repairing_a_pending_file_waits_for_its_lock() {
+    use fs2::FileExt;
+    let repo = Repo::new();
+    let pending = repo.root.join("pending.jsonl");
+    let arg = pending.to_string_lossy().into_owned();
+    repo.set("alice", NOON, &["item", "k", "label=one", "--to", &arg]);
+    let mut bytes = std::fs::read(&pending).unwrap();
+    bytes.extend_from_slice(b"{\"v\":4,\"id\":\"ab");
+    std::fs::write(&pending, &bytes).unwrap();
+    // A promote holds the lock from its read to its rewrite.
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(repo.root.join("pending.jsonl.lock")).unwrap();
+    lock.lock_exclusive().unwrap();
+    let root = repo.root.clone();
+    let given = arg.clone();
+    let repairer = std::thread::spawn(move || {
+        let env = Env { cwd: root, lore_by: Some("alice".into()), machine: Some("m1".into()), now: Some(NOON), ..Env::default() };
+        cli::run(&["ledger", "repair", &given], &env).code
+    });
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    assert_eq!(std::fs::read(&pending).unwrap(), bytes, "repair waits for the lock");
+    fs2::FileExt::unlock(&lock).unwrap();
+    assert_eq!(repairer.join().unwrap(), 0);
+    assert!(std::fs::read(&pending).unwrap().ends_with(b"\n"));
+    assert!(repo.root.join("pending.jsonl.torn-1").exists());
 }

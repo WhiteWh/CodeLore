@@ -486,6 +486,32 @@ pub fn journal_of(author: &str, machine: &str, at: &str) -> String {
     format!("{author}@{machine}/{}.jsonl", &at[..7])
 }
 
+thread_local! {
+    static FAULT: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+}
+
+/// For tests: makes the next write on this thread fail at `phase` -
+/// `append:write` (after half its bytes), `append:sync`, `repair:cut` (after
+/// the bytes are set aside, before the file is cut) or `repair:sync`.
+#[doc(hidden)]
+pub fn inject_fault(phase: Option<&str>) {
+    FAULT.with(|fault| *fault.borrow_mut() = phase.map(str::to_owned));
+}
+
+fn fault(phase: &str) -> bool {
+    FAULT.with(|fault| {
+        let hit = fault.borrow().as_deref() == Some(phase);
+        if hit {
+            *fault.borrow_mut() = None;
+        }
+        hit
+    })
+}
+
+fn injected() -> std::io::Error {
+    std::io::Error::other("injected fault")
+}
+
 /// The length of what follows the last LF of an open file, looked for
 /// backwards in blocks.
 fn tail_of(file: &mut std::fs::File, length: u64) -> std::io::Result<u64> {
@@ -523,6 +549,11 @@ pub fn repair(path: &Path) -> Result<Option<(u64, PathBuf)>> {
         if tail == 0 {
             return Ok(None);
         }
+        let aside_failed = |candidate: &Path| {
+            let candidate = candidate.display().to_string();
+            let shown = shown.clone();
+            move |error: std::io::Error| LoreError::new(format!("{shown}: {error} while setting its unfinished line aside; {shown} was not changed, {candidate} may hold part of those bytes"))
+        };
         let mut bytes = vec![0u8; tail as usize];
         file.seek(SeekFrom::Start(length - tail)).map_err(fail)?;
         file.read_exact(&mut bytes).map_err(fail)?;
@@ -533,15 +564,20 @@ pub fn repair(path: &Path) -> Result<Option<(u64, PathBuf)>> {
             let candidate = PathBuf::from(name);
             match std::fs::OpenOptions::new().write(true).create_new(true).open(&candidate) {
                 Ok(mut aside) => {
-                    aside.write_all(&bytes).and_then(|()| aside.sync_all()).map_err(fail)?;
+                    aside.write_all(&bytes).and_then(|()| aside.sync_all()).map_err(aside_failed(&candidate))?;
                     break candidate;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => number += 1,
                 Err(error) => return Err(fail(error)),
             }
         };
-        file.set_len(length - tail).map_err(fail)?;
-        file.sync_all().map_err(fail)?;
+        let kept_shown = kept.display().to_string();
+        let cut = if fault("repair:cut") { Err(injected()) } else { file.set_len(length - tail) };
+        cut.map_err(|error| {
+            LoreError::new(format!("{shown}: {error} while cutting it back to its last whole line; it may or may not have been cut - its unfinished line is kept in {kept_shown}, run repair again"))
+        })?;
+        let synced = if fault("repair:sync") { Err(injected()) } else { file.sync_all() };
+        synced.map_err(|error| LoreError::new(format!("{shown}: {error} after it was cut back; the cut is not confirmed on disk - its unfinished line is kept in {kept_shown}")))?;
         Ok(Some((tail, kept)))
     })();
     let _ = fs2::FileExt::unlock(&file);
@@ -573,6 +609,7 @@ pub fn append(path: &Path, lines: &[Line]) -> Result<()> {
         .map_err(|error| LoreError::new(format!("{shown}: {error}")))?;
     file.lock_exclusive().map_err(|error| LoreError::new(format!("{shown}: cannot lock ({error})")))?;
     let fail = |error: std::io::Error| LoreError::new(format!("{shown}: {error}; the lines were not written"));
+    let ids = || lines.iter().map(|line| line.id.clone()).collect::<Vec<_>>();
     let result = (|| {
         let length = file.metadata().map_err(fail)?.len();
         let tail = tail_of(&mut file, length).map_err(fail)?;
@@ -587,8 +624,26 @@ pub fn append(path: &Path, lines: &[Line]) -> Result<()> {
             text.push('\n');
         }
         file.seek(SeekFrom::Start(length)).map_err(fail)?;
-        file.write_all(text.as_bytes()).map_err(fail)?;
-        file.sync_data().map_err(fail)
+        // From here on the file may have changed: an error says the outcome
+        // is not known, names the lines to look for, and never says to write
+        // them again (a new request is a new line with a new id).
+        let written = if fault("append:write") {
+            file.write_all(&text.as_bytes()[..text.len() / 2]).and_then(|()| Err(injected()))
+        } else {
+            file.write_all(text.as_bytes())
+        };
+        written.map_err(|error| {
+            LoreError::with(
+                format!(
+                    "{shown}: {error} while writing; some or all of these lines may be in it, ending in an unfinished one - not confirmed. `lore ledger log` shows which arrived, `lore ledger repair` sets an unfinished end aside; do not write them again as new lines"
+                ),
+                ids(),
+            )
+        })?;
+        let synced = if fault("append:sync") { Err(injected()) } else { file.sync_data() };
+        synced.map_err(|error| {
+            LoreError::with(format!("{shown}: {error} after writing; these lines were written but are not confirmed on disk - `lore ledger log` shows them; do not write them again as new lines"), ids())
+        })
     })();
     let _ = fs2::FileExt::unlock(&file);
     result

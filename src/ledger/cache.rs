@@ -610,6 +610,14 @@ impl Cache {
             .map_err(db_error(&self.path))
     }
 
+    /// The journal lines that name `id` as a parent no journal holds yet:
+    /// (line, kind, key, where it is).
+    pub fn waiting(&self, id: &str) -> Result<Vec<(String, String, String, String)>> {
+        let mut statement = self.db.prepare_cached("SELECT line, kind, key, place FROM missing WHERE parent = ?1").map_err(db_error(&self.path))?;
+        let rows = statement.query_map(params![id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))).map_err(db_error(&self.path))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(db_error(&self.path))
+    }
+
     /// Whether the journals hold this line.
     pub fn has_line(&self, id: &str) -> Result<bool> {
         Ok(self.owner(id)?.is_some())

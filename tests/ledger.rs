@@ -347,8 +347,9 @@ fn a_batch_writes_every_line_in_one_call_and_chains_them() {
     assert!(err.contains("line 2: item.size must be number"), "{err}");
     assert_eq!(std::fs::read_to_string(repo.journal("alice")).unwrap().lines().count(), 2);
     let found = repo.json("alice", &["ledger", "find", "item", "--where", "label=two"]);
-    assert_eq!(found[0]["key"], json!("k"));
-    assert_eq!(repo.json("alice", &["ledger", "find", "item", "--where", "label=one"]), json!([]));
+    assert_eq!(found["entries"][0]["key"], json!("k"));
+    assert_eq!(found["complete"], json!(true));
+    assert_eq!(repo.json("alice", &["ledger", "find", "item", "--where", "label=one"])["entries"], json!([]));
 }
 
 #[test]

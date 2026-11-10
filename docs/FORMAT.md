@@ -324,7 +324,10 @@ file that ends that way; `lore ledger repair` sets those bytes aside in
 `<file>.torn-<n>` before cutting the file back to its last LF, since what they
 were is not known. A batch of lines is not atomic: a crash may leave some of
 them. A retry that must not write a line twice goes through a pending file,
-whose lines keep their ids (below).
+whose lines keep their ids (below). A write that fails once bytes have gone
+out says so: the lines may be in the file, in part or whole, and are named by
+id to be looked for - never written again as new lines, which would be other
+lines with other ids.
 
 **The fold.** An *entry* is a kind and a key. Its lines form a graph by
 `parents`: a line comes after every line it descends from. Two lines are
@@ -351,7 +354,14 @@ A parent must be a line of the same entry. One not among the entry's lines -
 its writer's journal has not arrived - is passed over: the line still applies,
 and the state is not complete until it comes. One that is, or later turns out
 to be, a line of another entry is refused on every read and write, whichever
-arrived first.
+arrived first - pending lines (below) included, before they are read over the
+journals or moved into one.
+
+A state is complete when no line it rests on is missing and no file read
+ends in an unfinished line. For a search by value this is asked of the whole
+kind, not of the matches: a parent still to come may set a field of any entry
+waiting for it, and so bring it into the answer or take it out - an empty
+answer included.
 
 A conflict is resolved by an ordinary line whose `parents` hold the
 conflicting lines it was shown, setting the field. A line that came meanwhile
@@ -378,7 +388,8 @@ in both places, and the next move finds it in the journal already. Lines move
 by exact id or by entry; a line whose parent is only in the pending file moves
 with it, or not at all. Lines may also be copied into the journal and taken out
 of the pending file later, when whoever sends them confirms it: taking out a
-line no longer there is done already.
+line no longer there is done already. Setting a pending file's unfinished end
+aside holds the same lock.
 
 **References.** A knowledge record names a ledger entry in `refs.records` as
 `ledger:<kind>:<key>`. The kind must be declared; an entry not in the ledger is
