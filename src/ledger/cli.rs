@@ -217,7 +217,7 @@ impl Ctx<'_> {
     /// The whole lines of a pending file (none when it does not exist yet),
     /// and the length of an unfinished last line.
     fn read_pending(&self, given: &str) -> Result<(Vec<Line>, usize)> {
-        match std::fs::read(self.file(given)) {
+        match super::read_file(&self.file(given)) {
             Ok(bytes) => parse_whole(&bytes, given, self.ledger()),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok((Vec::new(), 0)),
             Err(error) => Err(LoreError::new(format!("{given}: {error}"))),
@@ -470,6 +470,7 @@ fn write(ctx: &Ctx<'_>, cache: &Cache, requests: Vec<Request>, out: &mut Out) ->
     // folds only its own entry, so a batch stays linear.
     let mut over: BTreeMap<Key, Vec<Line>> = pending.by_entry();
     let mut known_here: BTreeMap<String, Key> = pending.lines.iter().map(|line| (line.id.clone(), line.entry())).collect();
+    let pending_only: BTreeSet<String> = pending.lines.iter().map(|line| line.id.clone()).collect();
     // Per entry this call writes to: its heads now and its fields in conflict,
     // kept up as lines are added - a line after every head is the one head, and
     // ends every conflict on a field it sets - so an entry edited many times in
@@ -519,6 +520,15 @@ fn write(ctx: &Ctx<'_>, cache: &Cache, requests: Vec<Request>, out: &mut Out) ->
                 seen.get(&entry_key).map(|(heads, _)| heads.clone()).unwrap_or_default()
             }
         };
+        // A journal line rests only on lines a journal holds: a parent that is
+        // only in a pending file goes there with it (`--to`), or is promoted first.
+        if ctx.opts.to.is_none() {
+            for parent in &parents {
+                if pending_only.contains(parent.as_str()) && !cache.has_line(parent)? {
+                    found.push(format!("parent {parent} is only in a pending file - write this with --to that file, or promote the parent first"));
+                }
+            }
+        }
         if !found.is_empty() {
             errs.extend(found.into_iter().map(|error| format!("{who}{error}")));
             continue;
@@ -1002,7 +1012,7 @@ fn cmd_check(ctx: &Ctx<'_>, out: &mut Out) -> Result<i32> {
     }
     let mut contents = Vec::new();
     for (shown, path, _) in &sources {
-        contents.push(std::fs::read(path).map_err(|error| LoreError::new(format!("{shown}: {error}; nothing was checked")))?);
+        contents.push(super::read_file(&path).map_err(|error| LoreError::new(format!("{shown}: {error}; nothing was checked")))?);
     }
     let count = sources.len();
     let mut jobs: Vec<(String, &[u8], usize)> = Vec::new();
@@ -1136,7 +1146,7 @@ fn cmd_promote(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
     let relative = journal_of(&by, &machine(ctx.call.machine.as_deref())?, &ctx.now());
     let shown = format!("{}/{relative}", ledger.dir);
     let (moved, already, left, entries) = super::locked(&path, || {
-        let bytes = std::fs::read(&path).map_err(|error| LoreError::new(format!("{given}: {error}")))?;
+        let bytes = super::read_file(&path).map_err(|error| LoreError::new(format!("{given}: {error}")))?;
         let (lines, tail) = parse_whole(&bytes, given, ledger)?;
         if tail > 0 {
             out.stderr.push_str(&format!("lore: warning: {given} ends in an unfinished line ({tail} bytes); it is not moved and stays in the file\n"));
@@ -1195,7 +1205,7 @@ fn cmd_ack(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
     let given = &ctx.opts.positional[0];
     let path = ctx.file(given);
     let (removed, gone_before) = super::locked(&path, || {
-        let bytes = match std::fs::read(&path) {
+        let bytes = match super::read_file(&path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
             Err(error) => return Err(LoreError::new(format!("{given}: {error}"))),
@@ -1239,7 +1249,7 @@ fn cmd_export(ctx: &Ctx<'_>, cache: &Cache, out: &mut Out) -> Result<i32> {
     let given = &ctx.opts.positional[0];
     let path = ctx.file(given);
     let texts = super::locked(&path, || {
-        let bytes = std::fs::read(&path).map_err(|error| LoreError::new(format!("{given}: {error}")))?;
+        let bytes = super::read_file(&path).map_err(|error| LoreError::new(format!("{given}: {error}")))?;
         let (lines, _) = parse_whole(&bytes, given, ledger)?;
         let chosen = choose(ctx, &lines, given)?;
         let mut errs = closure_errors(&chosen, &lines, cache)?;

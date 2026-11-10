@@ -144,6 +144,9 @@ fn places(blob: &[u8]) -> Result<Vec<(i64, u64, usize)>> {
 }
 
 /// Reads lines back from their places, one open file per journal.
+/// The most bytes of other lines one read of a run of places takes in.
+const GAP: u64 = 64 << 10;
+
 struct Reader<'a> {
     folder: &'a Path,
     paths: BTreeMap<i64, String>,
@@ -160,18 +163,34 @@ impl Reader<'_> {
             // as one span (an entry edited often has many), else one by one.
             let (file, start, _) = all[at];
             let mut end = at + 1;
-            while end < all.len() && all[end].0 == file && all[end].1 >= all[end - 1].1 + all[end - 1].2 as u64 && all[end].1 - start < 64 << 20 {
+            // Places of one entry are far apart in a large journal: a run
+            // takes in a gap of other lines' bytes only up to GAP.
+            while end < all.len()
+                && all[end].0 == file
+                && all[end].1 >= all[end - 1].1 + all[end - 1].2 as u64
+                && all[end].1 - (all[end - 1].1 + all[end - 1].2 as u64) <= GAP
+                && all[end].1 - start < 64 << 20
+            {
                 end += 1;
             }
             if !self.open.contains_key(&file) {
                 let relative = self.paths.get(&file).ok_or_else(|| damaged("a place names a journal the cache does not know"))?;
-                let handle = std::fs::File::open(self.folder.join(relative)).map_err(|error| LoreError::new(format!("{}: {error}", self.folder.join(relative).display())))?;
+                let handle = super::patiently(|| std::fs::File::open(self.folder.join(relative))).map_err(|error| LoreError::new(format!("{}: {error}", self.folder.join(relative).display())))?;
                 self.open.insert(file, handle);
             }
             let handle = self.open.get_mut(&file).ok_or_else(|| damaged("a journal could not be opened"))?;
             let (_, last_offset, last_length) = all[end - 1];
             let mut span = vec![0u8; (last_offset + last_length as u64 - start) as usize];
-            handle.seek(SeekFrom::Start(start)).and_then(|_| handle.read_exact(&mut span)).map_err(|_| damaged("a journal is shorter than its places"))?;
+            // A journal shorter than its places is damage; any other error
+            // (a writer's lock outlasting the wait, a sharing violation) is
+            // an error of this read, and the cache is left as it is.
+            super::patiently(|| handle.seek(SeekFrom::Start(start)).and_then(|_| handle.read_exact(&mut span))).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                    damaged("a journal is shorter than its places")
+                } else {
+                    LoreError::new(format!("{}: {error}", self.paths.get(&file).map(String::as_str).unwrap_or("a journal")))
+                }
+            })?;
             for &(_, offset, length) in &all[at..end] {
                 let from = (offset - start) as usize;
                 // Checked when it was first read; a place that no longer holds
@@ -195,13 +214,18 @@ struct Fresh {
 
 impl Cache {
     /// The cache of `config`'s ledger, brought up to date with the journals:
-    /// in the user cache (`LORE_CACHE`), else in the system's temporary
-    /// folder, else - a sandbox that lets neither be written - in memory,
+    /// in the user cache (`LORE_CACHE`), else in a temporary folder only this
+    /// user can write to, else - a sandbox that lets neither be written - in memory,
     /// folded from the journals on every command, with a warning.
     pub fn open(config: &Config, ledger: &Ledger) -> Result<Self> {
         let key = crate::index::repo_key(&config.root);
         let mut tried = Vec::new();
-        for dir in [crate::index::cache_dir().join(&key), std::env::temp_dir().join("codelore").join(&key)] {
+        // The temporary folder only where no other user can write to it (the
+        // user's own on Windows, XDG_RUNTIME_DIR elsewhere): a cache another
+        // user left in a shared one would be read as the state.
+        let private_temp = if cfg!(windows) { Some(std::env::temp_dir()) } else { std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty()).map(PathBuf::from) };
+        let candidates = std::iter::once(crate::index::cache_dir().join(&key)).chain(private_temp.map(|dir| dir.join("codelore").join(&key)));
+        for dir in candidates {
             let path = dir.join(FILE_NAME);
             let opened = std::fs::create_dir_all(&dir).map_err(|error| format!("{}: {error}", dir.display())).and_then(|()| Self::connect(&path).map_err(|error| error.message));
             match opened {
@@ -295,7 +319,7 @@ impl Cache {
         let path = self.path.clone();
         let folder = self.folder.clone();
         let shown = |relative: &str| format!("{}/{relative}", ledger.dir);
-        let read_file = |relative: &str| std::fs::read(folder.join(relative)).map_err(|error| LoreError::new(format!("{}: {error}; nothing was read", shown(relative))));
+        let read_file = |relative: &str| super::read_file(&folder.join(relative)).map_err(|error| LoreError::new(format!("{}: {error}; nothing was read", shown(relative))));
         let tx = self.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_error(&path))?;
         let print = schema_print(ledger);
         let stored_print: Option<String> = tx.query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| row.get(0)).optional().map_err(db_error(&path))?;

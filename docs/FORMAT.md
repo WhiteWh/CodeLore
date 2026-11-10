@@ -317,7 +317,9 @@ or it will not read a line back as written.
 {"at":"2026-11-09T12:00:00Z","by":"alice","id":"213af8e1a2eb278f","key":"a/b/c","kind":"item","parents":[],"set":{"label":"Größe ü","shared":true,"size":2.5},"v":4}
 ```
 
-**Whole lines only.** A reader takes the lines up to a file's last LF. What
+**Whole lines only.** A reader takes the lines up to a file's last LF. A line
+may end in CR LF - a copy that converts line ends makes them - and is read as
+if it ended in LF; writers write LF, and a CR anywhere else is refused. What
 follows it - a line being appended, a copy cut short, damage - is not read, and
 the state read is said to be **not complete**. A writer refuses to append to a
 file that ends that way; `lore ledger repair` sets those bytes aside in

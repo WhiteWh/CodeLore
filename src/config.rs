@@ -240,8 +240,14 @@ fn parse_ledger(value: &toml::Value, lore_dir: &str, bad: &mut Vec<String>) -> L
     for (key, value) in table {
         match key.as_str() {
             "dir" => match value.as_str() {
-                Some(dir) if !dir.is_empty() && !dir.starts_with('/') && !dir.contains(':') && !dir.split(['/', '\\']).any(|part| part == ".." || part == ".") => {
-                    ledger.dir = dir.replace('\\', "/").trim_matches('/').to_owned();
+                // Checked as it will be used: a backslash or a slash alone would be the repository itself.
+                Some(dir) if !dir.starts_with(['/', '\\']) && !dir.contains(':') && {
+                    let normal = dir.replace('\\', "/");
+                    let normal = normal.trim_end_matches('/');
+                    !normal.is_empty() && !normal.split('/').any(|part| part.is_empty() || part == ".." || part == ".")
+                } =>
+                {
+                    ledger.dir = dir.replace('\\', "/").trim_end_matches('/').to_owned();
                 }
                 _ => bad.push("`ledger.dir` must be a relative path inside the repository".into()),
             },

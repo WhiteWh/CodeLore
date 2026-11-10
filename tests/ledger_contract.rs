@@ -644,3 +644,62 @@ fn repairing_a_pending_file_waits_for_its_lock() {
     assert!(std::fs::read(&pending).unwrap().ends_with(b"\n"));
     assert!(repo.root.join("pending.jsonl.torn-1").exists());
 }
+
+#[test]
+fn a_journal_with_crlf_line_ends_reads_as_lf() {
+    let repo = Repo::new();
+    let first = new_line("k", json!({"label": "one"}), &[], "bob", 1);
+    let second = new_line("k", json!({"label": "two"}), &[&first.id], "bob", 2);
+    let path = repo.journal("bob");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    // As a copy that converts line ends leaves it.
+    std::fs::write(&path, format!("{}\r\n{}\r\n", first.text(), second.text())).unwrap();
+    assert_eq!(repo.json(&["ledger", "get", "item", "k"])["set"]["label"], json!("two"));
+    // A writer appends LF lines after them; both kinds read, warm as cold.
+    repo.set("bob", NOON, &["item", "k", "label=three"]);
+    let warm = repo.json(&["ledger", "fold", "--with-state"]);
+    std::fs::remove_file(repo.cache_file()).unwrap();
+    let cold = repo.json(&["ledger", "fold", "--with-state"]);
+    assert_eq!(warm, cold);
+    assert_eq!(cold["entries"]["item"]["k"]["set"]["label"], json!("three"));
+    let (code, out, _) = repo.run("alice", NOON, &["ledger", "check"], "");
+    assert_eq!(code, 0, "{out}");
+    // A CR anywhere but before the LF is refused.
+    let repo = Repo::new();
+    let path = repo.journal("bob");
+    std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+    std::fs::write(&path, format!("{}\r\r\n", first.text())).unwrap();
+    assert!(repo.refused("alice", &["ledger", "get", "item", "k"]).contains("a CR inside the line"));
+}
+
+#[test]
+fn a_journal_line_never_rests_on_a_line_only_pending() {
+    let repo = Repo::new();
+    let file = repo.root.join("p.jsonl");
+    let arg = file.to_string_lossy().into_owned();
+    let pending = repo.set("alice", NOON, &["item", "k", "label=one", "--to", &arg]);
+    // Its heads include the pending line: to the journal, refused; to the file, written.
+    assert!(repo.refused("alice", &["ledger", "--pending", &arg, "set", "item", "k", "label=two"]).contains("is only in a pending file"));
+    assert!(!repo.journal("alice").exists());
+    assert!(repo.refused("alice", &["ledger", "set", "item", "k", "label=two", "--parents", &pending, "--pending", &arg]).contains("is only in a pending file"));
+    repo.set("alice", NOON + 1, &["item", "k", "label=two", "--to", &arg]);
+    // Once promoted, the journal holds it, and a journal line may rest on it.
+    repo.json(&["ledger", "promote", &arg]);
+    repo.set("alice", NOON + 2, &["item", "k", "label=three"]);
+    assert_eq!(repo.json(&["ledger", "get", "item", "k", "--strict"])["set"]["label"], json!("three"));
+}
+
+#[test]
+fn a_ledger_folder_is_never_the_repository_itself() {
+    for dir in ["\\\\", "/", "a//b", "./x", "x/..", ""] {
+        let repo = Repo::with(&format!("\n[ledger]\ndir = {}\n\n[ledger.kinds.item]\nlabel = \"string\"\n", toml_string(dir)));
+        assert!(repo.refused("alice", &["ledger", "status"]).contains("ledger.dir"), "{dir:?}");
+    }
+    let repo = Repo::with("\n[ledger]\ndir = \"data\\\\ledger\\\\\"\n\n[ledger.kinds.item]\nlabel = \"string\"\n");
+    repo.set("alice", NOON, &["item", "k", "label=one"]);
+    assert!(repo.root.join("data/ledger/alice@m1/2026-11.jsonl").exists());
+}
+
+fn toml_string(text: &str) -> String {
+    format!("\"{}\"", text.replace('\\', "\\\\"))
+}

@@ -264,14 +264,16 @@ pub fn parse_bytes(bytes: &[u8], first: usize, place: &str, ledger: &Ledger) -> 
     parse_bytes_raw(bytes, first, place, ledger).map(|lines| lines.into_iter().map(|(line, _)| line).collect())
 }
 
-/// [`parse_bytes`] with each line's own text: a line that was accepted is
-/// canonical, so a caller that stores it need not write it again.
+/// [`parse_bytes`] with each line's own text as it is in the file - its
+/// bytes, a CR before its LF included, so places counted from it are right.
+///
+/// A line may end in CR LF: a copy or a checkout that converts line ends
+/// makes them, and the line is read as if it ended in LF (its id is of its
+/// canonical text, which has no CR). A CR anywhere else is refused: JSON
+/// never holds one raw.
 pub fn parse_bytes_raw(bytes: &[u8], first: usize, place: &str, ledger: &Ledger) -> Result<Vec<(Line, String)>> {
     if first == 1 && bytes.starts_with(&[0xEF, 0xBB, 0xBF]) {
         return Err(LoreError::new(format!("{place}: starts with a BOM; ledger files are UTF-8 without one")));
-    }
-    if bytes.contains(&b'\r') {
-        return Err(LoreError::new(format!("{place}: has CR line ends; ledger files are LF")));
     }
     let text = std::str::from_utf8(bytes).map_err(|error| LoreError::new(format!("{place}: not UTF-8 ({error})")))?;
     if text.is_empty() {
@@ -284,11 +286,16 @@ pub fn parse_bytes_raw(bytes: &[u8], first: usize, place: &str, ledger: &Ledger)
     let mut lines = Vec::new();
     for (index, raw) in text.strip_suffix('\n').unwrap_or(text).split('\n').enumerate() {
         let number = first + index;
-        if raw.trim().is_empty() {
+        let body = raw.strip_suffix('\r').unwrap_or(raw);
+        if body.contains('\r') {
+            errs.push(format!("line {number}: a CR inside the line"));
+            continue;
+        }
+        if body.trim().is_empty() {
             errs.push(format!("line {number}: blank"));
             continue;
         }
-        match parse_line(raw, ledger) {
+        match parse_line(body, ledger) {
             Ok(line) => lines.push((line, raw.to_owned())),
             Err(found) => errs.extend(found.into_iter().map(|error| format!("line {number}: {error}"))),
         }
@@ -399,6 +406,30 @@ pub fn fold_checked(kind: &str, key: &str, lines: &[Line]) -> Result<fold::Entry
         return Err(LoreError::new(format!("{kind} {}: lines {} are on a cycle of parents; nothing was read", crate::py::repr_str(key), entry.cycle.join(", "))));
     }
     Ok(entry)
+}
+
+/// Whether an I/O error is a byte-range lock held by another process: on
+/// Windows a writer's exclusive lock makes a read of the same bytes fail
+/// (ERROR_LOCK_VIOLATION) until the writer is done - a wait, not damage.
+pub fn locked_out(error: &std::io::Error) -> bool {
+    cfg!(windows) && error.raw_os_error() == Some(33)
+}
+
+/// `work` again while another process's lock keeps it out, for up to five
+/// seconds: a writer holds its lock for the moment an append takes.
+pub fn patiently<T>(mut work: impl FnMut() -> std::io::Result<T>) -> std::io::Result<T> {
+    let started = std::time::Instant::now();
+    loop {
+        match work() {
+            Err(error) if locked_out(&error) && started.elapsed() < std::time::Duration::from_secs(5) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            other => return other,
+        }
+    }
+}
+
+/// A whole file, waiting out a writer's lock (see [`patiently`]).
+pub fn read_file(path: &Path) -> std::io::Result<Vec<u8>> {
+    patiently(|| std::fs::read(path))
 }
 
 /// Runs `work` holding `<path>.lock` exclusively: the protocol every writer of
