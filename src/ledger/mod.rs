@@ -267,7 +267,7 @@ pub fn parse_bytes(bytes: &[u8], first: usize, place: &str, ledger: &Ledger) -> 
 /// [`parse_bytes`] with each line's own text as it is in the file - its
 /// bytes, a CR before its LF included, so places counted from it are right.
 ///
-/// A line may end in CR LF: a copy or a checkout that converts line ends
+/// A line may end in CR LF: a copy or a sync that converts line ends
 /// makes them, and the line is read as if it ended in LF (its id is of its
 /// canonical text, which has no CR). A CR anywhere else is refused: JSON
 /// never holds one raw.
