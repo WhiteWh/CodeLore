@@ -29,10 +29,10 @@ use std::io::{Read as _, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 /// Raised when what the cache holds changes meaning.
-const CACHE_FORMAT: &str = "5";
-pub const FILE_NAME: &str = "ledger-5.sqlite";
+const CACHE_FORMAT: &str = "6";
+pub const FILE_NAME: &str = "ledger-6.sqlite";
 /// Earlier caches' files, removed when the current one is opened.
-const OLD_FILES: [&str; 4] = ["ledger.sqlite", "ledger-2.sqlite", "ledger-3.sqlite", "ledger-4.sqlite"];
+const OLD_FILES: [&str; 5] = ["ledger.sqlite", "ledger-2.sqlite", "ledger-3.sqlite", "ledger-4.sqlite", "ledger-5.sqlite"];
 /// A line's place: file id (u32), offset (u64), length (u32), little-endian.
 const PLACE: usize = 16;
 
@@ -64,6 +64,35 @@ pub enum Filter {
     /// Entries whose stored state holds each of these texts - a prefilter;
     /// the caller checks the values exactly.
     Holding(Vec<String>),
+}
+
+/// The hash of bytes with each CR before an LF left out: what a file's lines
+/// say, whatever its line ends.
+fn plain_hash(bytes: &[u8]) -> String {
+    let mut plain = Vec::with_capacity(bytes.len());
+    for (at, byte) in bytes.iter().enumerate() {
+        if !(*byte == b'\r' && bytes.get(at + 1) == Some(&b'\n')) {
+            plain.push(*byte);
+        }
+    }
+    sha_hex(&plain)
+}
+
+/// The first `count` lines of `bytes`, each with its LF.
+fn first_lines(bytes: &[u8], count: usize) -> &[u8] {
+    if count == 0 {
+        return &bytes[..0];
+    }
+    let mut seen = 0;
+    for (at, byte) in bytes.iter().enumerate() {
+        if *byte == b'\n' {
+            seen += 1;
+            if seen == count {
+                return &bytes[..=at];
+            }
+        }
+    }
+    bytes
 }
 
 fn sha_hex(bytes: &[u8]) -> String {
@@ -273,7 +302,7 @@ impl Cache {
         db.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS files (id INTEGER PRIMARY KEY, path TEXT NOT NULL UNIQUE, size INTEGER NOT NULL, mtime INTEGER NOT NULL,
-                 lines INTEGER NOT NULL, prefix TEXT NOT NULL);
+                 lines INTEGER NOT NULL, prefix TEXT NOT NULL, plain TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS entries (kind TEXT NOT NULL, key TEXT NOT NULL, state TEXT NOT NULL,
                  conflicts INTEGER NOT NULL, dangling INTEGER NOT NULL, PRIMARY KEY (kind, key));
              CREATE TABLE IF NOT EXISTS bodies (kind TEXT NOT NULL, key TEXT NOT NULL, places BLOB NOT NULL, PRIMARY KEY (kind, key));
@@ -323,12 +352,12 @@ impl Cache {
         let tx = self.db.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate).map_err(db_error(&path))?;
         let print = schema_print(ledger);
         let stored_print: Option<String> = tx.query_row("SELECT value FROM meta WHERE key = 'schema'", [], |row| row.get(0)).optional().map_err(db_error(&path))?;
-        // path -> (id, size read, mtime, lines, prefix)
-        let mut known: BTreeMap<String, (i64, i64, i64, i64, String)> = BTreeMap::new();
+        // path -> (id, size read, mtime, lines, prefix, plain)
+        let mut known: BTreeMap<String, (i64, i64, i64, i64, String, String)> = BTreeMap::new();
         {
-            let mut statement = tx.prepare("SELECT path, id, size, mtime, lines, prefix FROM files").map_err(db_error(&path))?;
+            let mut statement = tx.prepare("SELECT path, id, size, mtime, lines, prefix, plain FROM files").map_err(db_error(&path))?;
             let rows = statement
-                .query_map([], |row| Ok((row.get::<_, String>(0)?, (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?))))
+                .query_map([], |row| Ok((row.get::<_, String>(0)?, (row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?))))
                 .map_err(db_error(&path))?;
             for row in rows {
                 let (file, info) = row.map_err(db_error(&path))?;
@@ -346,6 +375,7 @@ impl Cache {
         }
         let mut rebuild = stored_print.as_deref() != Some(print.as_str());
         let mut broken = Vec::new();
+        let mut ends_changed = Vec::new();
         for gone in known.keys().filter(|file| !journals.contains(file)) {
             broken.push(format!("{} is gone", shown(gone)));
         }
@@ -354,16 +384,20 @@ impl Cache {
             let meta = std::fs::metadata(folder.join(relative)).map_err(|error| LoreError::new(format!("{}: {error}; nothing was read", shown(relative))))?;
             let (size, stamp) = (meta.len() as i64, mtime(&meta));
             match known.get(relative) {
-                Some((_, old_size, old_stamp, _, _)) if *old_size == size && *old_stamp == stamp => {}
-                Some((_, old_size, _, lines, prefix)) => {
+                Some((_, old_size, old_stamp, _, _, _)) if *old_size == size && *old_stamp == stamp => {}
+                Some((_, old_size, _, lines, prefix, plain)) => {
                     let bytes = read_file(relative)?;
                     let old = *old_size as usize;
-                    if bytes.len() < old {
-                        broken.push(format!("{} got shorter", shown(relative)));
-                    } else if sha_hex(&bytes[..old]) != *prefix {
-                        broken.push(format!("{} changed before its end", shown(relative)));
-                    } else {
+                    if bytes.len() >= old && sha_hex(&bytes[..old]) == *prefix {
                         reads.push((relative.clone(), bytes, old, *lines as usize + 1, stamp));
+                    } else if plain_hash(first_lines(&bytes, *lines as usize)) == *plain {
+                        // The same lines with other line ends (a copy that
+                        // converts them): every place moved, nothing changed.
+                        ends_changed.push(shown(relative));
+                    } else if bytes.len() < old {
+                        broken.push(format!("{} got shorter", shown(relative)));
+                    } else {
+                        broken.push(format!("{} changed before its end", shown(relative)));
                     }
                 }
                 None => reads.push((relative.clone(), read_file(relative)?, 0, 1, stamp)),
@@ -371,8 +405,10 @@ impl Cache {
         }
         if !broken.is_empty() && !rebuild {
             warnings.push(format!("{}: journals are only ever appended to; the ledger cache was built again from every file", broken.join("; ")));
+        } else if !ends_changed.is_empty() && !rebuild {
+            warnings.push(format!("{}: the line ends changed (CR LF / LF), the lines did not; the ledger cache was built again", ends_changed.join(", ")));
         }
-        rebuild |= !broken.is_empty();
+        rebuild |= !broken.is_empty() || !ends_changed.is_empty();
         if rebuild {
             tx.execute_batch(
                 "DELETE FROM files; DELETE FROM entries; DELETE FROM bodies; DELETE FROM missing;
@@ -428,9 +464,9 @@ impl Cache {
             }
             let count = (first - 1 + lines.len()) as i64;
             tx.execute(
-                "INSERT INTO files (path, size, mtime, lines, prefix) VALUES (?1, ?2, ?3, ?4, ?5)
-                 ON CONFLICT (path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, lines = excluded.lines, prefix = excluded.prefix",
-                params![relative, bytes.len() as i64, stamp, count, sha_hex(bytes)],
+                "INSERT INTO files (path, size, mtime, lines, prefix, plain) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT (path) DO UPDATE SET size = excluded.size, mtime = excluded.mtime, lines = excluded.lines, prefix = excluded.prefix, plain = excluded.plain",
+                params![relative, bytes.len() as i64, stamp, count, sha_hex(bytes), plain_hash(bytes)],
             )
             .map_err(db_error(&path))?;
             let id: i64 = match known.get(relative) {

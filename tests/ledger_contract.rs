@@ -703,3 +703,26 @@ fn a_ledger_folder_is_never_the_repository_itself() {
 fn toml_string(text: &str) -> String {
     format!("\"{}\"", text.replace('\\', "\\\\"))
 }
+
+#[test]
+fn line_ends_converted_under_a_cache_are_named_as_that() {
+    let repo = Repo::new();
+    repo.set("alice", NOON, &["item", "k", "label=one"]);
+    repo.set("alice", NOON + 1, &["item", "k", "label=two"]);
+    assert_eq!(repo.json(&["ledger", "get", "item", "k"])["set"]["label"], json!("two"));
+    // A copy that converts line ends rewrites the journal under the cache.
+    let path = repo.journal("alice");
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::write(&path, text.replace('\n', "\r\n")).unwrap();
+    let (code, out, err) = repo.run("alice", NOON, &["--json", "ledger", "get", "item", "k"], "");
+    assert_eq!(code, 0, "{out}{err}");
+    assert!(err.contains("the line ends changed") && !err.contains("only ever appended"), "{err}");
+    assert_eq!(serde_json::from_str::<Value>(&out).unwrap()["set"]["label"], json!("two"));
+    // A real change before the end is still named as one.
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lines: Vec<&str> = text.split_inclusive('\n').collect();
+    lines.swap(0, 1);
+    std::fs::write(&path, lines.concat()).unwrap();
+    let (_, _, err) = repo.run("alice", NOON, &["ledger", "status"], "");
+    assert!(err.contains("only ever appended"), "{err}");
+}

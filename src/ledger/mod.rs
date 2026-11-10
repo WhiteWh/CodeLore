@@ -408,11 +408,13 @@ pub fn fold_checked(kind: &str, key: &str, lines: &[Line]) -> Result<fold::Entry
     Ok(entry)
 }
 
-/// Whether an I/O error is a byte-range lock held by another process: on
+/// Whether an I/O error is another process holding the file for a moment: on
 /// Windows a writer's exclusive lock makes a read of the same bytes fail
-/// (ERROR_LOCK_VIOLATION) until the writer is done - a wait, not damage.
+/// (ERROR_LOCK_VIOLATION, 33), and a scanner or an editor that opened the
+/// file without sharing it makes an open fail (ERROR_SHARING_VIOLATION, 32) -
+/// a wait, not damage.
 pub fn locked_out(error: &std::io::Error) -> bool {
-    cfg!(windows) && error.raw_os_error() == Some(33)
+    cfg!(windows) && matches!(error.raw_os_error(), Some(32 | 33))
 }
 
 /// `work` again while another process's lock keeps it out, for up to five
