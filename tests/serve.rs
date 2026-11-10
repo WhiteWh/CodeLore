@@ -16,6 +16,8 @@ fn a_query_embedded_by_the_server_is_the_local_vector() {
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_lore"))
         .args(["model", "serve", "--model", model.id()])
         .env("LORE_EMBED_SERVE_IDLE", "3")
+        // started from another binary than this test's: it says this one's build
+        .env("LORE_SERVE_BUILD", embed::serve::build())
         .stdin(std::process::Stdio::null())
         .spawn()
         .expect("lore model serve starts");

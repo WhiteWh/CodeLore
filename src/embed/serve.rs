@@ -39,11 +39,23 @@ fn state_file(model: EmbeddingModel) -> PathBuf {
     state_dir().join(format!("{}-{PROTOCOL}.json", model.id()))
 }
 
-/// What a server's vectors depend on besides the model: the build of `lore`
-/// that runs it and the token cap. A server of another build (an install that
-/// replaced `lore` while it ran) is not asked: its vectors may differ.
-fn build() -> String {
-    format!("{}/t{}", env!("LORE_BUILD_COMMIT"), crate::embed::token_cap(usize::MAX))
+/// What a server's vectors depend on besides the model: the binary that
+/// started it - its version, commit, size and time (a package build has no
+/// commit, and two builds of one commit may differ) - and the token cap. A
+/// server another binary started (an install replaced `lore` while it ran)
+/// is not asked: its vectors may differ.
+pub fn build() -> String {
+    let stamp = std::env::current_exe()
+        .and_then(std::fs::metadata)
+        .map(|meta| format!("{}-{}", meta.len(), meta.modified().ok().and_then(|at| at.duration_since(UNIX_EPOCH).ok()).map_or(0, |since| since.as_secs())))
+        .unwrap_or_default();
+    format!("{}+{}+{stamp}/t{}", env!("CARGO_PKG_VERSION"), env!("LORE_BUILD_COMMIT"), crate::embed::token_cap(usize::MAX))
+}
+
+/// The build a server says it serves: the one its starter passed on (it runs
+/// from a copy of that binary), else its own.
+fn served_build() -> String {
+    std::env::var("LORE_SERVE_BUILD").ok().filter(|build| !build.is_empty()).unwrap_or_else(build)
 }
 
 /// A token nobody else on the machine can guess from outside this user's files:
@@ -125,7 +137,7 @@ pub fn run(model: EmbeddingModel) -> i32 {
     let written = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(state_dir())?;
         let temp = state.with_extension(format!("{}.tmp", std::process::id()));
-        std::fs::write(&temp, serde_json::json!({"port": addr.port(), "token": token, "pid": std::process::id(), "build": build()}).to_string())?;
+        std::fs::write(&temp, serde_json::json!({"port": addr.port(), "token": token, "pid": std::process::id(), "build": served_build()}).to_string())?;
         std::fs::rename(&temp, &state)
     })();
     if let Err(error) = written {
@@ -239,6 +251,7 @@ pub fn start(model: EmbeddingModel, spawn: impl FnOnce(&mut std::process::Comman
         let mut command = std::process::Command::new(server_exe()?);
         command
             .args(["model", "serve", "--model", model.id()])
+            .env("LORE_SERVE_BUILD", build())
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());

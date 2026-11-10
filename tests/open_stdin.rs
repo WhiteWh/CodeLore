@@ -106,6 +106,8 @@ fn add_and_update_without_fields_take_their_json_on_stdin() {
     let silent = finishes(child, "add fault --json (silent pipe)", Duration::from_secs(30));
     drop(held);
     assert_eq!(silent.status.code(), Some(1), "a record with no fields is refused");
+    let said = format!("{}{}", String::from_utf8_lossy(&silent.stdout), String::from_utf8_lossy(&silent.stderr));
+    assert!(said.contains("silent for 3 s"), "and says why: {said}");
     // `--json` shapes the output; the record still comes from stdin.
     let mut add = lore(root).args(["add", "fault", "--json", "--new"]).stdin(Stdio::piped()).spawn().unwrap();
     let record = r#"{"area":"build","title":"the linker runs out of memory","symptom":"link.exe stops with an out-of-memory error","cause":"the 32-bit linker is picked","fix":"use the 64-bit host toolchain","check":"the build links"}"#;

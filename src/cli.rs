@@ -549,6 +549,14 @@ fn stdin_text(env: &Env) -> Result<String> {
     String::from_utf8(data.to_vec()).map_err(|error| LoreError::new(format!("stdin is not UTF-8 ({error})")))
 }
 
+/// What `add` or `update` says when nothing came: no `-s`, no flag naming
+/// stdin, and stdin empty or silent.
+const NO_INPUT: &str = "no input: give the fields with -s field=value, or the JSON on stdin (a stdin silent for 3 s counts as none - --json-in waits for it)";
+
+fn no_input(ctx: &Ctx) -> bool {
+    ctx.args.many("set").is_empty() && !ctx.args.flag("batch") && !ctx.args.flag("json-in") && !stdin_given(ctx)
+}
+
 /// No `-s` was given and stdin holds something: the JSON record or patch
 /// there is the input, `--json-in` or not.
 fn stdin_given(ctx: &Ctx) -> bool {
@@ -1238,6 +1246,9 @@ fn cmd_exists(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
 }
 
 fn new_from_args(ctx: &Ctx, kind: &str) -> Result<Vec<Value>> {
+    if no_input(ctx) {
+        return Err(LoreError::new(NO_INPUT));
+    }
     let mut records: Vec<Value> = if ctx.args.flag("batch") {
         read_stdin_jsonl(ctx.env)?
     } else if ctx.args.flag("json-in") || stdin_given(ctx) {
@@ -1397,6 +1408,9 @@ fn update_inner(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
         return ctx.write(io, &build, None, Vec::new());
     }
     let Some(rid) = id else { return Err(LoreError::new("which record? `lore update <id>`, or --json-in with `id` in the patch, or --batch")) };
+    if no_input(ctx) {
+        return Err(LoreError::new(NO_INPUT));
+    }
     let build = ops::updater(rid, Patch::Of(Box::new(move |current: &Value| parse_sets(&sets, Some(current)))), None);
     ctx.write(io, &build, None, Vec::new())
 }

@@ -100,22 +100,31 @@ fn create(db: &Connection) -> Result<(), LoreError> {
 /// once, in place (its pieces and vectors are kept). A drop by the unindexed
 /// `chunk` column read the whole table, twice per changed file.
 fn rowid_is_chunk(db: &Connection) -> Result<(), LoreError> {
-    let done: Option<String> = db.query_row("SELECT value FROM meta WHERE key = 'fts_rowid'", [], |row| row.get(0)).optional().map_err(error)?;
-    if done.is_some() {
+    let done = |db: &Connection| -> Result<bool, LoreError> {
+        let value: Option<String> = db.query_row("SELECT value FROM meta WHERE key = 'fts_rowid'", [], |row| row.get(0)).optional().map_err(error)?;
+        Ok(value.is_some())
+    };
+    if done(db)? {
         return Ok(());
     }
-    db.execute_batch(
-        "BEGIN IMMEDIATE;
-         CREATE TEMP TABLE words_copy AS SELECT chunk, path, names, body FROM code_words;
+    // Under the write lock, looked at again: a process that waited for
+    // another one's renumbering finds it done and does it no second time.
+    // A failure part way rolls back (the transaction is dropped).
+    let tx = rusqlite::Transaction::new_unchecked(db, rusqlite::TransactionBehavior::Immediate).map_err(error)?;
+    if done(&tx)? {
+        return Ok(());
+    }
+    tx.execute_batch(
+        "CREATE TEMP TABLE words_copy AS SELECT chunk, path, names, body FROM code_words;
          CREATE TEMP TABLE terms_copy AS SELECT chunk, toks FROM code_terms;
          DELETE FROM code_words; DELETE FROM code_terms;
          INSERT INTO code_words(rowid, chunk, path, names, body) SELECT chunk, chunk, path, names, body FROM words_copy;
          INSERT INTO code_terms(rowid, chunk, toks) SELECT chunk, chunk, toks FROM terms_copy;
          DROP TABLE words_copy; DROP TABLE terms_copy;
-         INSERT OR REPLACE INTO meta VALUES('fts_rowid', 'chunk');
-         COMMIT;",
+         INSERT OR REPLACE INTO meta VALUES('fts_rowid', 'chunk');",
     )
-    .map_err(error)
+    .map_err(error)?;
+    tx.commit().map_err(error)
 }
 
 fn connect(path: &Path) -> Result<(Connection, bool), LoreError> {
