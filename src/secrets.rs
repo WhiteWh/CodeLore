@@ -148,7 +148,103 @@ fn segment_ok(segment: &str) -> bool {
 /// field), a UUID, and a token that reads as a path or a name.
 fn exempt_token(token: &str) -> bool {
     let hex = token.len() >= 7 && token.len() <= 64 && token.chars().all(|ch| ch.is_ascii_hexdigit());
-    hex || uuid_re().is_match(token) || path_or_name(token)
+    hex || uuid_re().is_match(token) || path_or_name(token) || file_path(token) || anchor(token) || camel_case(token)
+}
+
+/// The extensions a cited file ends with.
+const EXTENSIONS: &[&str] = &[
+    "md", "txt", "rs", "py", "pyi", "json", "jsonl", "toml", "yml", "yaml", "ts", "tsx", "js", "jsx", "mjs", "cjs", "css",
+    "html", "svg", "png", "kt", "kts", "java", "gradle", "swift", "sh", "ps1", "bat", "c", "h", "cc", "cpp", "hpp", "go",
+    "rb", "sql", "xml", "proto", "cfg", "ini", "lock", "csv", "log", "qml", "cmake", "plist", "pbxproj", "sqlite3",
+];
+
+/// A part of a slug: lowercase letters and digits in any order, with a letter
+/// (`phase3a`, `i18n`, `80x24`, `5wmh42`).
+fn slug(part: &str) -> bool {
+    (1..=24).contains(&part.len())
+        && part.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && part.chars().any(|ch| ch.is_ascii_lowercase())
+}
+
+/// A file path as documents cite it: a `/`, a known extension, and parts that
+/// are words, hashes or lowercase slugs
+/// (`docs/superpowers/plans/2026-10-18-task-tracker-phase3a-desktop.md`,
+/// `client/scripts/generate-i18n-catalog.py`). Zerus task #40: `word` refused
+/// `phase3a`, `i18n` and `80x24` (letters after digits), so whole batches of
+/// plan citations were refused. A base64 string has mixed-case runs between
+/// its digits, so its parts are none of these.
+fn file_path(token: &str) -> bool {
+    let Some((stem, extension)) = token.rsplit_once('.') else { return false };
+    if !stem.contains('/') || !EXTENSIONS.contains(&extension.to_ascii_lowercase().as_str()) {
+        return false;
+    }
+    let parts: Vec<&str> = stem.split(['/', '.', '-', '_']).filter(|part| !part.is_empty()).collect();
+    !parts.is_empty() && parts.len() <= 32 && parts.iter().all(|part| segment_ok(part) || slug(part))
+}
+
+/// A word of letters a person reads: two or more, with a vowel.
+fn pronounceable(part: &str) -> bool {
+    part.len() >= 2
+        && part.chars().all(|ch| ch.is_ascii_alphabetic())
+        && part.chars().any(|ch| matches!(ch.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u' | 'y'))
+}
+
+/// A heading anchor or a slug: lowercase parts joined by `-`, at least three,
+/// two thirds of them words (`phone-task-exchange-through-the-relay-implementation-plan-5b1`,
+/// `tauri-client-phase-3b-settings-zerus-5wmh24`).
+fn anchor(token: &str) -> bool {
+    if !token.chars().all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-') {
+        return false;
+    }
+    let parts: Vec<&str> = token.split('-').filter(|part| !part.is_empty()).collect();
+    let words = parts.iter().filter(|part| pronounceable(part)).count();
+    parts.len() >= 3 && parts.iter().all(|part| slug(part)) && words * 3 >= parts.len() * 2
+}
+
+/// The humps of a CamelCase name: `PreferPage60FPSEnabled` is `Prefer`,
+/// `Page`, `60`, `FPS`, `Enabled`.
+fn humps(token: &str) -> Vec<&str> {
+    let bytes = token.as_bytes();
+    let mut humps = Vec::new();
+    let mut start = 0;
+    for at in 1..bytes.len() {
+        let (before, here) = (bytes[at - 1], bytes[at]);
+        let lower_next = bytes.get(at + 1).is_some_and(u8::is_ascii_lowercase);
+        let starts = here.is_ascii_digit() != before.is_ascii_digit()
+            || (here.is_ascii_uppercase() && (before.is_ascii_lowercase() || (before.is_ascii_uppercase() && lower_next)));
+        if starts {
+            humps.push(&token[start..at]);
+            start = at;
+        }
+    }
+    humps.push(&token[start..]);
+    humps
+}
+
+/// A CamelCase identifier: at least three humps, each a word with a vowel, a
+/// short acronym or a short number, the first possibly one lowercase letter
+/// (`kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`,
+/// `PreferPageRenderingUpdatesNear60FPSEnabled`). A random string's humps are
+/// mostly one or two letters without a vowel (`Qx`, `7`, `pL`).
+fn camel_case(token: &str) -> bool {
+    if !token.starts_with(|ch: char| ch.is_ascii_alphabetic()) || !token.chars().all(|ch| ch.is_ascii_alphanumeric()) {
+        return false;
+    }
+    let humps = humps(token);
+    let numbers = humps.iter().filter(|hump| hump.starts_with(|ch: char| ch.is_ascii_digit())).count();
+    let mut single_capitals = 0;
+    humps.len() >= 3
+        && numbers <= 2
+        && humps.iter().enumerate().all(|(n, hump)| {
+            if hump.chars().all(|ch| ch.is_ascii_digit()) {
+                hump.len() <= 4
+            } else if hump.chars().all(|ch| ch.is_ascii_uppercase()) {
+                single_capitals += usize::from(hump.len() == 1);
+                hump.len() <= 6 && single_capitals <= 1
+            } else {
+                (n == 0 && hump.len() == 1) || pronounceable(hump)
+            }
+        })
 }
 
 /// Everything in `text` that looks like a secret, in order, without overlaps.
