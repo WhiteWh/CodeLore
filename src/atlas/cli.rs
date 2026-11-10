@@ -312,12 +312,17 @@ fn find(config: &Config, query: &str, limit: usize, filter: &Filter, text_only: 
     let mut vector = None;
     if let Some(embedder) = &embedder {
         // A few new pieces are embedded here; many wait for `lore atlas index`.
-        let (_, missing) = atlas.ensure_vectors(embedder, model.id(), model.document_prefix(), Some(super::store::SEARCH_EMBED_BUDGET), &mut |_, _| {})?;
-        if missing > 0 {
-            notes.push(format!("{missing} code pieces have no vector yet; `lore atlas index` embeds them"));
-        }
-        match embedder.embed_query(query) {
-            Ok(v) => vector = Some(v),
+        // A model that fails here leaves the search to the text, as an index does.
+        match atlas.ensure_vectors(embedder, model.id(), model.document_prefix(), Some(super::store::SEARCH_EMBED_BUDGET), &mut |_, _| {}) {
+            Ok((_, missing)) => {
+                if missing > 0 {
+                    notes.push(format!("{missing} code pieces have no vector yet; `lore atlas index` embeds them"));
+                }
+                match embedder.embed_query(query) {
+                    Ok(v) => vector = Some(v),
+                    Err(error) => notes.push(format!("code meaning unavailable: {error}; text only")),
+                }
+            }
             Err(error) => notes.push(format!("code meaning unavailable: {error}; text only")),
         }
     }

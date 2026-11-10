@@ -25,7 +25,13 @@ pub fn main() -> ! {
     // agent's shell) may keep that pipe open without writing, and a read would
     // wait for an EOF nobody sends.
     if wants_stdin(&args) && !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
-        let _ = std::io::stdin().read_to_end(&mut stdin);
+        if implicit_stdin(&args) {
+            // Nothing on the command line says input comes: wait for it only
+            // while it is coming. A pipe that stays silent is no input.
+            stdin = read_if_it_comes(std::time::Duration::from_secs(3));
+        } else {
+            let _ = std::io::stdin().read_to_end(&mut stdin);
+        }
     }
     let env = Env {
         cwd: std::env::current_dir().unwrap_or_default(),
@@ -59,10 +65,7 @@ pub fn wants_stdin(args: &[String]) -> bool {
         return true;
     }
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
-    // `add` and `update` with no `-s`: the record or the patch comes as JSON
-    // on stdin, whether or not `--json-in` says so (`--json` alone only shapes
-    // the output, and was taken for the input often enough).
-    if matches!(command_word(&words), Some("add" | "update")) && !words.iter().any(|word| matches!(*word, "-s" | "--set") || word.starts_with("--set=")) {
+    if implicit_stdin(args) {
         return true;
     }
     let after = |first: &str, second: &str| words.windows(2).position(|pair| pair[0] == first && pair[1] == second).map(|at| at + 2);
@@ -87,6 +90,45 @@ pub fn wants_stdin(args: &[String]) -> bool {
         return true;
     }
     false
+}
+
+/// `add` and `update` with no `-s` and no flag that names stdin: the record or
+/// the patch comes as JSON on stdin all the same (`--json` alone only shapes
+/// the output, and was taken for the input often enough). Read only while it
+/// comes - see [`read_if_it_comes`].
+pub fn implicit_stdin(args: &[String]) -> bool {
+    let words: Vec<&str> = args.iter().map(String::as_str).collect();
+    matches!(command_word(&words), Some("add" | "update"))
+        && !words.iter().any(|word| matches!(*word, "-s" | "--set" | "--batch" | "--json-in" | "--stdin") || word.starts_with("--set="))
+}
+
+/// stdin to its end when its first bytes come within `first`; nothing when
+/// the pipe stays silent that long (a harness that hands on an open pipe it
+/// never writes to). Once bytes come, the rest is waited for however long.
+fn read_if_it_comes(first: std::time::Duration) -> Vec<u8> {
+    let (send, receive) = std::sync::mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        let mut input = std::io::stdin();
+        let mut block = vec![0u8; 64 * 1024];
+        loop {
+            match input.read(&mut block) {
+                Ok(0) | Err(_) => return,
+                Ok(count) => {
+                    if send.send(block[..count].to_vec()).is_err() {
+                        return;
+                    }
+                }
+            }
+        }
+    });
+    let mut bytes = match receive.recv_timeout(first) {
+        Ok(chunk) => chunk,
+        Err(_) => return Vec::new(),
+    };
+    while let Ok(chunk) = receive.recv() {
+        bytes.extend(chunk);
+    }
+    bytes
 }
 
 /// The command: the first word that is neither an option nor the value of a

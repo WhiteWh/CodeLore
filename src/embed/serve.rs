@@ -39,6 +39,13 @@ fn state_file(model: EmbeddingModel) -> PathBuf {
     state_dir().join(format!("{}-{PROTOCOL}.json", model.id()))
 }
 
+/// What a server's vectors depend on besides the model: the build of `lore`
+/// that runs it and the token cap. A server of another build (an install that
+/// replaced `lore` while it ran) is not asked: its vectors may differ.
+fn build() -> String {
+    format!("{}/t{}", env!("LORE_BUILD_COMMIT"), crate::embed::token_cap(usize::MAX))
+}
+
 /// A token nobody else on the machine can guess from outside this user's files:
 /// std's per-process random hash keys, the time and the process id, hashed.
 fn token() -> String {
@@ -65,6 +72,9 @@ pub struct Remote {
 pub fn connect(model: EmbeddingModel) -> Option<Remote> {
     let text = std::fs::read_to_string(state_file(model)).ok()?;
     let state: serde_json::Value = serde_json::from_str(&text).ok()?;
+    if state["build"].as_str() != Some(build().as_str()) {
+        return None;
+    }
     let addr = SocketAddr::from(([127, 0, 0, 1], u16::try_from(state["port"].as_u64()?).ok()?));
     // a port that refuses at once is a server that is gone
     TcpStream::connect_timeout(&addr, Duration::from_millis(200)).ok()?;
@@ -115,7 +125,7 @@ pub fn run(model: EmbeddingModel) -> i32 {
     let written = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(state_dir())?;
         let temp = state.with_extension(format!("{}.tmp", std::process::id()));
-        std::fs::write(&temp, serde_json::json!({"port": addr.port(), "token": token, "pid": std::process::id()}).to_string())?;
+        std::fs::write(&temp, serde_json::json!({"port": addr.port(), "token": token, "pid": std::process::id(), "build": build()}).to_string())?;
         std::fs::rename(&temp, &state)
     })();
     if let Err(error) = written {

@@ -211,7 +211,7 @@ impl Builtin {
         let serve = !wait && background_allowed() && embed::serve::enabled();
         if serve {
             if let Some(remote) = embed::serve::connect(selected) {
-                return (Some(std::sync::Arc::new(remote) as embed::Shared), notes);
+                return (Some(std::sync::Arc::new(ServerOrOwn { remote, model: selected, own: std::sync::OnceLock::new() }) as embed::Shared), notes);
             }
         }
         // `wait` is an index being built: the GPU for its thousands of texts; a
@@ -375,5 +375,30 @@ impl Finder for Builtin {
             note: if notes.is_empty() { None } else { Some(notes.join("; ")) },
         };
         Ok(info)
+    }
+}
+
+/// The model server, and this process's own model when the server fails
+/// mid-search (gone, busy past its timeout): the search keeps its meaning
+/// instead of falling to text only.
+struct ServerOrOwn {
+    remote: embed::serve::Remote,
+    model: embed::EmbeddingModel,
+    own: std::sync::OnceLock<Option<embed::Embedder>>,
+}
+
+impl embed::Embeddings for ServerOrOwn {
+    fn embed(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, crate::LoreError> {
+        match self.remote.embed(texts) {
+            Ok(vectors) => Ok(vectors),
+            Err(error) => match self.own.get_or_init(|| embed::Embedder::open_model_for_queries(self.model, embed::ModelSource::Cache).ok()) {
+                Some(own) => embed::Embeddings::embed(own, texts),
+                None => Err(error),
+            },
+        }
+    }
+
+    fn dimensions(&self) -> usize {
+        embed::Embeddings::dimensions(&self.remote)
     }
 }

@@ -21,6 +21,10 @@ fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, LoreError> {
     let output = Command::new("git")
         .arg("-C")
         .arg(root)
+        // A read must never take `index.lock`: `git status` refreshing the
+        // index made a commit running beside it fail.
+        .arg("--no-optional-locks")
+        .env("GIT_OPTIONAL_LOCKS", "0")
         .args(["-c", "core.quotepath=off"])
         .args(args)
         .output()
@@ -89,7 +93,7 @@ fn index_file(root: &Path) -> std::path::PathBuf {
 /// removed or renamed in a folder changes the folder's time). Equal prints
 /// mean a scan would find nothing new. On a 6 800-file checkout this is
 /// ~0.1 s where `git status` took ~0.5 s.
-pub fn quick_print(root: &Path, settings: &str, dirs: &BTreeSet<String>) -> Result<String, LoreError> {
+pub fn quick_print(root: &Path, settings: &str, dirs: &BTreeSet<String>, untracked: &[String]) -> Result<String, LoreError> {
     let mut hasher = Sha1::new();
     hasher.update(settings.as_bytes());
     hasher.update(stamp(&index_file(root)).as_bytes());
@@ -101,6 +105,12 @@ pub fn quick_print(root: &Path, settings: &str, dirs: &BTreeSet<String>) -> Resu
     for dir in dirs {
         hasher.update(dir.as_bytes());
         hasher.update(stamp(&if dir.is_empty() { root.to_path_buf() } else { root.join(dir) }).as_bytes());
+    }
+    // An untracked file edited in place changes neither git's index nor its
+    // folder's time: its own size and time are taken, file by file.
+    for path in untracked {
+        hasher.update(path.as_bytes());
+        hasher.update(stamp(&root.join(path)).as_bytes());
     }
     Ok(format!("{:x}", hasher.finalize()))
 }

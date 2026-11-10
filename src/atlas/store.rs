@@ -89,8 +89,32 @@ fn create(db: &Connection) -> Result<(), LoreError> {
             tokenize = "unicode61 remove_diacritics 0 tokenchars '_./:-'");
         CREATE TABLE vectors(model TEXT, hash TEXT, vec BLOB, PRIMARY KEY(model, hash));
         CREATE TABLE meta(key TEXT PRIMARY KEY, value TEXT);
+        INSERT INTO meta VALUES('fts_rowid', 'chunk');
         PRAGMA user_version = {ATLAS_VERSION};"#
     ))
+    .map_err(error)
+}
+
+/// The text tables' rows carry their piece's id as their rowid, so a file's
+/// rows are dropped by rowid; a map made before that has its rows renumbered
+/// once, in place (its pieces and vectors are kept). A drop by the unindexed
+/// `chunk` column read the whole table, twice per changed file.
+fn rowid_is_chunk(db: &Connection) -> Result<(), LoreError> {
+    let done: Option<String> = db.query_row("SELECT value FROM meta WHERE key = 'fts_rowid'", [], |row| row.get(0)).optional().map_err(error)?;
+    if done.is_some() {
+        return Ok(());
+    }
+    db.execute_batch(
+        "BEGIN IMMEDIATE;
+         CREATE TEMP TABLE words_copy AS SELECT chunk, path, names, body FROM code_words;
+         CREATE TEMP TABLE terms_copy AS SELECT chunk, toks FROM code_terms;
+         DELETE FROM code_words; DELETE FROM code_terms;
+         INSERT INTO code_words(rowid, chunk, path, names, body) SELECT chunk, chunk, path, names, body FROM words_copy;
+         INSERT INTO code_terms(rowid, chunk, toks) SELECT chunk, chunk, toks FROM terms_copy;
+         DROP TABLE words_copy; DROP TABLE terms_copy;
+         INSERT OR REPLACE INTO meta VALUES('fts_rowid', 'chunk');
+         COMMIT;",
+    )
     .map_err(error)
 }
 
@@ -104,6 +128,7 @@ fn connect(path: &Path) -> Result<(Connection, bool), LoreError> {
     let db = open(path)?;
     let version: i64 = db.query_row("PRAGMA user_version", [], |row| row.get(0)).map_err(error)?;
     if version == ATLAS_VERSION {
+        rowid_is_chunk(&db)?;
         return Ok((db, false));
     }
     drop(db);
@@ -175,12 +200,17 @@ impl Atlas {
         // nothing a scan could find has changed. It is taken before the scan, so
         // an edit made while scanning shows up next time.
         let dirs: BTreeSet<String> = self.meta("dirs").map(|text| text.split('\n').map(str::to_owned).collect()).unwrap_or_default();
-        let print = if dirs.is_empty() { String::new() } else { scan::quick_print(&config.root, &settings, &dirs)? };
+        let untracked: Vec<String> = self.meta("untracked").map(|text| text.split('\n').filter(|path| !path.is_empty()).map(str::to_owned).collect()).unwrap_or_default();
+        let print = if dirs.is_empty() { String::new() } else { scan::quick_print(&config.root, &settings, &dirs, &untracked)? };
         if !print.is_empty() && self.meta("fingerprint").as_deref() == Some(print.as_str()) && self.meta("graph").is_some() {
             return Ok(Refresh::default());
         }
         let (_, changes) = scan::status(&config.root)?;
         let (wanted, seen_dirs) = scan::scan_with(config, &changes)?;
+        // The untracked files this scan saw: the next print takes their stamps.
+        // A different list than the print was taken over means no print yet.
+        let print = if changes.untracked == untracked { print } else { String::new() };
+        self.set_meta("untracked", &changes.untracked.join("\n"))?;
         // New folders: no print yet (one taken now could postdate the scan); the
         // next call takes one over these folders and scans once more.
         let print = if dirs == seen_dirs { print } else { String::new() };
@@ -271,8 +301,19 @@ impl Atlas {
         // are taken from the shared cache rather than made again: a piece's
         // hash covers its path, symbols and text, so a clone of the same tree
         // finds nearly all of them there.
-        let shared = SharedVectors::open(&format!("{model}/{dimension}/t{}", crate::embed::token_cap(usize::MAX)));
+        let shared_key = format!("{model}/{dimension}/t{}", crate::embed::token_cap(usize::MAX));
+        let shared = SharedVectors::open(&shared_key);
         if let Some(shared) = &shared {
+            // A map's own vectors go to the shared cache once, so the clones
+            // after it start from them.
+            if self.meta("shared_vectors").as_deref() != Some(shared_key.as_str()) {
+                let mut statement = self.db.prepare("SELECT hash, vec FROM vectors WHERE model = ?1").map_err(error)?;
+                let rows = statement.query_map([model], |row| Ok((row.get::<_, String>(0)?, row.get::<_, Vec<u8>>(1)?))).map_err(error)?;
+                let mine: Vec<(String, Vec<u8>)> = rows.collect::<Result<_, _>>().map_err(error)?;
+                drop(statement);
+                shared.put(&mine.iter().map(|(hash, blob)| (hash.as_str(), blob.clone())).collect::<Vec<_>>());
+                self.set_meta("shared_vectors", &shared_key)?;
+            }
             let found = shared.take(&todo);
             if !found.is_empty() {
                 let tx = self.db.unchecked_transaction().map_err(error)?;
@@ -611,8 +652,8 @@ fn embed_text(path: &str, symbols: &str, body: &str) -> String {
 
 fn drop_file(tx: &Connection, path: &str) -> Result<(), LoreError> {
     for sql in [
-        "DELETE FROM code_words WHERE chunk IN (SELECT id FROM chunks WHERE path = ?1)",
-        "DELETE FROM code_terms WHERE chunk IN (SELECT id FROM chunks WHERE path = ?1)",
+        "DELETE FROM code_words WHERE rowid IN (SELECT id FROM chunks WHERE path = ?1)",
+        "DELETE FROM code_terms WHERE rowid IN (SELECT id FROM chunks WHERE path = ?1)",
         "DELETE FROM chunks WHERE path = ?1",
         "DELETE FROM symbols WHERE path = ?1",
         "DELETE FROM imports WHERE path = ?1",
@@ -643,11 +684,11 @@ fn put_file(tx: &Connection, entry: &Entry, text: &str) -> Result<usize, LoreErr
         let id = tx.last_insert_rowid();
         let split: Vec<String> = piece.symbols.iter().flat_map(|name| lang::split_identifier(name)).collect();
         let path_words = lang::split_identifier(&entry.path).join(" ");
-        tx.execute("INSERT INTO code_words VALUES(?1, ?2, ?3, ?4)", params![id, format!("{} {path_words}", entry.path), format!("{names} {}", split.join(" ")), body]).map_err(error)?;
+        tx.execute("INSERT INTO code_words(rowid, chunk, path, names, body) VALUES(?1, ?1, ?2, ?3, ?4)", params![id, format!("{} {path_words}", entry.path), format!("{names} {}", split.join(" ")), body]).map_err(error)?;
         let mut toks = terms_of(&body);
         toks.push(entry.path.clone());
         toks.extend(piece.symbols.iter().cloned());
-        tx.execute("INSERT INTO code_terms VALUES(?1, ?2)", params![id, toks.join(" ")]).map_err(error)?;
+        tx.execute("INSERT INTO code_terms(rowid, chunk, toks) VALUES(?1, ?1, ?2)", params![id, toks.join(" ")]).map_err(error)?;
     }
     Ok(pieces.len())
 }

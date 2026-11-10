@@ -247,3 +247,55 @@ fn a_second_clone_takes_the_vectors_the_first_made() {
     assert_eq!(made_again, 0, "the second clone embeds nothing");
     assert_eq!(held_again, held);
 }
+
+fn finds(repo: &Repo, word: &str, path: &str) -> bool {
+    let found = repo.json(&["atlas", "search", word, "--text-only"]);
+    found["results"].as_array().unwrap().iter().any(|hit| hit["path"] == path)
+}
+
+#[test]
+fn an_untracked_file_edited_in_place_is_read_again() {
+    let repo = Repo::new(true);
+    std::fs::write(repo.root.join("src/new.rs"), "fn zebrafoo() { platypusbaz(); }\n").unwrap();
+    // Two searches: the first one's status call may rewrite git's index, so the
+    // print settles only on the second.
+    assert!(finds(&repo, "platypusbaz", "src/new.rs"));
+    assert!(finds(&repo, "platypusbaz", "src/new.rs"));
+    // The same size, in place: neither the index nor the folder changes.
+    std::fs::write(repo.root.join("src/new.rs"), "fn zebrafoo() { wombatqux12(); }\n").unwrap();
+    assert!(finds(&repo, "wombatqux12", "src/new.rs"), "the edit is seen");
+    assert!(!finds(&repo, "platypusbaz", "src/new.rs"), "the old text is gone");
+    let mut text = std::fs::read_to_string(repo.root.join("src/new.rs")).unwrap();
+    text.push_str("// echidnaxyz\n");
+    std::fs::write(repo.root.join("src/new.rs"), text).unwrap();
+    assert!(finds(&repo, "echidnaxyz", "src/new.rs"), "an append is seen");
+}
+
+#[test]
+fn a_map_made_before_rowids_were_piece_ids_is_renumbered_in_place() {
+    let repo = Repo::new(true);
+    assert!(finds(&repo, "vignette", "src/render/post.rs"));
+    // Make the map look like an older one: text rows numbered apart from their pieces.
+    let config = codelore::config::load(&repo.root).unwrap();
+    let path = codelore::index::index_dirs(&config.root).into_iter().map(|dir| dir.join("atlas.sqlite")).find(|path| path.exists()).unwrap();
+    {
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.execute_batch(
+            "CREATE TEMP TABLE w AS SELECT chunk, path, names, body FROM code_words;
+             CREATE TEMP TABLE t AS SELECT chunk, toks FROM code_terms;
+             DELETE FROM code_words; DELETE FROM code_terms;
+             INSERT INTO code_words(rowid, chunk, path, names, body) SELECT chunk + 1000, chunk, path, names, body FROM w;
+             INSERT INTO code_terms(rowid, chunk, toks) SELECT chunk + 1000, chunk, toks FROM t;
+             DELETE FROM meta WHERE key = 'fts_rowid';",
+        )
+        .unwrap();
+    }
+    assert!(finds(&repo, "vignette", "src/render/post.rs"), "renumbered, still found");
+    let db = rusqlite::Connection::open(&path).unwrap();
+    let apart: i64 = db.query_row("SELECT count(*) FROM code_words WHERE rowid != chunk", [], |row| row.get(0)).unwrap();
+    assert_eq!(apart, 0);
+    drop(db);
+    // A change to the file drops its old rows by rowid: the old words are gone.
+    std::fs::write(repo.root.join("src/render/post.rs"), "pub fn chain() -> u32 { 9 }\n").unwrap();
+    assert!(!finds(&repo, "vignette", "src/render/post.rs"));
+}

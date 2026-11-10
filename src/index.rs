@@ -203,14 +203,25 @@ fn git_index_dir(root: &Path) -> Option<PathBuf> {
 }
 
 /// Where the index may live, in order: the user cache, then the repository's
-/// own git directory, then the system's temporary folder (a sandbox that
-/// denies both the user cache and `.git` usually allows that one). The later
+/// own git directory, then a temporary folder only this user can write to (a
+/// sandbox that denies both the others usually allows that one). The later
 /// ones are found only when the iterator reaches them, so a search that finds
 /// the cache usable never starts `git`.
 pub fn index_dir_candidates(root: &Path) -> impl Iterator<Item = PathBuf> + '_ {
     std::iter::once(cache_dir().join(repo_key(root)))
         .chain(std::iter::once_with(move || git_index_dir(root)).flatten())
-        .chain(std::iter::once_with(move || std::env::temp_dir().join("codelore").join(repo_key(root))))
+        .chain(std::iter::once_with(move || private_temp().map(|dir| dir.join("codelore").join(repo_key(root)))).flatten())
+}
+
+/// A temporary folder no other user can write to, when there is one: on
+/// Windows the user's own `TEMP`; elsewhere `XDG_RUNTIME_DIR` (per user, mode
+/// 0700) - never a shared `/tmp`, where another user could leave an index
+/// whose records a search would then show.
+pub fn private_temp() -> Option<PathBuf> {
+    if cfg!(windows) {
+        return Some(std::env::temp_dir());
+    }
+    std::env::var_os("XDG_RUNTIME_DIR").filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 /// The model the vectors already made for the repository at `root` came from
