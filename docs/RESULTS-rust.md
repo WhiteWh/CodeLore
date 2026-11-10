@@ -1,7 +1,7 @@
-# RustCodeLore search: DCB lore
+# RustCodeLore search: a production project's lore
 
 Method: the owner's bench (`tools/lore_bench.py`, 88 rows asked as `exact` and
-`para`, 88 queries each) on the read-only copy of DCB's lore (6773 records);
+`para`, 88 queries each) on the read-only copy of the production project's lore (6773 records);
 a result answers when one of the row's keys is in the record's strings. Rust is
 the `lore` binary (`lore --json -C <copy> find <query> -n 10`), as the bench
 invokes it.
@@ -34,7 +34,7 @@ Corpus and queries are never committed; only this table and the method are.
 
 ## Speed
 
-The same read-only copy of DCB's lore (6773 records in 105 files), text only,
+The same read-only copy of the production project's lore (6773 records in 105 files), text only,
 every command a fresh process as an agent calls it, each build into an empty
 index cache; medians of 4 rounds.
 
@@ -53,7 +53,7 @@ and the output of 176 bench queries hash equal before and after.
 
 ## Task 257: the index answers find, show and plans
 
-Method: the same read-only copy of DCB's lore (6773 records), text only, one
+Method: the same read-only copy of the production project's lore (6773 records), text only, one
 fresh process per command, an empty index cache first. `old` is the Rust 0.4.0
 port before task 257 (`lore-257new`, the measured 421 ms build); `new` is task
 257's index answer. Forty bench queries, 3 alternating rounds for `find`; 20
@@ -84,10 +84,10 @@ would need a bounded cache keyed by root and index generation.
 
 ## lore against plain search (2026-11-09, lore 0.4.1)
 
-The table in the README, with its method. The repository: DCB at `804aef7d`,
+The table in the README, with its method. The repository: the production project at `804aef7d`,
 20.7 MB of markdown in `docs/` and 4 526 source files (`.h .hpp .inl .c .cpp
 .cxx .py .fx .hlsl .glsl .frag .vert .rs .cs .ps1 .bat`). The questions:
-DCB's `tools/lore_bench_queries.jsonl`, 88 faults of its troubleshooting page,
+the project's `tools/lore_bench_queries.jsonl`, 88 faults of its troubleshooting page,
 each asked **exact** (the text it prints) and as a **paraphrase** (held to share
 no three-word run and no quoted name with the row). Each carries keys, strings
 of the row's fix; a result answers when it holds one, judged the same way for
@@ -119,7 +119,7 @@ Over all 176 questions the median an agent reads is ~1 485 tokens with grep
 over the markdown and ~335 with lore. A grep that misses costs more than its
 row: the agent searches again, and that search is not counted.
 
-To run it again: DCB's `tools/lore_bench.py` (`--system grep --rev <sha>`,
+To run it again: the project's `tools/lore_bench.py` (`--system grep --rev <sha>`,
 `--system lore-text --root <full-size lore>`; `--build-full` makes the lore).
 The code row used a copy of it whose corpus is the source files instead of
 `docs/*.md`.

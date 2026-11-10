@@ -1,6 +1,6 @@
 //! Task 177's bench harness: the Rust searcher's hybrid hit@1/@5 for exact,
-//! English paraphrase and Russian paraphrase on qa's DCB copy, using the
-//! precomputed embedding vectors from `.qa-lore-bench` (numbers only; the DCB
+//! English paraphrase and Russian paraphrase on qa's copy of a production project's lore, using the
+//! precomputed embedding vectors from `.qa-lore-bench` (numbers only; the project's
 //! text is never committed), plus the e5 CPU embedding time per record with the
 //! crate's loader.
 //!

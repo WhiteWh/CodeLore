@@ -1,5 +1,5 @@
 //! `embed.model = "auto"` keeps the model the project's vectors were made with:
-//! DCB renamed its provider from "ollama" to "builtin" and dropped the model key,
+//! A production project renamed its provider from "ollama" to "builtin" and dropped the model key,
 //! and auto picked multilingual-e5-base on that machine - a 2 GB fetch, then
 //! every record and code piece embedded again. One test in this file: it sets
 //! LORE_CACHE for the process.
