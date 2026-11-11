@@ -212,6 +212,20 @@ seven: git's `index.lock`, and a file replaced over another writer's line. A
 write that cannot have the lock in two minutes is refused; `git add` and
 `git commit` wait up to ten seconds for an `index.lock` held by some other git.
 
+**A write killed midway.** An agent's tool timeout kills the whole process
+tree, git included; git killed while it writes the index leaves `index.lock`,
+and every git command in the checkout stops on it. Before each git command
+that writes the index, lore leaves a mark beside it (`codelore-index.mark`)
+and removes it after. A later write that finds the mark still there and an
+`index.lock` made within a minute of it, untouched for five seconds, knows
+the lock is its killed predecessor's and removes it; a lock without the
+mark is some other git's and stays. In `shared-tree` mode a commit needs no
+index, so a write still lands when the index is locked - but the index then
+keeps the lore files as they were, and a plain `git commit` would undo the
+records: lore says so, with `git reset -q -- <file>`, and `lore check` warns
+about any lore file the index holds otherwise than HEAD, and about an
+`index.lock` older than five minutes.
+
 `push = true` pushes the branch after the commit. A failed push leaves the commit
 where it is and says so in one line - `committed <sha> locally, push to
 <remote>/<branch> failed: <git's reason>; the next write's push carries it` -

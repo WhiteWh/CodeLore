@@ -135,18 +135,96 @@ impl Drop for WriteLock {
     }
 }
 
-/// [`git`], tried again while another git process holds `index.lock` (a
-/// person's `git status`, an editor): up to about ten seconds.
+/// [`git`] on the worktree's shared index, tried again while another git
+/// process holds `index.lock` (a person's `git status`, an editor): up to
+/// about ten seconds. A lock lore's own git left behind when it was killed
+/// (see [`clear_orphan_lock`]) is removed.
 fn git_waiting(root: &Path, args: &[&str], input: Option<&[u8]>, env: &[(&str, &str)]) -> Result<Output> {
     let started = std::time::Instant::now();
+    // before this write puts its own mark over the killed one's
+    clear_orphan_lock(root);
     loop {
-        let output = git(root, args, input, env, false)?;
+        let output = on_index(root, || git(root, args, input, env, false))?;
         let busy = !output.ok() && String::from_utf8_lossy(&output.stderr).contains("index.lock");
         if !busy || started.elapsed() >= std::time::Duration::from_secs(10) {
             return Ok(output);
         }
         std::thread::sleep(std::time::Duration::from_millis(100));
     }
+}
+
+/// The index of the worktree at `root` (`.git/index`, or a linked
+/// worktree's own), absolute.
+pub fn index_file(root: &Path) -> Option<PathBuf> {
+    let output = git(root, &["rev-parse", "--path-format=absolute", "--git-path", "index"], None, &[], false).ok().filter(Output::ok)?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!text.is_empty()).then(|| PathBuf::from(text))
+}
+
+/// lore's mark beside an index: one of lore's git commands may be writing it.
+fn index_mark(index: &Path) -> PathBuf {
+    index.with_file_name("codelore-index.mark")
+}
+
+/// Runs a git command that may write the shared index with lore's mark
+/// beside it. A process killed in the middle (an agent's tool timeout kills
+/// the whole tree) leaves the mark, and git's `index.lock` with it.
+fn on_index<T>(root: &Path, body: impl FnOnce() -> T) -> T {
+    let mark = index_file(root).map(|index| index_mark(&index));
+    if let Some(mark) = &mark {
+        let _ = std::fs::write(mark, std::process::id().to_string());
+    }
+    let result = body();
+    if let Some(mark) = &mark {
+        let _ = std::fs::remove_file(mark);
+    }
+    result
+}
+
+/// How long after lore's mark an `index.lock` counts as made by lore's git.
+const ORPHAN_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// How long an `index.lock` must sit untouched before lore takes it for
+/// dead: git holds it for a moment while it writes the index.
+const ORPHAN_AGE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Removes an `index.lock` that lore's own git left when its process was
+/// killed: lore's mark is still there (only a write holding [`WriteLock`]
+/// makes one, so its maker is gone), the lock was made within a minute of
+/// the mark and nobody has touched it for five seconds. A lock any other
+/// git holds is left alone. Says whether it removed one.
+pub fn clear_orphan_lock(root: &Path) -> bool {
+    if WRITES_HELD.with(|held| held.get()) == 0 {
+        return false;
+    }
+    let Some(index) = index_file(root) else { return false };
+    let mark = index_mark(&index);
+    let lock = index.with_file_name("index.lock");
+    let modified = |path: &Path| std::fs::metadata(path).and_then(|meta| meta.modified()).ok();
+    let (Some(marked), Some(locked)) = (modified(&mark), modified(&lock)) else { return false };
+    let after_mark = locked.duration_since(marked).map_or_else(|early| early.duration() <= std::time::Duration::from_secs(2), |late| late <= ORPHAN_WINDOW);
+    let idle = std::time::SystemTime::now().duration_since(locked).is_ok_and(|age| age >= ORPHAN_AGE);
+    if !(after_mark && idle) {
+        return false;
+    }
+    let removed = std::fs::remove_file(&lock).is_ok();
+    let _ = std::fs::remove_file(&mark);
+    if removed {
+        eprintln!("lore: removed {}, left by a lore write that was killed", lock.display());
+    }
+    removed
+}
+
+/// The lore files whose entry in the worktree's index differs from HEAD:
+/// what the next plain `git commit` would commit with them. `(status, path)`
+/// as `git diff --cached --name-status` gives them.
+pub fn staged_lore(root: &Path, dir: &Path) -> Vec<(String, String)> {
+    let dir = dir.to_string_lossy();
+    let Ok(output) = git(root, &["diff", "--cached", "--name-status", "--no-renames", "HEAD", "--", dir.as_ref()], None, &[], false) else { return Vec::new() };
+    if !output.ok() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&output.stdout).lines().filter_map(|line| line.split_once('\t')).map(|(status, path)| (status.to_owned(), path.to_owned())).collect()
 }
 
 /// Where git saw `old` go: the new path of the rename in the commit that took
@@ -518,7 +596,7 @@ fn sync_live(root: &Path, old: &BTreeMap<String, Option<Vec<u8>>>, new: &BTreeMa
             notes.push(format!("{path}: another process holds the live file, so it could not be replaced; the commit has the change, and the next write brings the file up to date"));
             continue;
         }
-        refresh_index_entry(root, path, before.as_deref(), data, if lagging { flat.as_deref() } else { None })?;
+        notes.extend(refresh_index_entry(root, path, before.as_deref(), data, if lagging { flat.as_deref() } else { None })?);
         if lagging {
             notes.push(format!("{path}: the live file was an older version of itself; brought up to date"));
         }
@@ -550,7 +628,9 @@ fn is_past_version(root: &Path, path: &str, data: &[u8]) -> bool {
     })
 }
 
-fn refresh_index_entry(root: &Path, path: &str, before: Option<&[u8]>, data: &[u8], also: Option<&[u8]>) -> Result<()> {
+/// Brings the index entry of `path` to `data` where it held what lore wrote
+/// before; a note when the index could not be written.
+fn refresh_index_entry(root: &Path, path: &str, before: Option<&[u8]>, data: &[u8], also: Option<&[u8]>) -> Result<Option<String>> {
     let listed = git(root, &["ls-files", "-s", "--", path], None, &[], false)?.text();
     let mut ours: BTreeSet<Option<String>> = BTreeSet::new();
     if before.is_none() {
@@ -561,12 +641,20 @@ fn refresh_index_entry(root: &Path, path: &str, before: Option<&[u8]>, data: &[u
     }
     let staged = listed.split_whitespace().nth(1).map(str::to_owned);
     if !ours.contains(&staged) {
-        return Ok(()); // somebody staged something there
+        return Ok(None); // somebody staged something there
     }
     let sha = out(root, &["hash-object", "--no-filters", "--stdin"], Some(data), &[])?;
     let info = format!("100644,{sha},{path}");
-    git(root, &["update-index", "--add", "--cacheinfo", &info], None, &[], false)?;
-    Ok(())
+    let updated = git_waiting(root, &["update-index", "--add", "--cacheinfo", &info], None, &[])?;
+    if !updated.ok() {
+        // Left as it is, the index holds the file as it was before this
+        // commit (or not at all): a plain `git commit` would undo the record.
+        return Ok(Some(format!(
+            "{path}: the index could not be updated ({}); it still holds the file as before this commit, so a plain `git commit` would undo it - `git reset -q -- {path}` brings the index to HEAD",
+            String::from_utf8_lossy(&updated.stderr).trim()
+        )));
+    }
+    Ok(None)
 }
 
 pub fn push(root: &Path, remote: &str, branch: &str) -> Option<String> {

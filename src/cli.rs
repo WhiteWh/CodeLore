@@ -1627,6 +1627,26 @@ fn cmd_check(args: &Args, env: &Env, io: &mut Io) -> Result<i32> {
             }
         }
     }
+    // lore commits its files itself; the index holding them otherwise than
+    // HEAD (a write killed before it updated the index, an index.lock in the
+    // way) means the next plain `git commit` would undo records.
+    if let Some(lock) = gitio::index_file(&config.root).map(|index| index.with_file_name("index.lock")) {
+        let age = std::fs::metadata(&lock).and_then(|meta| meta.modified()).ok().and_then(|at| std::time::SystemTime::now().duration_since(at).ok());
+        if age.is_some_and(|age| age.as_secs() >= 300) {
+            warns.push(format!("{} has been there for {} min: every git command in this checkout stops on it; if no git is running, delete it", lock.display(), age.unwrap_or_default().as_secs() / 60));
+        }
+    }
+    if config.commit_mode != "none" && head.is_some() {
+        let staged = gitio::staged_lore(&config.root, &lore_dir);
+        if !staged.is_empty() {
+            let listed: Vec<String> = staged.iter().map(|(status, path)| format!("{status} {path}")).collect();
+            let dir = store::relative(&config.root, &lore_dir);
+            warns.push(format!(
+                "the index holds lore files otherwise than HEAD ({}) - a plain `git commit` would commit that; `git reset -q -- {dir}` brings the index to HEAD",
+                listed.join(", ")
+            ));
+        }
+    }
     if args.flag("evidence") {
         errs.extend(evidence(&config, &records, &found.commits, roots));
     }
