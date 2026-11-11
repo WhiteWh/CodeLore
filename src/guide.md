@@ -15,6 +15,12 @@ They are searched, not read whole. Every command takes `--json`.
     lore exists <id> <id>...                # are these records now? exit 1 if one is not
     lore find "<query>" --stores all        # this store and its sub-stores (teams/...), each result marked
 
+`lore digest` lists the titles of the faults and decisions in force, newest
+first, in about 2 KB - what a session-start hook shows before any work.
+
+Russian works in the text search too: another form of a word («краша»,
+«крашится») finds a record that says «крашит».
+
 Search live, every time: never check «already <id>» against a list or an index
 you saved earlier - records written since are not in it. `lore exists` is cheap.
 
@@ -112,6 +118,8 @@ table rows and numbered items, each named as `lore cover` prints it.
     {"part": "<as printed>", "skip": "<why nothing in it is current>", "records": ["<id>"]}
     EOF
     lore cover <doc.md> --history --reason "<why>" --record <id>   # nothing in it is current
+    lore cover <doc.md> --keep --reason "<why>" --record <id>      # it stays the authority; records point at it
+    lore cover <old.md> --moved <new.md>  # it moved (commit the move first): source and refs.files follow
 
 An entry for a heading accounts for everything under it. Name existing records
 too («already <id>»), so the document says where each of its facts went even

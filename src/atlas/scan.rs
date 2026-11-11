@@ -181,6 +181,124 @@ pub fn excluded(path: &str, patterns: &[String]) -> bool {
     })
 }
 
+/// One line of a gitignore file.
+struct Rule {
+    regex: regex::Regex,
+    negated: bool,
+    dir_only: bool,
+}
+
+/// The patterns of `[atlas] exclude_file`, in gitignore's syntax: `#`
+/// comments, `!` re-includes, a trailing `/` for folders only, a `/` at the
+/// start or inside anchors to the file's folder, `*`, `?`, `**`, `[...]`.
+/// The last pattern that matches decides; a file in a left-out folder stays
+/// out, as in git.
+#[derive(Default)]
+pub struct Ignore {
+    /// (the file's folder from the root, "" or "a/b/", its rules)
+    sets: Vec<(String, Vec<Rule>)>,
+}
+
+impl Ignore {
+    pub fn load(root: &Path, files: &[String]) -> Result<Self, LoreError> {
+        let mut sets = Vec::new();
+        for file in files {
+            let relative = file.trim().trim_start_matches("./").replace('\\', "/");
+            let text = std::fs::read_to_string(root.join(&relative))
+                .map_err(|error| LoreError::new(format!("atlas.exclude_file {relative}: {error}")))?;
+            let base = relative.rsplit_once('/').map(|(dir, _)| format!("{dir}/")).unwrap_or_default();
+            sets.push((base, text.lines().filter_map(rule).collect()));
+        }
+        Ok(Self { sets })
+    }
+
+    pub fn excludes(&self, path: &str) -> bool {
+        self.sets.iter().any(|(base, rules)| {
+            let Some(inside) = path.strip_prefix(base.as_str()) else { return false };
+            let parts: Vec<&str> = inside.split('/').collect();
+            // every folder on the way, shallow first: one left out holds its files out
+            for depth in 1..parts.len() {
+                if decide(rules, &parts[..depth].join("/"), true) {
+                    return true;
+                }
+            }
+            decide(rules, inside, false)
+        })
+    }
+}
+
+fn decide(rules: &[Rule], path: &str, is_dir: bool) -> bool {
+    let mut out = false;
+    for rule in rules {
+        if (is_dir || !rule.dir_only) && rule.regex.is_match(path) {
+            out = !rule.negated;
+        }
+    }
+    out
+}
+
+fn rule(line: &str) -> Option<Rule> {
+    let line = line.trim_end_matches('\r');
+    let line = if line.ends_with("\\ ") { line } else { line.trim_end() };
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let (negated, line) = match line.strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, line.strip_prefix("\\").unwrap_or(line)),
+    };
+    let dir_only = line.ends_with('/');
+    let line = line.trim_end_matches('/');
+    let anchored = line.contains('/');
+    let line = line.trim_start_matches('/');
+    if line.is_empty() {
+        return None;
+    }
+    let chars: Vec<char> = line.chars().collect();
+    let mut body = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        match chars[i] {
+            '*' if chars.get(i + 1) == Some(&'*') => {
+                let slash_after = chars.get(i + 2) == Some(&'/');
+                let at_start = i == 0 || chars[i - 1] == '/';
+                if at_start && slash_after {
+                    body.push_str("(?:.*/)?");
+                    i += 3;
+                    continue;
+                }
+                body.push_str(".*");
+                i += 2;
+                continue;
+            }
+            '*' => body.push_str("[^/]*"),
+            '?' => body.push_str("[^/]"),
+            '[' => match chars[i..].iter().position(|&ch| ch == ']').filter(|&end| end > 1) {
+                Some(end) => {
+                    let class: String = chars[i + 1..i + end].iter().collect();
+                    let class = class.strip_prefix('!').map(|rest| format!("^{rest}")).unwrap_or(class);
+                    body.push('[');
+                    body.push_str(&class.replace('\\', "\\\\"));
+                    body.push(']');
+                    i += end + 1;
+                    continue;
+                }
+                None => body.push_str("\\["),
+            },
+            '\\' if i + 1 < chars.len() => {
+                body.push_str(&regex::escape(&chars[i + 1].to_string()));
+                i += 2;
+                continue;
+            }
+            ch => body.push_str(&regex::escape(&ch.to_string())),
+        }
+        i += 1;
+    }
+    let pattern = if anchored { format!("^{body}$") } else { format!("^(?:.*/)?{body}$") };
+    // a pattern matches a folder's contents through the folder (see `excludes`)
+    regex::Regex::new(&pattern).ok().map(|regex| Rule { regex, negated, dir_only })
+}
+
 fn glob(pattern: &str, text: &str) -> bool {
     let mut regex = String::from("^");
     let chars: Vec<char> = pattern.chars().collect();
@@ -220,8 +338,9 @@ pub fn scan_with(config: &Config, changes: &Changes) -> Result<(BTreeMap<String,
     let include: BTreeSet<String> = config.atlas.include.iter().map(|ext| ext.trim_start_matches('.').to_ascii_lowercase()).collect();
     let lore_dir = config.dir.trim_matches('/').to_owned();
     let max_bytes = config.atlas.max_kib * 1024;
+    let ignore = Ignore::load(root, &config.atlas.exclude_files)?;
     let wanted = |path: &str| -> Option<Lang> {
-        if path.starts_with(&format!("{lore_dir}/")) || excluded(path, &config.atlas.exclude) {
+        if path.starts_with(&format!("{lore_dir}/")) || excluded(path, &config.atlas.exclude) || ignore.excludes(path) {
             return None;
         }
         if path.split('/').any(|part| matches!(part, "node_modules" | "target" | ".git" | "dist" | "build" | "__pycache__" | ".venv" | "vendor")) {
@@ -343,5 +462,32 @@ mod tests {
         assert!(excluded("a/b/c.generated.cs", &patterns));
         assert!(excluded("src/app.min.js", &patterns));
         assert!(!excluded("src/sub/app.min.js", &patterns));
+    }
+
+    #[test]
+    fn an_exclude_file_reads_as_gitignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("Game")).unwrap();
+        std::fs::write(
+            tmp.path().join("Game/.socraticodeignore"),
+            "# vendor code\nPlugins/*\n!Plugins/Own*/\n*.generated.h\n/Intermediate/\nBinaries/\nSource/**/Tests/\n\\#hash.txt\n",
+        )
+        .unwrap();
+        let ignore = Ignore::load(tmp.path(), &["Game/.socraticodeignore".to_owned()]).unwrap();
+        for (path, out) in [
+            ("Game/Plugins/Vendor/Source/a.cpp", true),
+            ("Game/Plugins/OwnCore/Source/a.cpp", false),
+            ("Game/Source/x.generated.h", true),
+            ("Game/Source/x.h", false),
+            ("Game/Intermediate/a.cpp", true),
+            ("Game/Source/Intermediate/a.cpp", false),
+            ("Game/Source/Binaries/a.dll", true),
+            ("Game/Source/Mod/Deep/Tests/t.cpp", true),
+            ("Game/#hash.txt", true),
+            ("Other/Plugins/Vendor/a.cpp", false),
+        ] {
+            assert_eq!(ignore.excludes(path), out, "{path}");
+        }
+        assert!(Ignore::load(tmp.path(), &["missing.ignore".to_owned()]).is_err());
     }
 }

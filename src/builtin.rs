@@ -209,9 +209,20 @@ impl Builtin {
         // A search asks the model server first (src/embed/serve.rs): no model of
         // its own to open, the query is embedded in the server's memory.
         let serve = !wait && background_allowed() && embed::serve::enabled();
+        let served = |remote| (Some(std::sync::Arc::new(ServerOrOwn { remote, model: selected, own: std::sync::OnceLock::new() }) as embed::Shared), Vec::new());
         if serve {
             if let Some(remote) = embed::serve::connect(selected) {
-                return (Some(std::sync::Arc::new(ServerOrOwn { remote, model: selected, own: std::sync::OnceLock::new() }) as embed::Shared), notes);
+                return served(remote);
+            }
+            // No server yet: start one (unless another search is starting it)
+            // and wait for it, so that searches at once - several agents' first
+            // ones - hold one copy of the model, not one each. A model not yet
+            // fetched has no server to wait for.
+            if embed::status_for(selected, &embed::model_dir(selected)).available {
+                embed::serve::start(selected, spawn_detached);
+                if let Some(remote) = embed::serve::wait_for(selected, embed::serve::wait_limit()) {
+                    return served(remote);
+                }
             }
         }
         // `wait` is an index being built: the GPU for its thousands of texts; a

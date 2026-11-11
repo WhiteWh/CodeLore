@@ -173,7 +173,15 @@ list of a `done` item. A plan's `outcome` is its summary; each item's own
 
 `status`: `open` (parts are still unaccounted for), `covered` (every part is),
 `history` (the document holds nothing current; `records` names what still
-stands). There is one source record for a path.
+stands), `kept` (the document stays the authority - a guide people read, kept
+as Markdown - and `records` names the records that point at it; `reason` says
+why). `history` and `kept` account for every part. There is one source record
+for a path; `lore cover <old> --moved <new>` moves it, and the `refs.files` of
+every record that cites the old path, to the new one.
+
+The `kept` status came after version 3 and keeps it: a reader that does not
+know it refuses the record by its status, so a project that uses it needs a
+`lore` that does.
 
 A Markdown document's **parts** are its headings (named by their text after the
 `#`s), its table rows (`<heading> | <first cell>`), its numbered list items

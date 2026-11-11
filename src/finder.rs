@@ -207,13 +207,18 @@ fn refused_query(error: rusqlite::Error) -> rusqlite::Result<Vec<String>> {
     }
 }
 
-/// The FTS5 query of a text's words: lower-cased, each once, at most 64.
+/// The FTS5 query of a text's words: lower-cased, each once, at most 64. A
+/// Russian word asks for its stem too (src/stem.rs), so another form of it
+/// finds the record.
 pub fn word_query(text: &str) -> String {
     let mut seen: Vec<String> = Vec::new();
     for found in word_re().find_iter(text) {
         let token = found.as_str().to_lowercase();
-        if !seen.contains(&token) {
-            seen.push(token);
+        let stem = crate::stem::extra_of(&token);
+        for token in std::iter::once(token).chain(stem) {
+            if !seen.contains(&token) {
+                seen.push(token);
+            }
         }
     }
     seen.iter().take(64).map(|token| quote(token)).collect::<Vec<_>>().join(" OR ")

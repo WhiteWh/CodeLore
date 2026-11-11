@@ -204,7 +204,13 @@ impl Atlas {
 
     /// Brings the map up to date with the working tree.
     pub fn refresh(&mut self, config: &Config) -> Result<Refresh, LoreError> {
-        let settings = format!("{:?}|{:?}|{}", config.atlas.include, config.atlas.exclude, config.atlas.max_kib);
+        // An exclude file's text is a setting too: an edit to it re-scans.
+        let exclude_files: Vec<String> = config.atlas.exclude_files.iter().map(|file| std::fs::read_to_string(config.root.join(file)).unwrap_or_default()).collect();
+        let settings = if exclude_files.is_empty() {
+            format!("{:?}|{:?}|{}", config.atlas.include, config.atlas.exclude, config.atlas.max_kib)
+        } else {
+            format!("{:?}|{:?}|{}|{:?}|{:?}", config.atlas.include, config.atlas.exclude, config.atlas.max_kib, config.atlas.exclude_files, exclude_files)
+        };
         // The quick print over the folders the last scan saw: when it is the same,
         // nothing a scan could find has changed. It is taken before the scan, so
         // an edit made while scanning shows up next time.

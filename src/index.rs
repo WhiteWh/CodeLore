@@ -330,6 +330,24 @@ fn open_db(path: &Path) -> Result<(Connection, bool), LoreError> {
     Ok((db, true))
 }
 
+/// The `words` rows carry the Russian stems of [`crate::stem::VERSION`]: an
+/// index whose rows were written without them, or with another version, has
+/// its files read again on the next refresh (the vectors stay, by hash). An
+/// older lore that shares the file writes rows without stems; a query still
+/// finds the word as written there.
+fn stems_current(db: &Connection, fresh: bool) -> Result<(), LoreError> {
+    let have: Option<String> = db.query_row("SELECT value FROM meta WHERE key = 'stems'", [], |row| row.get(0)).optional().map_err(index_error)?;
+    if have.as_deref() == Some(crate::stem::VERSION) {
+        return Ok(());
+    }
+    let tx = Transaction::new_unchecked(db, TransactionBehavior::Immediate).map_err(index_error)?;
+    if !fresh {
+        tx.execute("UPDATE files SET size = -1, sha = ''", []).map_err(index_error)?;
+    }
+    tx.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('stems', ?1)", params![crate::stem::VERSION]).map_err(index_error)?;
+    tx.commit().map_err(index_error)
+}
+
 /// Deletes the index files of the repository at `root` (every place one may
 /// live): the next open builds from nothing. What `lore index --rebuild` starts with.
 pub fn remove_indexes(root: &Path) -> Result<(), LoreError> {
@@ -380,6 +398,7 @@ impl Index {
             std::fs::create_dir_all(parent).map_err(|error| LoreError::new(format!("{}: {error}", parent.display())))?;
         }
         let (db, fresh) = open_db(path)?;
+        stems_current(&db, fresh)?;
         Ok(Self { root: root.to_path_buf(), lore_dir: lore_dir.to_path_buf(), path: path.to_path_buf(), db, place_note: None, fresh })
     }
 
@@ -692,7 +711,10 @@ fn put(tx: &Connection, relative: &str, record: &Value, line: &str) -> Result<bo
         .map_err(index_error)?;
     let (signals, title, main, body, terms) = columns(record);
     tx.prepare_cached("INSERT INTO words(id, signals, title, main, body) VALUES(?1,?2,?3,?4,?5)")
-        .and_then(|mut statement| statement.execute(params![id, signals, title, main, body]))
+        .and_then(|mut statement| {
+            let [signals, title, main, body] = [&signals, &title, &main, &body].map(|column| crate::stem::with_stems(column));
+            statement.execute(params![id, signals, title, main, body])
+        })
         .map_err(index_error)?;
     tx.prepare_cached("INSERT INTO terms(id, toks) VALUES(?1,?2)")
         .and_then(|mut statement| statement.execute(params![id, terms]))

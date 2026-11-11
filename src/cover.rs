@@ -303,7 +303,7 @@ pub fn parts_errors(config: &Config, record: &Value, old: Option<&Value>, rev: O
     let status = record.get("status").and_then(Value::as_str);
     let Some(data) = read_doc(config, path, rev) else {
         if status == Some("covered") {
-            return vec![format!("{rid}: {path} is neither in the working tree nor in HEAD, so `covered` cannot be checked - a document that is gone is `history`")];
+            return vec![format!("{rid}: {path} is neither in the working tree nor in HEAD, so `covered` cannot be checked - a document that is gone is `history`; one that moved: `lore cover {path} --moved <new path>`")];
         }
         return Vec::new();
     };

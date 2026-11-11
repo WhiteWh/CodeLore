@@ -58,6 +58,7 @@ says *where*; the lore says *what we know about it*. Joined:
 | `[atlas] find` | lore.toml | `lore find` adds code places (default `false`) |
 | `[atlas] include` | lore.toml | extra extensions indexed as text, e.g. `[".md", ".tpl"]` |
 | `[atlas] exclude` | lore.toml | path prefixes or globs (`third_party`, `**/*.generated.cs`) beside `.gitignore` |
+| `[atlas] exclude_file` | lore.toml | a file (or a list of files) of patterns in gitignore's syntax, from the repository root - `!` re-includes, a trailing `/` is a folder, a leading `/` anchors to the file's folder; e.g. `exclude_file = "Game/.socraticodeignore"`. An edit to the file re-scans the map. A `lore` older than this key refuses the `[atlas]` table that has it |
 | `[atlas] max_kib` | lore.toml | larger files are skipped (default 512) |
 
 A build without the feature reads the `[atlas]` table the same way (it is part

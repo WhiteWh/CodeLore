@@ -69,6 +69,32 @@ fn finish(args: &[&str], output: std::process::Output, check: bool) -> Result<Ou
     Ok(result)
 }
 
+/// Where git saw `old` go: the new path of the rename in the commit that took
+/// `old` away, when that commit renamed it. Two git processes.
+pub fn renamed_to(root: &Path, old: &str) -> Option<String> {
+    let out = git(root, &["log", "-1", "--format=%H", "--diff-filter=D", "--", old], None, &[], false).ok().filter(Output::ok)?;
+    let sha = String::from_utf8_lossy(&out.stdout).trim().to_owned();
+    if sha.is_empty() {
+        return None;
+    }
+    let parent = format!("{sha}^");
+    let out = git(root, &["diff", "--name-status", "-M", "-z", &parent, &sha], None, &[], false).ok().filter(Output::ok)?;
+    let text = String::from_utf8_lossy(&out.stdout).into_owned();
+    let fields: Vec<&str> = text.split('\0').collect();
+    let mut at = 0;
+    while at < fields.len() {
+        if fields[at].starts_with('R') || fields[at].starts_with('C') {
+            if fields.get(at + 1) == Some(&old) {
+                return fields.get(at + 2).map(|new| (*new).to_owned());
+            }
+            at += 3;
+        } else {
+            at += 2;
+        }
+    }
+    None
+}
+
 /// Counts git processes by their first argument while `body` runs.
 pub fn count_calls<T>(body: impl FnOnce() -> T) -> (T, Vec<String>) {
     CALLS.with(|calls| *calls.borrow_mut() = Some(Vec::new()));

@@ -65,6 +65,15 @@ of every field and of `refs` - dotted names, paths, `snake_case`, hex codes,
 match whole. One table could not do both: the characters that keep a code
 together would glue a word to the full stop after it.
 
+**Russian.** `porter` stems English only, so `src/stem.rs` (the Snowball
+Russian stemmer) does Russian: each column of `words` holds its text and, after
+it, the stems of its Russian words; a query asks for each Russian word or its
+stem. «краш», «краша», «крашится» all find «крашит». The index notes the stem
+version in `meta`; an index without it has its files read again once (the
+vectors stay, keyed by text hash). An older `lore` sharing the index file reads
+the stemmed rows unharmed. The duplicate check compares Russian words by stem
+too, and a Russian title's id is transliterated (`redaktor-krashit`).
+
 **Exact signals.** Before ranking, the query is checked against every stored
 `signals` string as a substring both ways; a hit is put first. An error pasted
 from a terminal finds its record even when the surrounding text matches

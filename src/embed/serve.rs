@@ -125,21 +125,27 @@ impl Embeddings for Remote {
 /// `lore model serve --model M`: holds `model` and answers until it has been
 /// idle for [`idle_limit`]. Returns the exit code.
 pub fn run(model: EmbeddingModel) -> i32 {
+    // A server that will not answer says so at once: the searches waiting
+    // for it (`wait_for`) open their own model instead of waiting it out.
+    let given_up = || {
+        let _ = std::fs::remove_file(starting_marker(model, &served_build()));
+        1
+    };
     let embedder = match Embedder::open_model_for_queries(model, ModelSource::Cache) {
         Ok(embedder) => Arc::new(embedder),
         Err(error) => {
             eprintln!("lore: model serve: {error}");
-            return 1;
+            return given_up();
         }
     };
     let listener = match TcpListener::bind(("127.0.0.1", 0)) {
         Ok(listener) => listener,
         Err(error) => {
             eprintln!("lore: model serve: cannot listen: {error}");
-            return 1;
+            return given_up();
         }
     };
-    let Ok(addr) = listener.local_addr() else { return 1 };
+    let Ok(addr) = listener.local_addr() else { return given_up() };
     let token = token();
     let served = served_build();
     let state = state_file(model, &served);
@@ -151,7 +157,7 @@ pub fn run(model: EmbeddingModel) -> i32 {
     })();
     if let Err(error) = written {
         eprintln!("lore: model serve: cannot write {}: {error}", state.display());
-        return 1;
+        return given_up();
     }
     let _ = std::fs::remove_file(starting_marker(model, &served));
     let _ = listener.set_nonblocking(true);
@@ -245,16 +251,45 @@ fn starting_marker(model: EmbeddingModel, build: &str) -> PathBuf {
     state_dir().join(format!("{}-{PROTOCOL}-{}.starting", model.id(), short(build)))
 }
 
+/// Whether a server of `model` is starting: its marker is under a minute old.
+fn starting(model: EmbeddingModel) -> bool {
+    let marker = starting_marker(model, &build());
+    std::fs::metadata(&marker).and_then(|meta| meta.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age.as_secs() < 60)
+}
+
+/// How long a search waits for a starting server before it opens a model of
+/// its own: opening one takes about as long, and every process that does
+/// holds another copy in memory.
+pub fn wait_limit() -> Duration {
+    Duration::from_millis(std::env::var("LORE_EMBED_SERVE_WAIT_MS").ok().and_then(|value| value.trim().parse().ok()).unwrap_or(15_000))
+}
+
+/// The server of `model` once it answers, while one is starting - at most
+/// `limit`. Several agents' first searches at once then share the one model
+/// the server holds instead of each loading its own. `None` at once when no
+/// server is starting, or when it gave up.
+pub fn wait_for(model: EmbeddingModel, limit: Duration) -> Option<Remote> {
+    let begin = Instant::now();
+    loop {
+        if let Some(remote) = connect(model) {
+            return Some(remote);
+        }
+        if !starting(model) || begin.elapsed() >= limit {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
 /// Starts `lore model serve` for `model` in the background, unless one is
 /// starting already (a marker under a minute old). `spawn` is the caller's
 /// detached spawn.
 pub fn start(model: EmbeddingModel, spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<()>) {
-    let marker = starting_marker(model, &build());
-    let fresh = std::fs::metadata(&marker).and_then(|meta| meta.modified()).ok().and_then(|at| at.elapsed().ok()).is_some_and(|age| age.as_secs() < 60);
-    if fresh {
+    if starting(model) {
         return;
     }
-    let _ = (|| -> std::io::Result<()> {
+    let marker = starting_marker(model, &build());
+    let started = (|| -> std::io::Result<()> {
         std::fs::create_dir_all(state_dir())?;
         std::fs::write(&marker, std::process::id().to_string())?;
         let mut command = std::process::Command::new(server_exe()?);
@@ -266,4 +301,8 @@ pub fn start(model: EmbeddingModel, spawn: impl FnOnce(&mut std::process::Comman
             .stderr(std::process::Stdio::null());
         spawn(&mut command)
     })();
+    if started.is_err() {
+        // nobody is starting it: no search should wait
+        let _ = std::fs::remove_file(&marker);
+    }
 }

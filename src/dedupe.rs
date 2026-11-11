@@ -13,7 +13,8 @@ use std::sync::OnceLock;
 
 const STOP: &str = "a an the and or of to in on at for from by with without is are was were be been
 it its this that these those as not no into than then when while which who what why how do does
-did can cannot could should would will just only also there here out up so if but all any each";
+did can cannot could should would will just only also there here out up so if but all any each
+для что это как если или без над под при про все так еще уже тоже только даже когда где чем его она они оно был была было были есть нет";
 
 /// Below this a neighbour is not worth naming.
 pub const NEAR_COSINE: f64 = 0.80;
@@ -50,11 +51,18 @@ fn get_str<'a>(record: &'a Value, key: &str) -> &'a str {
     record.get(key).and_then(Value::as_str).unwrap_or_default()
 }
 
+/// The words the overlap compares: Latin ones as written, Russian ones by
+/// their stem (src/stem.rs), so «таблица» and «таблицы» are one word.
 pub fn words(record: &Value) -> BTreeSet<String> {
     static WORD: OnceLock<regex::Regex> = OnceLock::new();
-    let pattern = WORD.get_or_init(|| regex::Regex::new(r"[a-z0-9_]{3,}").expect("the word pattern"));
+    let pattern = WORD.get_or_init(|| regex::Regex::new(r"[a-z0-9_]{3,}|[а-яё]{3,}").expect("the word pattern"));
     let text = [get_str(record, "title"), &main_text(record), get_str(record, "cause")].join(" ").to_lowercase();
-    pattern.find_iter(&text).map(|found| found.as_str().to_owned()).filter(|word| !stop().contains(word.as_str())).collect()
+    pattern
+        .find_iter(&text)
+        .map(|found| found.as_str())
+        .filter(|word| !stop().contains(word))
+        .map(|word| if crate::stem::is_russian(word) { crate::stem::russian(word) } else { word.to_owned() })
+        .collect()
 }
 
 fn word_char(ch: Option<char>) -> bool {

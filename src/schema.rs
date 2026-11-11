@@ -141,10 +141,10 @@ pub const KINDS: &[Kind] = &[
     },
     Kind {
         name: "source",
-        statuses: &["open", "covered", "history"],
+        statuses: &["open", "covered", "history", "kept"],
         fields: &[
             required("path", Type::Str, Some(300)),
-            when("reason", Type::Str, Some(600), &["history"]),
+            when("reason", Type::Str, Some(600), &["history", "kept"]),
             field("records", Type::Ids, None),
             field("parts", Type::Parts, None),
         ],

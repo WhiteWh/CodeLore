@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 
 pub const CONFIG_NAME: &str = "lore.toml";
 pub const MODES: &[&str] = &["none", "plain", "shared-tree"];
-/// `builtin` is the nomic-embed-text model in this process and `none` is text only. `ollama` is the
+/// `builtin` is the model `embed.model` names (`auto`: by the device) in this process and `none` is
+/// text only; `lore init` writes `builtin` and `auto`. `ollama` is the
 /// name Python's `lore init` and every lore.toml written before the owner dropped Ollama use: it
 /// means the built-in model too, and the `url`, `model` and `timeout` keys beside it are ignored.
 pub const PROVIDERS: &[&str] = &["builtin", "ollama", "none"];
@@ -65,13 +66,16 @@ pub struct Atlas {
     pub include: Vec<String>,
     /// Path prefixes or `*` globs left out (beside .gitignore).
     pub exclude: Vec<String>,
+    /// Files of gitignore patterns left out too (`.socraticodeignore`), from
+    /// the repository root; each file's patterns are relative to its folder.
+    pub exclude_files: Vec<String>,
     /// Files larger than this many KiB are skipped.
     pub max_kib: u64,
 }
 
 impl Default for Atlas {
     fn default() -> Self {
-        Self { enabled: false, semantic: true, in_for: true, in_find: false, include: Vec::new(), exclude: Vec::new(), max_kib: 512 }
+        Self { enabled: false, semantic: true, in_for: true, in_find: false, include: Vec::new(), exclude: Vec::new(), exclude_files: Vec::new(), max_kib: 512 }
     }
 }
 
@@ -115,6 +119,10 @@ fn parse_atlas(value: &toml::Value, bad: &mut Vec<String>) -> Atlas {
             "find" => atlas.in_find = flag(bad),
             "include" => atlas.include = strings(key, value, bad),
             "exclude" => atlas.exclude = strings(key, value, bad),
+            "exclude_file" => match value.as_str() {
+                Some(file) => atlas.exclude_files = vec![file.to_owned()],
+                None => atlas.exclude_files = strings(key, value, bad),
+            },
             "max_kib" => match value.as_integer().filter(|n| (1..=16_384).contains(n)) {
                 Some(n) => atlas.max_kib = n as u64,
                 None => bad.push("`atlas.max_kib` must be a whole number from 1 to 16384".into()),
@@ -672,7 +680,7 @@ pub fn parse(data: &toml::Value, root: &Path, place: &str) -> Result<Config, Lor
 pub fn template(dir: &str, areas: &[String], mode: &str, branch: &str) -> String {
     let areas: Vec<String> = areas.iter().map(|area| format!("\"{area}\"")).collect();
     format!(
-        "version = 1\ndir = \"{dir}\"\nareas = [{}]\n\n[commit]\nmode = \"{mode}\"          # \"none\" | \"plain\" | \"shared-tree\"\nbranch = \"{branch}\"\npush = false\n\n[embed]\nprovider = \"ollama\"     # \"ollama\" | \"none\"\nurl = \"http://127.0.0.1:11434\"\nmodel = \"nomic-embed-text\"\n",
+        "version = 1\ndir = \"{dir}\"\nareas = [{}]\n\n[commit]\nmode = \"{mode}\"          # \"none\" | \"plain\" | \"shared-tree\"\nbranch = \"{branch}\"\npush = false\n\n[embed]\nprovider = \"builtin\"    # \"builtin\" | \"none\"\nmodel = \"auto\"          # bge-m3 with a GPU, multilingual-e5-base on the CPU: both read Russian; or name one\n",
         areas.join(", ")
     )
 }

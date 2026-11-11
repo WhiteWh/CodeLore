@@ -9,6 +9,7 @@
 //!   `"pushed"` and `"push_error"` when a push was asked for;
 //! - `find`: `{"query", "notes", "results": [{"score", "via", "record"}]}`;
 //! - `for`, `items`, `stale`: a list of records; `show`: the record;
+//! - `digest`: `{"records": [{"id", "kind", "area", "title", "updated"}], "shown", "total"}`;
 //! - `exists`: `{id: null | {"kind", "status", "title"}}`, exit 1 if one is missing;
 //! - `areas`: `{area: count}`; `plans`: `[{"plan", "counts"}]`;
 //! - `check`: `{"records", "files", "errors", "warnings"}`, exit 1 on an error;
@@ -256,12 +257,13 @@ fn options_of(command: &str) -> Option<Vec<(&'static str, &'static [&'static str
             list
         }
         "for" => vec![("all", &[], false)],
-        "cover" => vec![("list", &[], false), ("add", &[], false), ("history", &[], false), ("reason", &[], true), ("record", &[], true), ("title", &[], true)],
+        "cover" => vec![("list", &[], false), ("add", &[], false), ("history", &[], false), ("keep", &[], false), ("moved", &[], true), ("reason", &[], true), ("record", &[], true), ("title", &[], true)],
         "add" => vec![writes, ("json-in", &["--stdin"], false), ("batch", &[], false), ("new", &[], false), ("skip-duplicates", &[], false), ("occurrence", &[], false)],
         "update" => vec![writes, ("json-in", &["--stdin"], false), ("batch", &[], false)],
         "plans" => vec![("all", &[], false)],
         "items" => vec![("plan", &[], true), ("status", &[], true), ("ready", &[], false), ("all", &[], false)],
         "stale" => vec![("days", &[], true)],
+        "digest" => vec![("kind", &[], true), ("area", &[], true), ("bytes", &[], true)],
         "plan new" => vec![writes, ("title", &[], true), ("goal", &[], true), ("id", &[], true), ("doc", &[], true), ("status", &[], true)],
         "plan set" => vec![writes, ("status", &[], true)],
         "plan close" => vec![("outcome", &[], true)],
@@ -298,10 +300,44 @@ fn subcommands(command: &str) -> Option<&'static [&'static str]> {
     }
 }
 
+/// What `lore --help` prints.
+const HELP: &str = "usage: lore [-C <dir>] [--json] [--by <who>] [--trailer <k: v>] [--mode <commit mode>] [--text-only] <command> ...
+
+How an agent works with lore: `lore guide`. The format: docs/FORMAT.md.
+
+search
+  find <query> [--kind K] [--area A] [--status S] [--plan P] [--all] [-n N] [--stores all|<dirs>]
+                          records by exact strings, words and meaning; `find -` reads a log on stdin
+  for <path|symbol>       what is known about a file or a symbol
+  show <id>               one record
+  exists <id>...          are these records now (exit 1 if one is not)
+  digest [--kind K,K] [--area A] [--bytes N]
+                          titles of the faults and decisions in force, for a session-start hook
+  areas                   the areas and their record counts
+record
+  add <kind> [--json|--batch] [-s field=value]... [--new] [--skip-duplicates]
+  update <id> [-s field=value]... | update --batch
+  supersede <old-id> <new-id>
+plans
+  plans | items [--ready] | stale [--days N]
+  plan new|show|set|close ...      item add|done|drop|supersede|defer|reopen ...
+documents moved in
+  cover <doc.md> [--list | --add | --history | --keep | --moved <new path>]
+upkeep
+  init [--areas a,b] [--commit-mode M]   check [--evidence]   fmt   index [--rebuild]   stats [--days N]
+working memory
+  pulse add | pulses | message send|read | messages | brief set|show | promote | working status|cleanup
+also
+  atlas ...               the code map (docs/ATLAS.md), when `[atlas] enabled`
+  ledger ...              structured project data (docs/FORMAT.md section 8), when `[ledger]` is set
+  model status|fetch|serve
+  --version
+";
+
 /// The commands, as `lore guide` may name them.
 pub const COMMANDS: &[&str] = &[
     "init", "guide", "areas", "check", "fmt", "index", "find", "for", "show", "exists", "cover", "add", "update", "plans", "items", "stale", "stats", "plan", "item",
-    "pulse", "pulses", "message", "messages", "brief", "promote", "supersede", "working",
+    "digest", "pulse", "pulses", "message", "messages", "brief", "promote", "supersede", "working",
 ];
 pub const PLAN_COMMANDS: &[&str] = &["new", "show", "set", "close"];
 pub const ITEM_COMMANDS: &[&str] = &["add", "done", "drop", "supersede", "defer", "reopen"];
@@ -419,7 +455,7 @@ fn check_shape(args: &Args) -> std::result::Result<(), Usage> {
         "message send" => positional(0, None, ""),
         "message read" | "promote" => positional(1, Some(1), "id"),
         "supersede" => positional(2, Some(2), "old new"),
-        "init" | "guide" | "areas" | "check" | "fmt" | "index" | "plans" | "items" | "stale" | "stats" => positional(0, Some(0), ""),
+        "init" | "guide" | "areas" | "check" | "fmt" | "index" | "plans" | "items" | "stale" | "stats" | "digest" => positional(0, Some(0), ""),
         "find" => positional(1, None, "query"),
         "for" => positional(1, Some(1), "target"),
         "show" | "plan show" => positional(1, Some(1), "id"),
@@ -796,6 +832,12 @@ pub fn run(argv: &[&str], env: &Env) -> Output {
         return output;
     }
     let mut io = Io { out: String::new(), err: String::new() };
+    // `lore --help`, `lore -h`, `lore help`, and `--help` after a command.
+    let asked_help = argv.first().is_some_and(|word| word == "help") || argv.iter().take_while(|word| *word != "--").any(|word| word == "--help" || word == "-h");
+    if asked_help {
+        io.say(HELP.trim_end());
+        return Output { code: 0, stdout: io.out, stderr: io.err };
+    }
     let args = match parse_args(&argv).and_then(|args| check_shape(&args).map(|_| args)) {
         Ok(args) => args,
         Err(Usage(message)) => {
@@ -961,6 +1003,7 @@ fn dispatch(args: Args, env: &Env, io: &mut Io) -> Result<i32> {
         "plans" => cmd_plans(&mut ctx, io),
         "items" => cmd_items(&mut ctx, io),
         "stale" => cmd_stale(&mut ctx, io),
+        "digest" => cmd_digest(&mut ctx, io),
         "plan new" => cmd_plan_new(&ctx, io),
         "plan set" => cmd_plan_set(&ctx, io),
         "plan close" => {
@@ -1540,6 +1583,17 @@ fn cmd_check(args: &Args, env: &Env, io: &mut Io) -> Result<i32> {
         }
     }
     for record in &records {
+        // A document a source names that is gone: moved (an archive, say) or deleted.
+        if field(record, "kind") == "source" && field(record, "status") != "history" {
+            let path = field(record, "path");
+            if !path.is_empty() && cover::read_doc(&config, path, None).is_none() {
+                let way = match gitio::renamed_to(&config.root, path) {
+                    Some(new) => format!("git saw it move to {new}: `lore cover {path} --moved {new}`"),
+                    None => format!("if it moved: `lore cover {path} --moved <new path>`; if it is gone for good: `lore cover {path} --history --reason ...`"),
+                };
+                warns.push(format!("{}: {path} is not in the working tree or HEAD - {way}", field(record, "id")));
+            }
+        }
         if field(record, "kind") == "source" && field(record, "status") == "covered" {
             let Some(path) = record.get("path").and_then(Value::as_str) else { continue };
             if let Some(data) = cover::read_doc(&config, path, None) {
@@ -1681,7 +1735,11 @@ fn source_of(records: &[Value], path: &str) -> Option<Value> {
 
 fn cmd_cover(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     let path = doc_path(ctx, &ctx.args.positional[0].clone())?;
-    if ctx.args.flag("add") || ctx.args.flag("history") {
+    if let Some(new) = ctx.args.one("moved") {
+        let new = doc_path(ctx, &new)?;
+        return cover_moved(ctx, io, path, new);
+    }
+    if ctx.args.flag("add") || ctx.args.flag("history") || ctx.args.flag("keep") {
         return cover_write(ctx, io, path);
     }
     let base = ops::base_snapshot(&ctx.config)?.all();
@@ -1701,7 +1759,9 @@ fn cmd_cover(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
             (parts, Some(found))
         }
     };
-    let history = source.as_ref().is_some_and(|source| field(source, "status") == "history");
+    // `history` (nothing in it is current) and `kept` (it stays the authority,
+    // records point at it) account for the whole document.
+    let history = source.as_ref().is_some_and(|source| matches!(field(source, "status"), "history" | "kept"));
     let entries: BTreeMap<String, Value> = source
         .as_ref()
         .and_then(|source| source.get("parts"))
@@ -1727,9 +1787,11 @@ fn cmd_cover(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     match &source {
         None => io.say(&format!("{path}: no source record yet; {} part(s), none accounted for", parts.len())),
         Some(source) if history => {
-            io.say(&format!("{path}: history ({}) - {}", field(source, "id"), shown_field(source, "reason")));
+            let kept = field(source, "status") == "kept";
+            io.say(&format!("{path}: {} ({}) - {}", if kept { "kept, the document is the authority" } else { "history" }, field(source, "id"), shown_field(source, "reason")));
             if let Some(records) = source.get("records").and_then(Value::as_array).filter(|records| !records.is_empty()) {
-                io.say(&format!("  what still stands is in: {}", records.iter().map(text_of).collect::<Vec<_>>().join(", ")));
+                let what = if kept { "the records that point at it" } else { "what still stands is in" };
+                io.say(&format!("  {what}: {}", records.iter().map(text_of).collect::<Vec<_>>().join(", ")));
             }
         }
         Some(source) => io.say(&format!("{path}: {} [{}] - {} of {} part(s) accounted for", field(source, "id"), field(source, "status"), parts.len() - uncovered.len(), parts.len())),
@@ -1767,10 +1829,16 @@ fn cover_write(ctx: &mut Ctx, io: &mut Io, path: String) -> Result<i32> {
             return Err(LoreError::new(format!("stdin line {}: a parts list entry is {{\"part\": ..., \"records\": [...], \"skip\": ...}}", index + 1)));
         }
     }
-    let history = ctx.args.flag("history");
+    let (history, keep) = (ctx.args.flag("history"), ctx.args.flag("keep"));
     let reason = ctx.args.one("reason");
+    if history && keep {
+        return Err(LoreError::new("--history and --keep say opposite things: nothing in the document is current, or the document stays the authority"));
+    }
     if history && reason.as_deref().is_none_or(str::is_empty) {
         return Err(LoreError::new("--history needs --reason: why nothing in the document is current"));
+    }
+    if keep && reason.as_deref().is_none_or(str::is_empty) {
+        return Err(LoreError::new("--keep needs --reason: why the document stays the authority (a guide people read, say)"));
     }
     let title = ctx.args.one("title");
     let extra_records = ctx.args.many("record");
@@ -1807,8 +1875,8 @@ fn cover_write(ctx: &mut Ctx, io: &mut Io, path: String) -> Result<i32> {
         let map = record.as_object_mut().ok_or_else(|| LoreError::new("a record is a JSON object"))?;
         let parts: Vec<Value> = listed.into_iter().map(|(_, entry)| entry).collect();
         map.insert("parts".into(), if parts.is_empty() { Value::Null } else { Value::Array(parts.clone()) });
-        if history {
-            map.insert("status".into(), json!("history"));
+        if history || keep {
+            map.insert("status".into(), json!(if keep { "kept" } else { "history" }));
             map.insert("reason".into(), json!(reason));
             if !extra_records.is_empty() {
                 let mut listed: Vec<String> = map.get("records").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).map(str::to_owned).collect();
@@ -1819,7 +1887,7 @@ fn cover_write(ctx: &mut Ctx, io: &mut Io, path: String) -> Result<i32> {
                 }
                 map.insert("records".into(), json!(listed));
             }
-        } else if map.get("status").and_then(Value::as_str) != Some("history") {
+        } else if !matches!(map.get("status").and_then(Value::as_str), Some("history" | "kept")) {
             let done = cover::read_doc(&config, &path, None).is_some_and(|data| cover::coverage(&cover::parts_of(&cover::doc_text(&data)), &parts).uncovered.is_empty());
             map.insert("status".into(), json!(if done { "covered" } else { "open" }));
         }
@@ -1830,6 +1898,55 @@ fn cover_write(ctx: &mut Ctx, io: &mut Io, path: String) -> Result<i32> {
             return Ok(vec![Change::update(record, None)]);
         }
         Ok(ops::fill_ids(&[record], snapshot).into_iter().map(Change::new).collect())
+    };
+    ctx.write(io, &build, None, Vec::new())
+}
+
+/// `lore cover <old> --moved <new>`: the document moved (`git mv`, into an
+/// archive say). Its source record takes the new path, and every record whose
+/// `refs.files` names the old path names the new one - one commit. The move
+/// must be committed first: references are checked against `HEAD`.
+fn cover_moved(ctx: &mut Ctx, io: &mut Io, old: String, new: String) -> Result<i32> {
+    if old == new {
+        return Err(LoreError::new(format!("--moved names {old} itself")));
+    }
+    if cover::read_doc(&ctx.config, &new, None).is_none() {
+        return Err(LoreError::new(format!("{new} is neither in the working tree nor in HEAD - move the document (and commit the move) first")));
+    }
+    let build = move |snapshot: &Snapshot| -> Result<Vec<Change>> {
+        let records = snapshot.all();
+        if source_of(&records, &new).is_some() {
+            return Err(LoreError::new(format!("a source record names {new} already - one source record per path")));
+        }
+        let mut changes = Vec::new();
+        let mut found_source = false;
+        for record in &records {
+            let mut record = record.clone();
+            let mut changed = false;
+            if field(&record, "kind") == "source" && field(&record, "path") == old {
+                record["path"] = json!(new);
+                if field(&record, "title") == format!("source: {old}") {
+                    record["title"] = json!(format!("source: {new}").chars().take(120).collect::<String>());
+                }
+                found_source = true;
+                changed = true;
+            }
+            if let Some(files) = record.get_mut("refs").and_then(|refs| refs.get_mut("files")).and_then(Value::as_array_mut) {
+                for file in files.iter_mut() {
+                    if file.as_str() == Some(old.as_str()) {
+                        *file = json!(new);
+                        changed = true;
+                    }
+                }
+            }
+            if changed {
+                changes.push(Change::update(record, None));
+            }
+        }
+        if !found_source && changes.is_empty() {
+            return Err(LoreError::new(format!("no source record and no record's refs.files names {old}")));
+        }
+        Ok(changes)
     };
     ctx.write(io, &build, None, Vec::new())
 }
@@ -2026,6 +2143,83 @@ fn cmd_stale(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     }
     for item in &result {
         io.say(&format!("{:28} [{}] since {}  {}  - keep, drop, or defer?", field(item, "id"), field(item, "status"), shown_field(item, "updated"), field(item, "title")));
+    }
+    Ok(0)
+}
+
+/// The kinds a digest lists unless `--kind` names others.
+const DIGEST_KINDS: &[&str] = &["fault", "decision"];
+
+/// The text a digest holds at most unless `--bytes` says otherwise: what a
+/// session-start hook can put before an agent without crowding it.
+const DIGEST_BYTES: usize = 2000;
+
+/// Whether a record is in force: a fault `live`, an item `open`, anything
+/// else not retired.
+fn in_force(record: &Value) -> bool {
+    let status = field(record, "status");
+    match field(record, "kind") {
+        "fault" => status == "live",
+        "item" => status == "open",
+        _ => !schema::RETIRED.contains(&status),
+    }
+}
+
+/// `lore digest`: the titles of the records in force, newest first, within a
+/// byte budget - for a hook that puts them before every session, so an agent
+/// sees the known traps without thinking to search for them.
+fn cmd_digest(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
+    let kinds: Vec<String> = match ctx.args.one("kind") {
+        Some(list) => list.split(',').map(|kind| kind.trim().to_owned()).filter(|kind| !kind.is_empty()).collect(),
+        None => DIGEST_KINDS.iter().map(|kind| (*kind).to_owned()).collect(),
+    };
+    if let Some(bad) = kinds.iter().find(|kind| !schema::KINDS.iter().any(|known| known.name == kind.as_str())) {
+        return Err(LoreError::new(format!("argument --kind: unknown kind {}", repr_str(bad))));
+    }
+    let budget: usize = match ctx.args.one("bytes") {
+        Some(bytes) => bytes.parse().ok().filter(|bytes| *bytes > 0).ok_or_else(|| LoreError::new(format!("argument --bytes: invalid int value: {}", repr_str(&bytes))))?,
+        None => DIGEST_BYTES,
+    };
+    let area = ctx.args.one("area");
+    let mut records: Vec<Value> = ctx
+        .records()?
+        .into_iter()
+        .filter(|record| kinds.iter().any(|kind| kind == field(record, "kind")))
+        .filter(|record| area.as_deref().is_none_or(|area| field(record, "area") == area))
+        .filter(in_force)
+        .collect();
+    records.sort_by(|a, b| field(b, "updated").cmp(field(a, "updated")).then_with(|| field(a, "id").cmp(field(b, "id"))));
+    let total = records.len();
+    let mut lines: Vec<String> = Vec::new();
+    let mut shown: Vec<&Value> = Vec::new();
+    let mut used = 0;
+    for record in &records {
+        let line = format!("{} [{}] {}: {}", field(record, "kind"), field(record, "area"), field(record, "id"), field(record, "title"));
+        if used + line.len() + 1 > budget {
+            break;
+        }
+        used += line.len() + 1;
+        lines.push(line);
+        shown.push(record);
+    }
+    if ctx.args.json {
+        let list: Vec<Value> = shown
+            .iter()
+            .map(|record| json!({"id": field(record, "id"), "kind": field(record, "kind"), "area": field(record, "area"), "title": field(record, "title"), "updated": field(record, "updated")}))
+            .collect();
+        io.json(&json!({"records": list, "shown": shown.len(), "total": total}));
+        return Ok(0);
+    }
+    if total == 0 {
+        io.say(&format!("lore: no {} in force", kinds.join(" or ")));
+        return Ok(0);
+    }
+    io.say(&format!("lore: {total} in force ({}), newest first; `lore show <id>` reads one, `lore find \"<words>\"` searches all", kinds.join(", ")));
+    for line in &lines {
+        io.say(line);
+    }
+    if shown.len() < total {
+        io.say(&format!("... and {} more: `lore digest --area <area>`, or search", total - shown.len()));
     }
     Ok(0)
 }

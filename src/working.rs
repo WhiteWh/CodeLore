@@ -418,11 +418,44 @@ impl Store {
         if (1..USER_VERSION).contains(&version) {
             store.reindex_by_rowid()?;
         }
+        store.stems_current()?;
         Ok(store)
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// The search rows carry the Russian stems of [`crate::stem::VERSION`]
+    /// (src/stem.rs); rows written without them are built again, once.
+    fn stems_current(&self) -> Result<()> {
+        let have = |db: &Connection| -> Result<bool> {
+            let value: Option<String> = db.query_row("SELECT value FROM meta WHERE key = 'stems'", [], |row| row.get(0)).optional().map_err(error)?;
+            Ok(value.as_deref() == Some(crate::stem::VERSION))
+        };
+        if have(&self.db)? {
+            return Ok(());
+        }
+        self.db.execute_batch("BEGIN IMMEDIATE").map_err(error)?;
+        let result = (|| -> Result<()> {
+            // A concurrent opener may have done it meanwhile.
+            if have(&self.db)? {
+                return Ok(());
+            }
+            self.db.execute_batch("DELETE FROM words; DELETE FROM terms;").map_err(error)?;
+            for entry in self.select("1 = 1", &[])? {
+                self.index(&entry)?;
+            }
+            self.db.execute("INSERT OR REPLACE INTO meta(key, value) VALUES('stems', ?1)", [crate::stem::VERSION]).map_err(error)?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => self.db.execute_batch("COMMIT").map_err(error),
+            Err(failure) => {
+                let _ = self.db.execute_batch("ROLLBACK");
+                Err(failure)
+            }
+        }
     }
 
     /// Task 187: a version 1 store's search rows are rebuilt keyed by their
@@ -510,7 +543,7 @@ impl Store {
         // By rowid: an FTS rowid lookup, never a scan of the UNINDEXED id.
         self.db.execute("DELETE FROM words WHERE rowid = ?1", [rowid]).map_err(error)?;
         self.db.execute("DELETE FROM terms WHERE rowid = ?1", [rowid]).map_err(error)?;
-        self.db.execute("INSERT INTO words(rowid, id, main) VALUES(?1, ?2, ?3)", params![rowid, entry.id, text]).map_err(error)?;
+        self.db.execute("INSERT INTO words(rowid, id, main) VALUES(?1, ?2, ?3)", params![rowid, entry.id, crate::stem::with_stems(&text)]).map_err(error)?;
         self.db.execute("INSERT INTO terms(rowid, id, toks) VALUES(?1, ?2, ?3)", params![rowid, entry.id, terms_of(&text).join(" ")]).map_err(error)?;
         Ok(())
     }

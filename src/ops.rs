@@ -81,7 +81,7 @@ fn refs_list(record: &Value, key: &str) -> Vec<String> {
 }
 
 pub fn slugify(title: &str) -> String {
-    let ascii: String = title.nfkd().filter(char::is_ascii).collect();
+    let ascii: String = transliterate(title).nfkd().filter(char::is_ascii).collect();
     let lower = ascii.to_lowercase();
     let words: Vec<&str> = lower.split(|ch: char| !(ch.is_ascii_lowercase() || ch.is_ascii_digit())).filter(|word| !word.is_empty()).collect();
     let mut out = String::new();
@@ -99,6 +99,27 @@ pub fn slugify(title: &str) -> String {
         out = words[0].chars().take(40).collect();
     }
     if out.len() >= 2 { out } else { "record".into() }
+}
+
+/// Cyrillic letters in Latin ones, so a Russian title makes an id that says
+/// something («Редактор крашит» is `redaktor-krashit`, not `record`).
+fn transliterate(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    for ch in text.chars() {
+        let lower = ch.to_lowercase().next().unwrap_or(ch);
+        let latin = match lower {
+            'а' => "a", 'б' => "b", 'в' => "v", 'г' => "g", 'д' => "d", 'е' | 'ё' | 'э' => "e", 'ж' => "zh", 'з' => "z",
+            'и' | 'й' => "i", 'к' => "k", 'л' => "l", 'м' => "m", 'н' => "n", 'о' => "o", 'п' => "p", 'р' => "r", 'с' => "s",
+            'т' => "t", 'у' => "u", 'ф' => "f", 'х' => "kh", 'ц' => "ts", 'ч' => "ch", 'ш' => "sh", 'щ' => "shch", 'ы' => "y",
+            'ю' => "yu", 'я' => "ya", 'ъ' | 'ь' => "", 'і' => "i", 'ї' => "yi", 'є' => "ye", 'ґ' => "g",
+            _ => {
+                out.push(ch);
+                continue;
+            }
+        };
+        out.push_str(latin);
+    }
+    out
 }
 
 pub fn load_rev(config: &Config, rev: Option<&str>) -> Result<Snapshot> {

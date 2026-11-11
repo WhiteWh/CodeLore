@@ -142,6 +142,24 @@ line instead of a growing essay:
 Project knowledge and plans are in CodeLore: run `lore guide` once per session.
 ```
 
+### Known traps before the agent asks
+
+A search finds only what the agent thinks to ask about. `lore digest` prints
+the titles of the faults and decisions in force, newest first, within about
+2 KB (`--kind`, `--area`, `--bytes`), so a hook can put them before every
+session. For Claude Code, in `.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "lore digest" }] }]
+  }
+}
+```
+
+The text a SessionStart hook prints goes into the session's context. `lore for
+<file>` is the same kind of help for a file about to be edited.
+
 ## Orchestrators
 
 CodeLore is the durable half of planning, not a task runner. A multi-agent
