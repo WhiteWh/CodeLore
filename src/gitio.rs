@@ -69,6 +69,86 @@ fn finish(args: &[&str], output: std::process::Output, check: bool) -> Result<Ou
     Ok(result)
 }
 
+/// The repository's git folder that every worktree shares, absolute.
+pub fn common_dir(root: &Path) -> Option<PathBuf> {
+    let output = git(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"], None, &[], false).ok().filter(Output::ok)?;
+    let text = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!text.is_empty()).then(|| PathBuf::from(text))
+}
+
+thread_local! {
+    /// How many write locks this thread holds: a second take inside the first
+    /// (an `add` that holds it over its duplicate check, then writes) is free.
+    static WRITES_HELD: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// How long a write waits for another process's write to the same repository.
+const WRITE_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// One writer at a time per repository: `lore` reads a JSONL file, changes it
+/// and commits, and two processes doing that at once lose one's line (the
+/// later write replaces the file the earlier one changed) or meet git's
+/// `index.lock`. Eight `lore add` at once in `plain` mode committed one record
+/// and lost seven. The lock lives in the git folder all worktrees share; a
+/// write that cannot have it in two minutes is refused, nothing written.
+pub struct WriteLock {
+    file: Option<std::fs::File>,
+}
+
+impl WriteLock {
+    pub fn take(root: &Path) -> Result<Self> {
+        use fs2::FileExt;
+        if WRITES_HELD.with(|held| held.get()) > 0 {
+            WRITES_HELD.with(|held| held.set(held.get() + 1));
+            return Ok(Self { file: None });
+        }
+        let dir = common_dir(root).unwrap_or_else(|| root.join(".git"));
+        let path = dir.join("codelore-write.lock");
+        let file = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path);
+        let Ok(file) = file else {
+            // a git folder this user cannot write: no lock, as before
+            WRITES_HELD.with(|held| held.set(held.get() + 1));
+            return Ok(Self { file: None });
+        };
+        let started = std::time::Instant::now();
+        while file.try_lock_exclusive().is_err() {
+            if started.elapsed() >= WRITE_WAIT {
+                return Err(LoreError::new(format!(
+                    "another lore write to this repository has held {} for {} s; nothing was written - try again",
+                    path.display(),
+                    WRITE_WAIT.as_secs()
+                )));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+        WRITES_HELD.with(|held| held.set(held.get() + 1));
+        Ok(Self { file: Some(file) })
+    }
+}
+
+impl Drop for WriteLock {
+    fn drop(&mut self) {
+        WRITES_HELD.with(|held| held.set(held.get().saturating_sub(1)));
+        if let Some(file) = &self.file {
+            let _ = fs2::FileExt::unlock(file);
+        }
+    }
+}
+
+/// [`git`], tried again while another git process holds `index.lock` (a
+/// person's `git status`, an editor): up to about ten seconds.
+fn git_waiting(root: &Path, args: &[&str], input: Option<&[u8]>, env: &[(&str, &str)]) -> Result<Output> {
+    let started = std::time::Instant::now();
+    loop {
+        let output = git(root, args, input, env, false)?;
+        let busy = !output.ok() && String::from_utf8_lossy(&output.stderr).contains("index.lock");
+        if !busy || started.elapsed() >= std::time::Duration::from_secs(10) {
+            return Ok(output);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
 /// Where git saw `old` go: the new path of the rename in the commit that took
 /// `old` away, when that commit renamed it. Two git processes.
 pub fn renamed_to(root: &Path, old: &str) -> Option<String> {
@@ -318,13 +398,16 @@ pub fn write_plain(root: &Path, paths: &[String], transform: &mut Transform, sub
     let changed: Vec<&str> = new.keys().map(String::as_str).collect();
     let mut add = vec!["add", "--"];
     add.extend(&changed);
-    git(root, &add, None, &[], true)?;
+    let added = git_waiting(root, &add, None, &[])?;
+    if !added.ok() {
+        return Err(LoreError::new(format!("git add failed; the change is in the working tree: {}", String::from_utf8_lossy(&added.stderr).trim())));
+    }
     let text = message(subject, body, trailers);
     let mut commit = vec!["commit", "--only", "-q", "-F", "-", "--"];
     commit.extend(&changed);
     let env = identity_env(identity);
     let env: Vec<(&str, &str)> = env.iter().map(|(key, value)| (*key, value.as_str())).collect();
-    let output = git(root, &commit, Some(&text), &env, false)?;
+    let output = git_waiting(root, &commit, Some(&text), &env)?;
     if !output.ok() {
         let err = if output.stderr.is_empty() { &output.stdout } else { &output.stderr };
         return Err(LoreError::new(format!("the commit failed; the change is in the working tree: {}", String::from_utf8_lossy(err).trim())));

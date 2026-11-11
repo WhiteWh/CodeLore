@@ -433,7 +433,12 @@ impl Config {
     /// the project's vectors were made with; with none yet it follows the
     /// device: bge-m3 with a GPU, multilingual-e5-base on the CPU.
     pub fn embedding_model(&self) -> crate::embed::EmbeddingModel {
-        let name = self.embed_model.trim();
+        // Ollama's tag `nomic-embed-text` under `provider = "ollama"` is a
+        // lore.toml from before the built-in models (Python's `lore init`,
+        // Zerus's template): the only model there was, not a choice. It reads
+        // as `auto`: a store that has nomic vectors keeps them, a new one gets
+        // a model that reads Russian. A model named in full is kept.
+        let name = if self.legacy_model() { "auto" } else { self.embed_model.trim() };
         if name.is_empty() || name == "auto" {
             if let Some(model) = crate::index::stored_vector_model(&self.root).and_then(|id| crate::embed::EmbeddingModel::from_name(&id)) {
                 return model;
@@ -445,13 +450,19 @@ impl Config {
         crate::embed::EmbeddingModel::from_name(name).unwrap_or_else(|| crate::embed::EmbeddingModel::default_for(&device))
     }
 
+    /// See [`Config::embedding_model`].
+    fn legacy_model(&self) -> bool {
+        self.embed_provider == "ollama" && matches!(self.embed_model.trim(), "nomic-embed-text" | "nomic-embed-text:latest")
+    }
+
     pub fn lore_dir(&self) -> PathBuf {        self.root.join(&self.dir)
     }
 
     /// nomic-embed-text is trained with task prefixes; other models get none
     /// unless the configuration names them.
     pub fn prefixes(&self) -> (String, String) {
-        let nomic = self.embed_model.contains("nomic") || matches!(self.embedding_model(), crate::embed::EmbeddingModel::Nomic);
+        let named = !self.legacy_model() && self.embed_model.contains("nomic");
+        let nomic = named || matches!(self.embedding_model(), crate::embed::EmbeddingModel::Nomic);
         (
             self.doc_prefix.clone().unwrap_or_else(|| if nomic { "search_document: ".into() } else { String::new() }),
             self.query_prefix.clone().unwrap_or_else(|| if nomic { "search_query: ".into() } else { String::new() }),

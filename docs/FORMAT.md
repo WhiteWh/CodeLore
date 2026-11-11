@@ -52,6 +52,7 @@ id are a conflict it leaves to a person, naming both lines.
 | `updated` | string | ISO date |
 | `by` | string | who wrote the last change: a person's name, or `agent:<model>` |
 | `refs` | object | optional; §5 |
+| `pinned` | bool | optional: `lore digest` shows the record always, before the rest (`lore update <id> -s pinned=true`) |
 | `seen` | list of strings | optional, the five knowledge kinds only: the occurrences of the same fault or fact, `<date> <by> <where>`, at most 20 of at most 160 characters, oldest dropped (RustCodeLore's working tier, docs/lore.md 11.10) |
 
 Unknown fields are kept and round-tripped, so a project or a newer program may
@@ -223,9 +224,10 @@ push = false       # push after each write
 trailers = []      # lines added to every commit message
 
 [embed]
-provider = "builtin"               # "builtin" | "none"; "ollama" (older files) means "builtin"
+provider = "builtin"               # "builtin" | "none"; "ollama" (older files) means "builtin" with model "auto"
 model = "auto"                     # "auto" | "nomic-embed-text-v1.5" | "multilingual-e5-base" | "bge-m3"
-# url, timeout: read and ignored (they were Ollama's)
+# url, timeout - and model, under "ollama" - read and ignored (they were Ollama's):
+# such a store keeps the model its vectors were made with, a new one gets "auto"
 # doc_prefix / query_prefix: task prefixes; nomic models get theirs by default
 
 [limits]           # optional; may only lower §4's ceilings

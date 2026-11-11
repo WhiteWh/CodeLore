@@ -494,6 +494,12 @@ pub fn validate(record: &Value, areas: &[String], limits: Option<&BTreeMap<Strin
             }
         }
     }
+    // `pinned`: a record `lore digest` always shows, first.
+    if let Some(pinned) = map.get("pinned") {
+        if !pinned.is_boolean() {
+            errs.push(format!("{who}: `pinned` is true or false (`-s pinned=true`, `-s pinned=` to unpin)"));
+        }
+    }
     // docs/lore.md 11.10: `seen`, the occurrences of a knowledge record, is an
     // optional list of at most 20 strings of at most 160 characters.
     if let Some(seen) = map.get("seen") {

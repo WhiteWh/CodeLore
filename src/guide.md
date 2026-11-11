@@ -15,8 +15,9 @@ They are searched, not read whole. Every command takes `--json`.
     lore exists <id> <id>...                # are these records now? exit 1 if one is not
     lore find "<query>" --stores all        # this store and its sub-stores (teams/...), each result marked
 
-`lore digest` lists the titles of the faults and decisions in force, newest
-first, in about 2 KB - what a session-start hook shows before any work.
+`lore digest` lists the titles of the faults and decisions in force, pinned
+ones first, then the newest, in about 2 KB - what a session-start hook shows
+before any work. A trap every session must see: `lore update <id> -s pinned=true`.
 
 Russian works in the text search too: another form of a word («краша»,
 «крашится») finds a record that says «крашит».

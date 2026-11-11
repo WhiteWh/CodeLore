@@ -16,6 +16,7 @@ fn run(root: &Path, argv: &[&str], stdin: &str) -> cli::Output {
     full.extend(argv);
     let env = Env {
         cwd: root.to_path_buf(),
+        store: None,
         stdin: stdin.as_bytes().to_vec(),
         lore_by: Some("tester".into()),
         machine: None,

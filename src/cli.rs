@@ -40,6 +40,9 @@ pub const GUIDE: &str = include_str!("guide.md");
 pub struct Env<'a> {
     /// Where it runs when no `-C` is given.
     pub cwd: PathBuf,
+    /// `LORE_STORE`: the store to use when no `-C` is given, so a hook kept in
+    /// a project's committed settings names no machine's path.
+    pub store: Option<PathBuf>,
     /// stdin's bytes.
     pub stdin: Vec<u8>,
     /// `LORE_BY`.
@@ -264,6 +267,7 @@ fn options_of(command: &str) -> Option<Vec<(&'static str, &'static [&'static str
         "items" => vec![("plan", &[], true), ("status", &[], true), ("ready", &[], false), ("all", &[], false)],
         "stale" => vec![("days", &[], true)],
         "digest" => vec![("kind", &[], true), ("area", &[], true), ("bytes", &[], true)],
+        "hook" => vec![],
         "plan new" => vec![writes, ("title", &[], true), ("goal", &[], true), ("id", &[], true), ("doc", &[], true), ("status", &[], true)],
         "plan set" => vec![writes, ("status", &[], true)],
         "plan close" => vec![("outcome", &[], true)],
@@ -312,7 +316,9 @@ search
   show <id>               one record
   exists <id>...          are these records now (exit 1 if one is not)
   digest [--kind K,K] [--area A] [--bytes N]
-                          titles of the faults and decisions in force, for a session-start hook
+                          titles of the faults and decisions in force, pinned ones first
+  hook session-start|pre-edit
+                          for Claude Code hooks: the digest; what is known about a file about to change
   areas                   the areas and their record counts
 record
   add <kind> [--json|--batch] [-s field=value]... [--new] [--skip-duplicates]
@@ -337,7 +343,7 @@ also
 /// The commands, as `lore guide` may name them.
 pub const COMMANDS: &[&str] = &[
     "init", "guide", "areas", "check", "fmt", "index", "find", "for", "show", "exists", "cover", "add", "update", "plans", "items", "stale", "stats", "plan", "item",
-    "digest", "pulse", "pulses", "message", "messages", "brief", "promote", "supersede", "working",
+    "digest", "hook", "pulse", "pulses", "message", "messages", "brief", "promote", "supersede", "working",
 ];
 pub const PLAN_COMMANDS: &[&str] = &["new", "show", "set", "close"];
 pub const ITEM_COMMANDS: &[&str] = &["add", "done", "drop", "supersede", "defer", "reopen"];
@@ -457,6 +463,7 @@ fn check_shape(args: &Args) -> std::result::Result<(), Usage> {
         "supersede" => positional(2, Some(2), "old new"),
         "init" | "guide" | "areas" | "check" | "fmt" | "index" | "plans" | "items" | "stale" | "stats" | "digest" => positional(0, Some(0), ""),
         "find" => positional(1, None, "query"),
+        "hook" => positional(1, Some(1), "event"),
         "for" => positional(1, Some(1), "target"),
         "show" | "plan show" => positional(1, Some(1), "id"),
         "exists" => positional(1, None, "id"),
@@ -526,7 +533,11 @@ pub fn parse_sets(items: &[String], base: Option<&Value>) -> Result<Map<String, 
             put(&mut patch, base, key, value, true)?;
         } else if let Some(at) = equals {
             let (key, text) = (&item[..at], &item[at + 1..]);
-            let value = if text.is_empty() { Value::Null } else { Value::String(text.to_owned()) };
+            let value = match (key, text) {
+                (_, "") => Value::Null,
+                ("pinned", "true" | "false") => Value::Bool(text == "true"),
+                _ => Value::String(text.to_owned()),
+            };
             put(&mut patch, base, key, value, false)?;
         } else {
             return Err(LoreError::new(format!("`-s {item}`: expected key=value, key+=value or key:=json")));
@@ -818,7 +829,7 @@ fn start(args: &Args, env: &Env) -> PathBuf {
             let path = PathBuf::from(path);
             if path.is_absolute() { path } else { env.cwd.join(path) }
         }
-        None => env.cwd.clone(),
+        None => env.store.clone().unwrap_or_else(|| env.cwd.clone()),
     }
 }
 
@@ -982,6 +993,8 @@ fn dispatch(args: Args, env: &Env, io: &mut Io) -> Result<i32> {
         }
         "check" => return cmd_check(&args, env, io),
         "fmt" => return cmd_fmt(&args, env, io),
+        // A hook never fails its session: no store here is nothing to say.
+        "hook" if config::load(&start(&args, env)).is_err() => return Ok(0),
         _ => {}
     }
     let mut ctx = Ctx::new(args, env)?;
@@ -1004,6 +1017,7 @@ fn dispatch(args: Args, env: &Env, io: &mut Io) -> Result<i32> {
         "items" => cmd_items(&mut ctx, io),
         "stale" => cmd_stale(&mut ctx, io),
         "digest" => cmd_digest(&mut ctx, io),
+        "hook" => cmd_hook(&mut ctx, io),
         "plan new" => cmd_plan_new(&ctx, io),
         "plan set" => cmd_plan_set(&ctx, io),
         "plan close" => {
@@ -1389,6 +1403,9 @@ fn cmd_add(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     if ctx.args.flag("occurrence") {
         return working_cli::add_resolved(ctx, io, records);
     }
+    // Held from the duplicate check to the commit: two agents adding the same
+    // fault at once both passed the check before. `apply` takes it again, free.
+    let _lock = gitio::WriteLock::take(&ctx.config.root)?;
     let existing = ctx.records()?;
     let mut found = dedupe::candidates(&ctx.config, &existing, &records, None);
     let mut blocking: BTreeMap<usize, Vec<dedupe::Match>> = found.iter().filter(|(_, matches)| matches.iter().any(|m| m.blocking)).map(|(at, matches)| (*at, matches.clone())).collect();
@@ -2147,6 +2164,85 @@ fn cmd_stale(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     Ok(0)
 }
 
+/// What a file hook says about a file at most.
+const HOOK_BYTES: usize = 1500;
+
+/// `lore hook session-start|pre-edit`, for Claude Code's hooks (the event's
+/// JSON on stdin). `session-start` prints the digest, which a SessionStart
+/// hook puts into the session. `pre-edit` (PreToolUse on Edit, Write,
+/// MultiEdit, NotebookEdit) names what the lore knows in force about the file
+/// about to change, once per file and session, as the hook's
+/// `additionalContext`. Silent when there is nothing to say; never an error.
+fn cmd_hook(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
+    let event = ctx.args.positional[0].clone();
+    match event.as_str() {
+        "session-start" => {
+            let _ = cmd_digest(ctx, io);
+            Ok(0)
+        }
+        "pre-edit" => {
+            let input: Value = serde_json::from_slice(&ctx.env.stdin).unwrap_or(Value::Null);
+            let tool = &input["tool_input"];
+            let Some(file) = ["file_path", "notebook_path", "path"].iter().find_map(|key| tool[*key].as_str()).map(str::to_owned) else { return Ok(0) };
+            let path = PathBuf::from(&file);
+            let path = if path.is_absolute() { path } else { input["cwd"].as_str().map(PathBuf::from).unwrap_or_else(|| ctx.env.cwd.clone()).join(path) };
+            // Records cite a file from its repository's root (the project's,
+            // also for a store kept elsewhere).
+            let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+            let top = gitio::toplevel(&dir).unwrap_or_else(|| ctx.config.root.clone());
+            let simple = |path: &Path| config::simplify(&std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()));
+            let (top, full) = (simple(&top), if path.exists() { simple(&path) } else { simple(&dir).join(path.file_name().unwrap_or_default()) });
+            let Ok(relative) = full.strip_prefix(&top) else { return Ok(0) };
+            let relative = relative.to_string_lossy().replace('\\', "/");
+            let records = ctx.records()?;
+            let found: Vec<Value> = search::for_target(&ctx.config, &records, &relative, &Filters::default()).into_iter().filter(|record| field(record, "kind") != "source").filter(in_force).collect();
+            if found.is_empty() || !first_time(input["session_id"].as_str().unwrap_or_default(), &ctx.config.root, &relative) {
+                return Ok(0);
+            }
+            let mut text = format!("lore knows about {relative} (`lore show <id>` for the whole record):");
+            for record in &found {
+                let mut line = format!("\n- {} {}: {}", field(record, "kind"), field(record, "id"), field(record, "title"));
+                let fix = field(record, "fix");
+                if !fix.is_empty() {
+                    line.push_str(&format!(" - fix: {}", fix.chars().take(160).collect::<String>()));
+                }
+                if text.len() + line.len() > HOOK_BYTES {
+                    text.push_str(&format!("\n- ... and more: `lore for {relative}`"));
+                    break;
+                }
+                text.push_str(&line);
+            }
+            let out = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": text}});
+            io.say(&out.to_string());
+            Ok(0)
+        }
+        other => Err(LoreError::new(format!("unknown hook event {} - session-start or pre-edit", repr_str(other)))),
+    }
+}
+
+/// Whether this session has not been told about `relative` yet (a marker
+/// under the user's temporary folder, one file per session). No session id:
+/// every time.
+fn first_time(session: &str, root: &Path, relative: &str) -> bool {
+    let session: String = session.chars().filter(|ch| ch.is_ascii_alphanumeric() || *ch == '-').take(64).collect();
+    if session.is_empty() {
+        return true;
+    }
+    let dir = std::env::temp_dir().join("codelore-hook");
+    let file = dir.join(format!("{session}.seen"));
+    let key = format!("{}|{relative}", root.display());
+    let seen = std::fs::read_to_string(&file).unwrap_or_default();
+    if seen.lines().any(|line| line == key) {
+        return false;
+    }
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::OpenOptions::new().create(true).append(true).open(&file).and_then(|mut out| {
+        use std::io::Write as _;
+        writeln!(out, "{key}")
+    });
+    true
+}
+
 /// The kinds a digest lists unless `--kind` names others.
 const DIGEST_KINDS: &[&str] = &["fault", "decision"];
 
@@ -2180,22 +2276,30 @@ fn cmd_digest(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
         Some(bytes) => bytes.parse().ok().filter(|bytes| *bytes > 0).ok_or_else(|| LoreError::new(format!("argument --bytes: invalid int value: {}", repr_str(&bytes))))?,
         None => DIGEST_BYTES,
     };
-    let area = ctx.args.one("area");
+    let areas: Vec<String> = ctx.args.one("area").map(|list| list.split(',').map(|area| area.trim().to_owned()).filter(|area| !area.is_empty()).collect()).unwrap_or_default();
+    let pinned = |record: &Value| record.get("pinned") == Some(&Value::Bool(true));
+    // A pinned record is shown whatever its kind or area, and before the rest:
+    // the base traps a growing store would push out of a newest-first list.
     let mut records: Vec<Value> = ctx
         .records()?
         .into_iter()
-        .filter(|record| kinds.iter().any(|kind| kind == field(record, "kind")))
-        .filter(|record| area.as_deref().is_none_or(|area| field(record, "area") == area))
         .filter(in_force)
+        .filter(|record| {
+            pinned(record)
+                || (kinds.iter().any(|kind| kind == field(record, "kind")) && (areas.is_empty() || areas.iter().any(|area| area == field(record, "area"))))
+        })
         .collect();
-    records.sort_by(|a, b| field(b, "updated").cmp(field(a, "updated")).then_with(|| field(a, "id").cmp(field(b, "id"))));
+    records.sort_by(|a, b| {
+        pinned(b).cmp(&pinned(a)).then_with(|| field(b, "updated").cmp(field(a, "updated"))).then_with(|| field(a, "id").cmp(field(b, "id")))
+    });
     let total = records.len();
     let mut lines: Vec<String> = Vec::new();
     let mut shown: Vec<&Value> = Vec::new();
     let mut used = 0;
     for record in &records {
-        let line = format!("{} [{}] {}: {}", field(record, "kind"), field(record, "area"), field(record, "id"), field(record, "title"));
-        if used + line.len() + 1 > budget {
+        let mark = if pinned(record) { "* " } else { "" };
+        let line = format!("{mark}{} [{}] {}: {}", field(record, "kind"), field(record, "area"), field(record, "id"), field(record, "title"));
+        if !pinned(record) && used + line.len() + 1 > budget {
             break;
         }
         used += line.len() + 1;
@@ -2205,7 +2309,7 @@ fn cmd_digest(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
     if ctx.args.json {
         let list: Vec<Value> = shown
             .iter()
-            .map(|record| json!({"id": field(record, "id"), "kind": field(record, "kind"), "area": field(record, "area"), "title": field(record, "title"), "updated": field(record, "updated")}))
+            .map(|record| json!({"id": field(record, "id"), "kind": field(record, "kind"), "area": field(record, "area"), "title": field(record, "title"), "updated": field(record, "updated"), "pinned": pinned(record)}))
             .collect();
         io.json(&json!({"records": list, "shown": shown.len(), "total": total}));
         return Ok(0);
@@ -2214,12 +2318,12 @@ fn cmd_digest(ctx: &mut Ctx, io: &mut Io) -> Result<i32> {
         io.say(&format!("lore: no {} in force", kinds.join(" or ")));
         return Ok(0);
     }
-    io.say(&format!("lore: {total} in force ({}), newest first; `lore show <id>` reads one, `lore find \"<words>\"` searches all", kinds.join(", ")));
+    io.say(&format!("lore: {total} in force ({}), pinned (*) first, then newest; `lore show <id>` reads one, `lore find \"<words>\"` searches all", kinds.join(", ")));
     for line in &lines {
         io.say(line);
     }
     if shown.len() < total {
-        io.say(&format!("... and {} more: `lore digest --area <area>`, or search", total - shown.len()));
+        io.say(&format!("... and {} more: `lore digest --area <area>`, or search; `lore update <id> -s pinned=true` keeps one here", total - shown.len()));
     }
     Ok(0)
 }

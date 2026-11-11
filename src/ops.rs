@@ -405,6 +405,8 @@ fn first_line(err: &str) -> String {
 }
 
 pub fn apply(config: &Config, build: &Builder, options: &Options) -> Result<Outcome> {
+    // One writer at a time per repository (gitio::WriteLock), whatever the mode.
+    let _lock = gitio::WriteLock::take(&config.root)?;
     let mode = options.mode.clone().unwrap_or_else(|| config.commit_mode.clone());
     let mut done: Vec<Value> = Vec::new();
     let shared = mode == "shared-tree";

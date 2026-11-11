@@ -203,6 +203,15 @@ Refusals are loud: the field, the rule, what to do. Nothing is half-written.
   absent for a new file) - so `git status` stays clean for it. An entry
   somebody staged is left alone, and no other path is touched.
 
+**One writer at a time.** Every write, in every mode, holds an exclusive lock
+in the repository's git folder (`codelore-write.lock`, shared by all its
+worktrees) from reading the file to the commit; `lore add` holds it from its
+duplicate check on, so the check sees what the writer before it wrote. Without
+it, eight `lore add` at once in `plain` mode committed one record and lost
+seven: git's `index.lock`, and a file replaced over another writer's line. A
+write that cannot have the lock in two minutes is refused; `git add` and
+`git commit` wait up to ten seconds for an `index.lock` held by some other git.
+
 `push = true` pushes the branch after the commit. A failed push leaves the commit
 where it is and says so in one line - `committed <sha> locally, push to
 <remote>/<branch> failed: <git's reason>; the next write's push carries it` -

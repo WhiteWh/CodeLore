@@ -144,21 +144,35 @@ Project knowledge and plans are in CodeLore: run `lore guide` once per session.
 
 ### Known traps before the agent asks
 
-A search finds only what the agent thinks to ask about. `lore digest` prints
-the titles of the faults and decisions in force, newest first, within about
-2 KB (`--kind`, `--area`, `--bytes`), so a hook can put them before every
-session. For Claude Code, in `.claude/settings.json`:
+A search finds only what the agent thinks to ask about. Two hooks put the
+lore in front of it without a question:
+
+- `lore hook session-start` prints `lore digest`: the titles of the faults and
+  decisions in force, **pinned ones first** and always, then the newest, in
+  about 2 KB. Pin the base traps a growing store would push out:
+  `lore update <id> -s pinned=true` (`-s pinned=` unpins).
+- `lore hook pre-edit`, before an Edit or Write, names what is in force about
+  that file (`lore for`), once per file and session. It is tied to the file, so
+  it does not wear thin as the store grows.
+
+For Claude Code, in the project's committed `.claude/settings.json`:
 
 ```json
 {
   "hooks": {
-    "SessionStart": [{ "hooks": [{ "type": "command", "command": "lore digest" }] }]
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "lore hook session-start" }] }],
+    "PreToolUse": [{ "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+                     "hooks": [{ "type": "command", "command": "lore hook pre-edit" }] }]
   }
 }
 ```
 
-The text a SessionStart hook prints goes into the session's context. `lore for
-<file>` is the same kind of help for a file about to be edited.
+The commands name no path. `lore` finds the store as always (a `lore.toml` in
+the working directory or above) or, for a store kept elsewhere, from
+`LORE_STORE` - a machine's own setting, in `.claude/settings.local.json`
+(`{"env": {"LORE_STORE": "<the store's folder>"}}`) or set by the harness.
+Without a store, or with nothing to say, a hook prints nothing and never fails
+the session.
 
 ## Orchestrators
 

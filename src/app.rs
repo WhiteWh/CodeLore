@@ -35,6 +35,7 @@ pub fn main() -> ! {
     }
     let env = Env {
         cwd: std::env::current_dir().unwrap_or_default(),
+        store: std::env::var_os("LORE_STORE").filter(|value| !value.is_empty()).map(std::path::PathBuf::from),
         stdin,
         lore_by: std::env::var("LORE_BY").ok(),
         machine: std::env::var("LORE_MACHINE").ok(),
@@ -63,6 +64,10 @@ pub fn main() -> ! {
 /// `brief set`, and `message send` without its text.
 pub fn wants_stdin(args: &[String]) -> bool {
     if args.iter().any(|arg| matches!(arg.as_str(), "--batch" | "--json-in" | "--stdin" | "--add" | "-")) {
+        return true;
+    }
+    // a hook gets its event as JSON on stdin
+    if args.iter().any(|arg| arg == "hook") {
         return true;
     }
     let words: Vec<&str> = args.iter().map(String::as_str).collect();
