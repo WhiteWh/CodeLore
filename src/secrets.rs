@@ -179,7 +179,7 @@ fn file_path(token: &str) -> bool {
         return false;
     }
     let parts: Vec<&str> = stem.split(['/', '.', '-', '_']).filter(|part| !part.is_empty()).collect();
-    !parts.is_empty() && parts.len() <= 32 && parts.iter().all(|part| segment_ok(part) || slug(part))
+    !parts.is_empty() && parts.len() <= 32 && parts.iter().all(|part| segment_ok(part) || slug(part) || camel_humps(part, 1))
 }
 
 /// A word of letters a person reads: two or more, with a vowel.
@@ -227,13 +227,20 @@ fn humps(token: &str) -> Vec<&str> {
 /// `PreferPageRenderingUpdatesNear60FPSEnabled`). A random string's humps are
 /// mostly one or two letters without a vowel (`Qx`, `7`, `pL`).
 fn camel_case(token: &str) -> bool {
+    camel_humps(token, 3)
+}
+
+/// A name of at least `least` humps, each a word with a vowel, a short
+/// acronym or a short number - [`camel_case`]; in a cited file's path one
+/// hump will do (`Docs/PhotoModePhase2Facts.md`, `Source/UE5Bridge.cpp`).
+fn camel_humps(token: &str, least: usize) -> bool {
     if !token.starts_with(|ch: char| ch.is_ascii_alphabetic()) || !token.chars().all(|ch| ch.is_ascii_alphanumeric()) {
         return false;
     }
     let humps = humps(token);
     let numbers = humps.iter().filter(|hump| hump.starts_with(|ch: char| ch.is_ascii_digit())).count();
     let mut single_capitals = 0;
-    humps.len() >= 3
+    humps.len() >= least
         && numbers <= 2
         && humps.iter().enumerate().all(|(n, hump)| {
             if hump.chars().all(|ch| ch.is_ascii_digit()) {
@@ -429,6 +436,18 @@ mod tests {
         assert_eq!(check_record(&json!({"refs": {"records": [random]}}), &[])[0].field, "refs.records[0]");
         // A pattern still applies to an id field.
         assert!(guard(&json!({"id": concat!("AKIA", "ABCDEFGHIJKLWXYZ")}), &[]).is_err());
+    }
+
+    #[test]
+    fn a_cited_file_with_a_camel_case_name_is_a_path() {
+        // a source's path and title, and a ref to it, in a game's docs
+        for path in ["OwnGame/Docs/PhotoModePhase2Facts.md", "Source/OwnGame/UE5Bridge.cpp", "Plugins/AudioMixer/Docs/V2Notes.md"] {
+            let record = json!({"path": path, "title": path, "refs": {"files": [path], "links": [path]}});
+            assert!(guard(&record, &[]).is_ok(), "{path}: {:?}", check_record(&record, &[]));
+        }
+        // a random token dressed as a path is still one
+        let random = "Qx7pL2mZ9vR4tY8wK3nB6cD1fG5hJ0sA";
+        assert!(!check_record(&json!({"path": format!("docs/{random}.md")}), &[]).is_empty());
     }
 
     #[test]
