@@ -1,0 +1,254 @@
+{
+  "version": 1,
+  "created": "2026-11-18T14:30:00+03:00",
+  "note": "Control queries for the CodeLore Atlas / SocratiCode comparison on RogueDOD and Unreal Engine. Expected paths are relative to RogueDOD/ for project queries and Engine/Source for UE queries. The runner strips the RogueDOD/ prefix from Atlas result paths before scoring. keys are exact, case-sensitive substrings that mark an answering result; match=path marks file-location queries where the path itself is the answer.",
+  "corpora": {
+    "roguedod": {
+      "label": "RogueDOD",
+      "atlas_path_prefix": "RogueDOD/",
+      "git_revision": "3bcd05a2d444aa1d91869a50a9317918a4a0ff3e",
+      "git_branch": "develop",
+      "git_dirty": [
+        "AGENTS.md",
+        "RogueDOD/.gitignore",
+        "RogueDOD/.mcp.json"
+      ]
+    },
+    "ue": {
+      "label": "Unreal Engine 5.8.4",
+      "atlas_root": null,
+      "atlas_path_prefix": "",
+      "build": {
+        "MajorVersion": 5,
+        "MinorVersion": 8,
+        "PatchVersion": 4,
+        "Changelist": 58902052,
+        "BranchName": "++UE5+Release-5.8"
+      }
+    }
+  },
+  "queries": [
+    {
+      "id": "rd-equip-exact",
+      "corpus": "roguedod",
+      "kind": "exact",
+      "query": "UInventoryWeapon::Equip",
+      "keys": ["void UInventoryWeapon::Equip"],
+      "expected": {
+        "path": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+        "line": 28,
+        "symbol": "UInventoryWeapon::Equip",
+        "role": "definition"
+      }
+    },
+    {
+      "id": "rd-equip-nl",
+      "corpus": "roguedod",
+      "kind": "natural-language",
+      "query": "where equipping a weapon item hands the weapon data to the owner's weapon component and initializes its weapon actors",
+      "keys": ["InitializeWeaponActors(ItemGuid)"],
+      "expected": {
+        "path": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+        "line": 28,
+        "symbol": "UInventoryWeapon::Equip",
+        "role": "body"
+      }
+    },
+    {
+      "id": "rd-equip-edge",
+      "corpus": "roguedod",
+      "kind": "static-call",
+      "query": "which UWeaponComponent functions does UInventoryWeapon::Equip call after Super::Equip",
+      "keys": [
+        "SwitchWeapon(WeaponData, EWeaponType::None",
+        "InitializeWeaponActors(ItemGuid)"
+      ],
+      "expected": {
+        "path": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+        "line": 28,
+        "symbol": "UInventoryWeapon::Equip",
+        "role": "body"
+      },
+      "edges": [
+        {
+          "from": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp:30",
+          "to": "Source/RogueDOD/Private/Items/InventoryItem.cpp:89",
+          "call": "Super::Equip -> UInventoryItem::Equip"
+        },
+        {
+          "from": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp:34",
+          "to": "Source/RogueDOD/Private/Weapons/WeaponComponent.cpp:207",
+          "call": "OwningWeaponComponent->SwitchWeapon -> UWeaponComponent::SwitchWeapon"
+        },
+        {
+          "from": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp:35",
+          "to": "Source/RogueDOD/Private/Weapons/WeaponComponent.cpp:237",
+          "call": "OwningWeaponComponent->InitializeWeaponActors -> UWeaponComponent::InitializeWeaponActors"
+        }
+      ]
+    },
+    {
+      "id": "rd-weapon-switch-exact",
+      "corpus": "roguedod",
+      "kind": "exact",
+      "query": "UWeaponComponent::SwitchWeapon",
+      "keys": ["void UWeaponComponent::SwitchWeapon"],
+      "expected": {
+        "path": "Source/RogueDOD/Private/Weapons/WeaponComponent.cpp",
+        "line": 207,
+        "symbol": "UWeaponComponent::SwitchWeapon",
+        "role": "definition"
+      }
+    },
+    {
+      "id": "rd-vacuus-exact",
+      "corpus": "roguedod",
+      "kind": "exact",
+      "query": "URogueVaCuusScreen::LoadDocument",
+      "keys": ["void URogueVaCuusScreen::LoadDocument"],
+      "expected": {
+        "path": "Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+        "line": 308,
+        "symbol": "URogueVaCuusScreen::LoadDocument",
+        "role": "definition"
+      },
+      "edges": [
+        {
+          "from": "Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp:318",
+          "to": "Plugins/VaCuus/Source/VaCuus/Private/VaCuusView.cpp:166",
+          "call": "View->LoadDocument -> UVaCuusView::LoadDocument",
+          "note": "callee is in Plugins/VaCuus, which neither indexed corpus covers"
+        }
+      ]
+    },
+    {
+      "id": "rd-vacuus-nl",
+      "corpus": "roguedod",
+      "kind": "natural-language",
+      "query": "how a Rogue VaCuus screen swaps its document on the existing view while keeping bound models alive",
+      "keys": [
+        "View->LoadDocument(VfsPath)",
+        "Swaps the document on the EXISTING view"
+      ],
+      "expected": {
+        "path": "Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+        "line": 308,
+        "symbol": "URogueVaCuusScreen::LoadDocument",
+        "role": "definition"
+      },
+      "alternates": [
+        {
+          "path": "Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusScreen.h",
+          "line": 111
+        }
+      ]
+    },
+    {
+      "id": "rd-vacuus-plugin-gap",
+      "corpus": "roguedod",
+      "kind": "exact",
+      "query": "UVaCuusView::LoadDocument",
+      "keys": ["void UVaCuusView::LoadDocument"],
+      "expected": {
+        "path": "Plugins/VaCuus/Source/VaCuus/Private/VaCuusView.cpp",
+        "line": 166,
+        "symbol": "UVaCuusView::LoadDocument",
+        "role": "definition"
+      },
+      "gap": true,
+      "gap_note": "Plugins/VaCuus (893 .cpp/.h files) is outside both indexed corpora; this probe documents the gap and is excluded from accuracy totals."
+    },
+    {
+      "id": "ue-coreminimal-exact",
+      "corpus": "ue",
+      "kind": "exact",
+      "query": "CoreMinimal.h",
+      "match": "path",
+      "expected": {
+        "path": "Runtime/Core/Public/CoreMinimal.h",
+        "line": 1,
+        "symbol": "CoreMinimal.h",
+        "role": "file"
+      }
+    },
+    {
+      "id": "ue-actorcomponent-file",
+      "corpus": "ue",
+      "kind": "exact",
+      "query": "ActorComponent.cpp",
+      "match": "path",
+      "expected": {
+        "path": "Runtime/Engine/Private/Components/ActorComponent.cpp",
+        "line": 1,
+        "symbol": "ActorComponent.cpp",
+        "role": "file"
+      }
+    },
+    {
+      "id": "ue-actorcomponent-nl",
+      "corpus": "ue",
+      "kind": "natural-language",
+      "query": "where an actor component registers its tick functions when it is added to a world",
+      "keys": ["RegisterAllComponentTickFunctions(true)"],
+      "expected": {
+        "path": "Runtime/Engine/Private/Components/ActorComponent.cpp",
+        "line": 2038,
+        "symbol": "UActorComponent::RegisterComponentWithWorld",
+        "role": "body"
+      }
+    },
+    {
+      "id": "ue-register-edge",
+      "corpus": "ue",
+      "kind": "static-call",
+      "query": "who calls UActorComponent::RegisterComponentWithWorld while an actor registers all its components",
+      "keys": ["Component->RegisterComponentWithWorld(World, Context)"],
+      "expected": {
+        "path": "Runtime/Engine/Private/Actor.cpp",
+        "line": 6262,
+        "symbol": "AActor::RegisterAllComponents",
+        "role": "caller"
+      },
+      "edges": [
+        {
+          "from": "Runtime/Engine/Private/Actor.cpp:6262",
+          "to": "Runtime/Engine/Private/Components/ActorComponent.cpp:1967",
+          "call": "Component->RegisterComponentWithWorld -> UActorComponent::RegisterComponentWithWorld"
+        }
+      ]
+    },
+    {
+      "id": "ue-coreminimal-nl",
+      "corpus": "ue",
+      "kind": "natural-language",
+      "query": "the umbrella header that brings Unreal's core types, containers, logging and platform macros into a translation unit",
+      "match": "path",
+      "expected": {
+        "path": "Runtime/Core/Public/CoreMinimal.h",
+        "line": 1,
+        "symbol": "CoreMinimal.h",
+        "role": "file"
+      }
+    },
+    {
+      "id": "ue-tick-exact",
+      "corpus": "ue",
+      "kind": "exact",
+      "query": "UActorComponent::SetComponentTickEnabled",
+      "keys": ["void UActorComponent::SetComponentTickEnabled"],
+      "expected": {
+        "path": "Runtime/Engine/Private/Components/ActorComponent.cpp",
+        "line": 1755,
+        "symbol": "UActorComponent::SetComponentTickEnabled",
+        "role": "definition"
+      },
+      "edges": [
+        {
+          "from": "Runtime/Engine/Private/Components/ActorComponent.cpp:1759",
+          "to": "Runtime/Engine/Classes/Engine/EngineBaseTypes.h:364",
+          "call": "PrimaryComponentTick.SetTickFunctionEnable -> FActorComponentTickFunction::SetTickFunctionEnable"
+        }
+      ]
+    }
+  ]
+}

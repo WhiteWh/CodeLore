@@ -1,12 +1,14 @@
 //! Which files the code map holds, and each one's content key: git's blob id.
 //! Tracked files take the id git already has; a file changed in the working
-//! tree, or untracked and not ignored, is hashed the way git would. No watcher:
-//! every read compares these ids with what the map recorded.
+//! tree, or untracked and not ignored, is hashed the way git would.
 use super::lang::{detect, Lang};
 use crate::config::Config;
 use crate::LoreError;
 use sha1::{Digest, Sha1};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
+use std::fs::{self, Metadata};
+use std::io::{self, Read};
 use std::path::Path;
 use std::process::Command;
 
@@ -18,21 +20,64 @@ pub struct Entry {
 }
 
 fn git(root: &Path, args: &[&str]) -> Result<Vec<u8>, LoreError> {
-    let output = Command::new("git")
+    git_scoped(root, args, None)
+}
+
+fn git_scoped(root: &Path, args: &[&str], pathspec: Option<&str>) -> Result<Vec<u8>, LoreError> {
+    let mut command = Command::new("git");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    let output = command
         .arg("-C")
         .arg(root)
         // A read must never take `index.lock`: `git status` refreshing the
         // index made a commit running beside it fail.
         .arg("--no-optional-locks")
         .env("GIT_OPTIONAL_LOCKS", "0")
-        .args(["-c", "core.quotepath=off"])
+        .args(["--literal-pathspecs", "-c", "core.quotepath=off"])
         .args(args)
+        .args(pathspec.into_iter().flat_map(|prefix| ["--", prefix]))
         .output()
         .map_err(|error| LoreError::new(format!("atlas: git could not run: {error}")))?;
     if !output.status.success() {
         return Err(LoreError::new(format!("atlas: git {} failed: {}", args.join(" "), String::from_utf8_lossy(&output.stderr).trim())));
     }
     Ok(output.stdout)
+}
+
+/// Git's view always starts at the worktree. A scoped snapshot publishes
+/// paths relative to its workspace while applying rules to Git paths.
+struct GitScope<'a> {
+    checkout: &'a Path,
+    prefix: Option<String>,
+}
+
+impl<'a> GitScope<'a> {
+    fn new(config: &'a Config) -> Result<Self, LoreError> {
+        let Some(checkout) = config.atlas.checkout.as_deref() else {
+            return Ok(Self { checkout: &config.root, prefix: None });
+        };
+        let path = config.root.strip_prefix(checkout).ok().and_then(Path::to_str)
+            .filter(|path| !path.is_empty())
+            .ok_or_else(|| LoreError::new("atlas: workspace is outside its Git checkout"))?;
+        let path = if cfg!(windows) { path.replace('\\', "/") } else { path.to_owned() };
+        Ok(Self { checkout, prefix: Some(format!("{path}/")) })
+    }
+
+    fn git(&self, args: &[&str]) -> Result<Vec<u8>, LoreError> {
+        git_scoped(self.checkout, args, self.prefix.as_deref())
+    }
+
+    fn local_path<'b>(&self, path: &'b str) -> Option<&'b str> {
+        self.prefix.as_deref().map_or(Some(path), |prefix| path.strip_prefix(prefix))
+    }
+
+    fn repo_path<'b>(&self, path: &'b str) -> Cow<'b, str> {
+        self.prefix.as_deref().map_or(Cow::Borrowed(path), |prefix| Cow::Owned(format!("{prefix}{path}")))
+    }
 }
 
 fn split_z(bytes: &[u8]) -> impl Iterator<Item = String> + '_ {
@@ -54,15 +99,27 @@ pub struct Changes {
 /// walks the whole working tree on its own (0.9, 1.4 and 0.35 s on a
 /// 6 000-file checkout - most of every `lore atlas` call), status walks it once
 /// and refreshes the index's stat cache as it goes.
-fn worktree_changes(root: &Path) -> Result<Changes, LoreError> {
-    Ok(status(root)?.1)
-}
+const STATUS_ARGS: &[&str] = &["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ignore-submodules=all", "--no-renames"];
 
 /// `git status` with the branch header (HEAD's commit), raw and parsed.
 pub fn status(root: &Path) -> Result<(Vec<u8>, Changes), LoreError> {
-    let raw = git(root, &["status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--ignore-submodules=all", "--no-renames"])?;
+    let raw = git(root, STATUS_ARGS)?;
     let changes = parse_status(&raw);
     Ok((raw, changes))
+}
+
+pub(super) fn changes(config: &Config) -> Result<Changes, LoreError> {
+    let scope = GitScope::new(config)?;
+    let changes = parse_status(&scope.git(STATUS_ARGS)?);
+    if scope.prefix.is_none() {
+        return Ok(changes);
+    }
+    let rebase = |path: String| scope.local_path(&path).map(str::to_owned);
+    Ok(Changes {
+        deleted: changes.deleted.into_iter().filter_map(rebase).collect(),
+        modified: changes.modified.into_iter().filter_map(rebase).collect(),
+        untracked: changes.untracked.into_iter().filter_map(rebase).collect(),
+    })
 }
 
 /// The modification time of `path` in nanoseconds and its size, or zeros.
@@ -73,16 +130,16 @@ fn stamp(path: &Path) -> String {
     )
 }
 
-/// git's index file of the repository at `root` (`.git` may be a file in a worktree).
-fn index_file(root: &Path) -> std::path::PathBuf {
+/// The repository's Git directory, including the per-worktree admin directory.
+pub(super) fn git_dir(root: &Path) -> std::path::PathBuf {
     let dot_git = root.join(".git");
     if let Ok(text) = std::fs::read_to_string(&dot_git) {
         if let Some(dir) = text.trim().strip_prefix("gitdir:") {
             let dir = Path::new(dir.trim());
-            return if dir.is_absolute() { dir.join("index") } else { root.join(dir).join("index") };
+            return root.join(dir);
         }
     }
-    dot_git.join("index")
+    dot_git
 }
 
 /// A cheap print of everything the map is built from, taken without walking
@@ -96,7 +153,7 @@ fn index_file(root: &Path) -> std::path::PathBuf {
 pub fn quick_print(root: &Path, settings: &str, dirs: &BTreeSet<String>, untracked: &[String]) -> Result<String, LoreError> {
     let mut hasher = Sha1::new();
     hasher.update(settings.as_bytes());
-    hasher.update(stamp(&index_file(root)).as_bytes());
+    hasher.update(stamp(&git_dir(root).join("index")).as_bytes());
     let changed = git(root, &["diff-files", "--name-only", "-z", "--ignore-submodules=all"])?;
     hasher.update(&changed);
     for path in split_z(&changed) {
@@ -319,36 +376,88 @@ fn glob(pattern: &str, text: &str) -> bool {
     regex::Regex::new(&regex).is_ok_and(|re| re.is_match(text))
 }
 
-fn language(path: &str, include: &BTreeSet<String>) -> Option<Lang> {
+pub(super) fn language(path: &str, include: &BTreeSet<String>) -> Option<Lang> {
     detect(path).or_else(|| {
         let ext = path.rsplit('/').next()?.rsplit_once('.')?.1.to_ascii_lowercase();
         include.contains(&ext).then_some(Lang::Text)
     })
 }
 
+pub(super) fn default_excluded(path: &str) -> bool {
+    path.split('/').any(|part| matches!(part, "node_modules" | "target" | ".git" | "dist" | "build" | "__pycache__" | ".venv" | "vendor"))
+}
+
+// Git normally avoids symbolic links while enumerating files. Check the
+// worktree too, including directory junctions and paths changed since Git
+// last saw them. Cache directory checks during one scan.
+fn real_directory(root: &Path, path: &str, seen: &mut BTreeMap<String, bool>) -> bool {
+    if path.is_empty() {
+        return true;
+    }
+    if let Some(&safe) = seen.get(path) {
+        return safe;
+    }
+    let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+    let safe = real_directory(root, parent, seen) && fs::symlink_metadata(root.join(path))
+        .is_ok_and(|meta| meta.is_dir() && !super::unreal::is_link(&meta));
+    seen.insert(path.to_owned(), safe);
+    safe
+}
+
+fn source_metadata(root: &Path, path: &str, dirs: &mut BTreeMap<String, bool>) -> Option<Metadata> {
+    if cfg!(windows) && path.contains('\\') ||
+        Path::new(path).components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+    {
+        return None;
+    }
+    let parent = path.rsplit_once('/').map_or("", |(parent, _)| parent);
+    if !real_directory(root, parent, dirs) {
+        return None;
+    }
+    fs::symlink_metadata(root.join(path)).ok().filter(|meta| meta.is_file() && !super::unreal::is_link(meta))
+}
+
+fn bounded_read(root: &Path, path: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    fs::File::open(root.join(path))?.take(max_bytes.saturating_add(1)).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "source grew beyond the Atlas size limit"));
+    }
+    Ok(bytes)
+}
+
+pub(super) fn read_source(root: &Path, path: &str, max_bytes: u64) -> io::Result<Vec<u8>> {
+    if source_metadata(root, path, &mut BTreeMap::new()).is_none() {
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "source is no longer a regular file inside the checkout"));
+    }
+    bounded_read(root, path, max_bytes)
+}
+
 /// The files of the repository the map holds, by path.
 pub fn scan(config: &Config) -> Result<BTreeMap<String, Entry>, LoreError> {
-    Ok(scan_with(config, &worktree_changes(&config.root)?)?.0)
+    Ok(scan_with(config, &changes(config)?)?.0)
 }
 
 /// [`scan`] with the working tree's changes already read; also every folder
 /// that holds a tracked or untracked file, and their parents (see [`quick_print`]).
 pub fn scan_with(config: &Config, changes: &Changes) -> Result<(BTreeMap<String, Entry>, BTreeSet<String>), LoreError> {
     let root = &config.root;
+    let scope = GitScope::new(config)?;
     let include: BTreeSet<String> = config.atlas.include.iter().map(|ext| ext.trim_start_matches('.').to_ascii_lowercase()).collect();
     let lore_dir = config.dir.trim_matches('/').to_owned();
     let max_bytes = config.atlas.max_kib * 1024;
-    let ignore = Ignore::load(root, &config.atlas.exclude_files)?;
+    let ignore = Ignore::load(scope.checkout, &config.atlas.exclude_files)?;
     let wanted = |path: &str| -> Option<Lang> {
         if path.starts_with(&format!("{lore_dir}/")) || excluded(path, &config.atlas.exclude) || ignore.excludes(path) {
             return None;
         }
-        if path.split('/').any(|part| matches!(part, "node_modules" | "target" | ".git" | "dist" | "build" | "__pycache__" | ".venv" | "vendor")) {
+        if default_excluded(path) {
             return None;
         }
         language(path, &include)
     };
     let mut out = BTreeMap::new();
+    let mut safe_dirs = BTreeMap::new();
     let mut dirs: BTreeSet<String> = BTreeSet::from([String::new()]);
     let mut add_dirs = |path: &str| {
         let mut at = path;
@@ -360,16 +469,17 @@ pub fn scan_with(config: &Config, changes: &Changes) -> Result<(BTreeMap<String,
         }
     };
     let (deleted, modified) = (&changes.deleted, &changes.modified);
-    for line in split_z(&git(root, &["ls-files", "-s", "-z"])?) {
-        let Some((meta, path)) = line.split_once('\t') else { continue };
+    for line in split_z(&scope.git(&["ls-files", "-s", "-z"])?) {
+        let Some((meta, repo_path)) = line.split_once('\t') else { continue };
+        let Some(path) = scope.local_path(repo_path) else { continue };
         add_dirs(path);
         let mut parts = meta.split_whitespace();
         let (Some(mode), Some(blob)) = (parts.next(), parts.next()) else { continue };
         if mode == "160000" || mode == "120000" || deleted.contains(path) || modified.contains(path) {
             continue;
         }
-        let Some(lang) = wanted(path) else { continue };
-        let size = std::fs::metadata(root.join(path)).map(|m| m.len()).unwrap_or(0);
+        let Some(lang) = wanted(repo_path) else { continue };
+        let size = source_metadata(root, path, &mut safe_dirs).map(|meta| meta.len()).unwrap_or(0);
         if size == 0 || size > max_bytes {
             continue;
         }
@@ -379,9 +489,13 @@ pub fn scan_with(config: &Config, changes: &Changes) -> Result<(BTreeMap<String,
         add_dirs(path);
     }
     for path in changes.modified.iter().chain(&changes.untracked).cloned() {
-        let Some(lang) = wanted(&path) else { continue };
-        let Ok(bytes) = std::fs::read(root.join(&path)) else { continue };
-        if bytes.is_empty() || bytes.len() as u64 > max_bytes {
+        let Some(lang) = wanted(&scope.repo_path(&path)) else { continue };
+        let size = source_metadata(root, &path, &mut safe_dirs).map(|meta| meta.len()).unwrap_or(0);
+        if size == 0 || size > max_bytes {
+            continue;
+        }
+        let Ok(bytes) = bounded_read(root, &path, max_bytes) else { continue };
+        if bytes.is_empty() {
             continue;
         }
         out.insert(path.clone(), Entry { blob: blob_id(&bytes), path, lang });
@@ -393,10 +507,14 @@ pub fn scan_with(config: &Config, changes: &Changes) -> Result<(BTreeMap<String,
 /// becomes LF so line numbers and chunks do not depend on checkout settings.
 pub fn read_text(root: &Path, path: &str) -> Option<String> {
     let bytes = std::fs::read(root.join(path)).ok()?;
+    text_from_bytes(&bytes)
+}
+
+pub(super) fn text_from_bytes(bytes: &[u8]) -> Option<String> {
     if bytes.iter().take(8192).any(|b| *b == 0) {
         return None;
     }
-    let text = String::from_utf8_lossy(&bytes);
+    let text = String::from_utf8_lossy(bytes);
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
     Some(text.replace("\r\n", "\n"))
 }
@@ -436,7 +554,7 @@ mod tests {
         std::fs::write(dir.join("src/staged.rs"), "fn z() {}\n").unwrap();
         run(&["add", "src/staged.rs"]);
         std::fs::write(dir.join("src/new.rs"), "fn n() {}\n").unwrap();
-        let changes = worktree_changes(&dir).unwrap();
+        let (_, changes) = status(&dir).unwrap();
         let listed = |args: &[&str]| -> BTreeSet<String> { split_z(&git(&dir, args).unwrap()).collect() };
         let deleted = listed(&["ls-files", "-d", "-z"]);
         assert_eq!(changes.deleted, deleted);

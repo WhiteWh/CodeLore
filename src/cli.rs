@@ -335,6 +335,7 @@ working memory
   pulse add | pulses | message send|read | messages | brief set|show | promote | working status|cleanup
 also
   atlas ...               the code map (docs/ATLAS.md), when `[atlas] enabled`
+  mcp serve               the local Atlas MCP server on stdio
   ledger ...              structured project data (docs/FORMAT.md section 8), when `[ledger]` is set
   model status|fetch|serve
   --version

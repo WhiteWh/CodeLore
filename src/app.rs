@@ -10,6 +10,23 @@ use crate::embed::{self, EmbeddingModel, ModelSource};
 /// Runs the command line of this process and exits with its code.
 pub fn main() -> ! {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    #[cfg(feature = "atlas")]
+    if let [command, root, dir] = args.as_slice() {
+        let worker = match command.as_str() {
+            "--atlas-watch-worker" => Some(crate::atlas::watch::run_worker as fn(_, _) -> _),
+            "--atlas-dependency-worker" => Some(crate::atlas::dependencies::run_worker as fn(_, _) -> _),
+            "--atlas-ann-worker" => Some(crate::atlas::ann::run_worker as fn(_, _) -> _),
+            _ => None,
+        };
+        if let Some(worker) = worker {
+            let result = worker(std::path::Path::new(root), std::path::Path::new(dir));
+            if let Err(error) = result {
+                eprintln!("lore: {error}");
+                std::process::exit(1);
+            }
+            std::process::exit(0);
+        }
+    }
     if args.first().map(String::as_str) == Some("model") {
         let code = model(&args[1..]);
         // A background fetch a search started holds this marker; it ends here.
@@ -19,6 +36,16 @@ pub fn main() -> ! {
         std::process::exit(code);
     }
     crate::builtin::enable_auto_fetch();
+    #[cfg(feature = "atlas")]
+    match args.as_slice() {
+        [command, action] if command == "mcp" && action == "serve" => {
+            std::process::exit(crate::atlas::mcp::run(None));
+        }
+        [option, dir, command, action] if option == "-C" && command == "mcp" && action == "serve" => {
+            std::process::exit(crate::atlas::mcp::run(Some(std::path::Path::new(dir))));
+        }
+        _ => {}
+    }
     let mut stdin = Vec::new();
     // stdin is read only by a command that takes its input there, and never from
     // a terminal: a caller that hands its own stdin on (a harness, a script, an

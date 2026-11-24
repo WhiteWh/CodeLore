@@ -191,8 +191,10 @@ In every build and switched on per project with `[atlas] enabled = true` (or
 in the code now. Pieces of every file searchable by words, whole terms, symbol
 names and meaning, the import graph, and where it meets the records -
 `lore atlas impact <file>` lists every file a change reaches *and what the lore
-knows about each*; `lore atlas drift` the records citing code that is gone. One
-binary, no server, no watcher. Design and switches: [docs/ATLAS.md](docs/ATLAS.md).
+knows about each* and `lore atlas drift` lists the records citing code that is
+gone. `lore atlas watch start` enables background refresh for a checkout.
+`lore mcp serve` exposes Atlas search, symbols and status to a local MCP host.
+[Atlas commands and settings](docs/ATLAS.md).
 
 ## What it is not
 

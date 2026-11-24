@@ -39,6 +39,11 @@ pub fn git(root: &Path, args: &[&str], input: Option<&[u8]>, env: &[(&str, &str)
         }
     });
     let mut command = Command::new("git");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
     command.arg("-C").arg(root).args(args).stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     for (key, value) in env {
         command.env(key, value);
