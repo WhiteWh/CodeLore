@@ -65,6 +65,14 @@ impl Binding {
     pub fn directory(&self, db: &Path) -> PathBuf {
         db.with_file_name("ann-v1").join(super::unreal::digest(&self.space))
     }
+
+    /// The same source and vector space. A generation built for an older
+    /// revision of it still names useful candidates: search re-checks each
+    /// one's chunk ID and embedding hash against SQLite before scoring it.
+    pub fn compatible(&self, other: &Binding) -> bool {
+        self.source_key == other.source_key && self.space == other.space
+            && self.vector_model == other.vector_model && self.dimension == other.dimension
+    }
 }
 
 pub(super) enum Unavailable {
@@ -98,10 +106,21 @@ fn check_files(manifest: &Manifest, index: &Path, keys: &Path) -> Result<(), Una
     }
 }
 
+/// The published generation built for exactly this binding.
 fn inspect(directory: &Path, binding: &Binding) -> Result<(Manifest, PathBuf, PathBuf), Unavailable> {
+    inspect_where(directory, |built| built == binding)
+}
+
+/// The published generation for this source and vector space, possibly built
+/// for an older revision of it.
+pub(super) fn inspect_compatible(directory: &Path, binding: &Binding) -> Result<(Manifest, PathBuf, PathBuf), Unavailable> {
+    inspect_where(directory, |built| built.compatible(binding))
+}
+
+fn inspect_where(directory: &Path, accept: impl Fn(&Binding) -> bool) -> Result<(Manifest, PathBuf, PathBuf), Unavailable> {
     let manifest = current(directory)?;
     if manifest.format != 1 || manifest.metric != "f16_ip" || manifest.connectivity != CONNECTIVITY
-        || manifest.expansion_add != EXPANSION_ADD || manifest.binding != *binding
+        || manifest.expansion_add != EXPANSION_ADD || !accept(&manifest.binding)
     {
         return Err(Unavailable::Stale);
     }
@@ -134,9 +153,13 @@ type Cached = (PathBuf, Arc<Reader>);
 static READERS: Mutex<VecDeque<Cached>> = Mutex::new(VecDeque::new());
 
 impl Reader {
+    /// The current generation for `binding`'s source and space. It may lag
+    /// the snapshot; `fresh_for` says whether it does.
     pub fn open(db: &Path, binding: &Binding) -> Result<Arc<Self>, Unavailable> {
         use Unavailable::Damaged;
-        let (manifest, index, keys) = inspect(&binding.directory(db), binding)?;
+        let (manifest, index, keys) = inspect_compatible(&binding.directory(db), binding)?;
+        // The files describe the binding they were built for.
+        let binding = &manifest.binding.clone();
         if let Ok(mut cache) = READERS.lock() {
             if let Some(pos) = cache.iter().position(|(path, reader)| *path == index && reader.manifest == manifest) {
                 let entry = cache.remove(pos).expect("cached reader");
@@ -189,6 +212,11 @@ impl Reader {
             cache.truncate(CACHE_SIZE);
         }
         Ok(reader)
+    }
+
+    /// Built for exactly this snapshot and vector coverage.
+    pub fn fresh_for(&self, binding: &Binding) -> bool {
+        self.manifest.binding == *binding
     }
 
     pub fn hash(&self, id: u64) -> Option<&str> {

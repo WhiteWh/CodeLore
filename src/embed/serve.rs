@@ -82,6 +82,7 @@ fn token() -> String {
 }
 
 /// A server's answer to the queries of this process.
+#[derive(Clone)]
 pub struct Remote {
     addr: SocketAddr,
     token: String,

@@ -402,7 +402,7 @@ impl NamedEncoder {
     fn report(&self, notes: &mut Vec<String>) -> String {
         match self {
             Self::Query(model) => {
-                notes.extend(model.fallback_note().map(str::to_owned));
+                notes.extend(model.fallback_note());
                 model.encoding_device()
             }
             #[cfg(feature = "directml")]

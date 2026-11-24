@@ -5,11 +5,20 @@ use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 const PROTOCOLS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const ROOTS_TIMEOUT: Duration = Duration::from_secs(1);
+
+static SERVING: AtomicBool = AtomicBool::new(false);
+
+/// This process is a long-lived MCP server: per-request resources such as the
+/// query model are worth keeping between calls.
+pub(crate) fn serving() -> bool {
+    SERVING.load(Ordering::Relaxed)
+}
 
 /// MCP activation is local to Atlas and the watcher it launched. A project's
 /// file selection and embedding settings still come from its own config.
@@ -39,6 +48,7 @@ fn checkout_boundary(path: &Path) -> Option<&Path> {
 }
 
 pub(crate) fn run(pinned: Option<&Path>) -> i32 {
+    SERVING.store(true, Ordering::Relaxed);
     let result = (|| {
         let cwd = std::env::current_dir()?;
         let (send, read) = mpsc::channel();
@@ -53,19 +63,29 @@ pub(crate) fn run(pinned: Option<&Path>) -> i32 {
             }
         });
         let mut stdio = Stdio {
-            read, deferred: VecDeque::new(), write: io::BufWriter::new(io::stdout().lock()), next_id: 0,
+            read, deferred: VecDeque::new(), write: Arc::new(Mutex::new(io::BufWriter::new(io::stdout()))), next_id: 0,
         };
         let mut session = Session {
             pinned: pinned.map(|path| cwd.join(path)), cwd, projects: BTreeMap::new(),
             protocol: None, initialized: false, roots: false, roots_unresponsive: false,
+            calls: Arc::default(), workers: Vec::new(),
         };
+        let mut outcome = Ok(());
         while let Some(message) = stdio.recv() {
-            match message {
-                Ok(message) => session.handle(message, &mut stdio)?,
-                Err(error) => stdio.error(&Value::Null, -32700, &error.to_string())?,
+            let handled = match message {
+                Ok(message) => session.handle(message, &mut stdio),
+                Err(error) => stdio.error(&Value::Null, -32700, &error.to_string()),
+            };
+            if let Err(error) = handled {
+                outcome = Err(error);
+                break;
             }
         }
-        Ok::<_, io::Error>(())
+        // Answer the calls still running before the process exits.
+        for worker in session.workers.drain(..) {
+            let _ = worker.join();
+        }
+        outcome
     })();
     if let Err(error) = result {
         if error.kind() != io::ErrorKind::BrokenPipe {
@@ -78,10 +98,21 @@ pub(crate) fn run(pinned: Option<&Path>) -> i32 {
 
 type Frame = serde_json::Result<Value>;
 
+/// Tool calls run on their own threads so that `ping`, other calls and
+/// cancellation are answered meanwhile. Writes of whole lines are serialized.
+type Shared<W> = Arc<Mutex<W>>;
+
+fn send_line<W: Write>(write: &Shared<W>, message: &Value) -> io::Result<()> {
+    let mut write = write.lock().map_err(|_| io::Error::other("MCP output lock poisoned"))?;
+    serde_json::to_writer(&mut *write, message)?;
+    write.write_all(b"\n")?;
+    write.flush()
+}
+
 struct Stdio<W> {
     read: mpsc::Receiver<Frame>,
     deferred: VecDeque<Frame>,
-    write: W,
+    write: Shared<W>,
     next_id: u64,
 }
 
@@ -91,9 +122,7 @@ impl<W: Write> Stdio<W> {
     }
 
     fn send(&mut self, message: Value) -> io::Result<()> {
-        serde_json::to_writer(&mut self.write, &message)?;
-        self.write.write_all(b"\n")?;
-        self.write.flush()
+        send_line(&self.write, &message)
     }
 
     fn result(&mut self, id: &Value, result: Value) -> io::Result<()> {
@@ -124,6 +153,13 @@ impl<W: Write> Stdio<W> {
     }
 }
 
+/// Request IDs of running tool calls, and those the client cancelled.
+#[derive(Default)]
+struct Calls {
+    running: BTreeSet<String>,
+    cancelled: BTreeSet<String>,
+}
+
 struct Session {
     cwd: PathBuf,
     pinned: Option<PathBuf>,
@@ -132,10 +168,12 @@ struct Session {
     initialized: bool,
     roots: bool,
     roots_unresponsive: bool,
+    calls: Arc<Mutex<Calls>>,
+    workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Session {
-    fn handle(&mut self, message: Value, stdio: &mut Stdio<impl Write>) -> io::Result<()> {
+    fn handle<W: Write + Send + 'static>(&mut self, message: Value, stdio: &mut Stdio<W>) -> io::Result<()> {
         let id = &message["id"];
         if !message.is_object() || message["jsonrpc"] != "2.0" {
             return stdio.error(&Value::Null, -32600, "invalid JSON-RPC request");
@@ -151,6 +189,15 @@ impl Session {
             match method {
                 "notifications/initialized" if self.protocol.is_some() => self.initialized = true,
                 "notifications/roots/list_changed" => self.roots_unresponsive = false,
+                "notifications/cancelled" => {
+                    // A call that already answered is not cancelled after the fact.
+                    let request = message["params"]["requestId"].to_string();
+                    if let Ok(mut calls) = self.calls.lock() {
+                        if calls.running.contains(&request) {
+                            calls.cancelled.insert(request);
+                        }
+                    }
+                }
                 _ => {}
             }
             return Ok(());
@@ -188,18 +235,37 @@ impl Session {
                     Ok(tool) => tool,
                     Err(error) => return stdio.error(id, -32602, &error),
                 };
+                // Roots are asked for here, on the thread that reads stdin.
                 let root = self.workspace(tool.project_path.as_deref(), stdio)?;
-                let (data, is_error) = match root {
-                    Ok(root) => call_tool(&root, &tool),
-                    Err(error) => (json!({
-                        "state": "error", "error": {"code": "project_unresolved", "message": error}, "notes": [error],
-                    }), true),
-                };
-                let mut result = json!({"content": [{"type": "text", "text": data.to_string()}], "isError": is_error});
-                if matches!(self.protocol, Some("2025-11-25" | "2025-06-18")) {
-                    result["structuredContent"] = data;
+                let structured = matches!(self.protocol, Some("2025-11-25" | "2025-06-18"));
+                let key = id.to_string();
+                if let Ok(mut calls) = self.calls.lock() {
+                    calls.running.insert(key.clone());
                 }
-                stdio.result(id, result)
+                let (id, write, calls) = (id.clone(), Arc::clone(&stdio.write), Arc::clone(&self.calls));
+                self.workers.retain(|worker| !worker.is_finished());
+                self.workers.push(std::thread::spawn(move || {
+                    let (data, is_error) = match root {
+                        // A panic would otherwise leave this request without an answer.
+                        Ok(root) => std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| call_tool(&root, &tool)))
+                            .unwrap_or_else(|_| (json!({"root": root, "state": "error", "error": "the Atlas tool call failed internally"}), true)),
+                        Err(error) => (json!({
+                            "state": "error", "error": {"code": "project_unresolved", "message": error}, "notes": [error],
+                        }), true),
+                    };
+                    let mut result = json!({"content": [{"type": "text", "text": data.to_string()}], "isError": is_error});
+                    if structured {
+                        result["structuredContent"] = data;
+                    }
+                    let cancelled = calls.lock().map(|mut calls| {
+                        calls.running.remove(&key);
+                        calls.cancelled.remove(&key)
+                    }).unwrap_or(false);
+                    if !cancelled {
+                        let _ = send_line(&write, &json!({"jsonrpc": "2.0", "id": id, "result": result}));
+                    }
+                }));
+                Ok(())
             }
             _ => stdio.error(id, -32601, "unknown MCP method"),
         }
@@ -289,7 +355,6 @@ fn tool_list() -> Vec<Value> {
         if command == "search" {
             properties["limit"] = json!({"type": "integer", "minimum": 1, "maximum": 100, "default": 5});
             properties["text_only"] = json!({"type": "boolean", "default": false});
-            properties["snapshot"] = json!({"type": "boolean", "description": "Search reads a published snapshot."});
         }
         let mut required: Vec<_> = required.into_iter().collect();
         if calls {
@@ -388,6 +453,8 @@ impl Tool {
                         opts.flags.insert("--candidates".into());
                     }
                 }
+                // No longer advertised: MCP search always reads a published
+                // snapshot. Accepted so that older clients keep working.
                 "snapshot" if command == "search" => { value.as_bool().ok_or_else(invalid)?; }
                 "text_only" if command == "search" => {
                     if value.as_bool().ok_or_else(invalid)? {

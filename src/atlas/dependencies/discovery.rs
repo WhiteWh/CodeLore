@@ -17,6 +17,10 @@ const COMPDB: &str = "compile_commands.json";
 const MAX_ARTIFACT_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_ARTIFACTS: usize = 20_000;
 const MAX_DIRS: usize = 30_000;
+/// The worker polls every two seconds for its source trees. Build outputs are
+/// walked again at most this often: a large build folder is thousands of
+/// directory reads, and new build evidence can wait this long.
+const WALK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Deserialize)]
 struct MsvcReport {
@@ -85,6 +89,7 @@ pub(super) struct Discovery {
 }
 
 struct Cached {
+    walked: std::time::Instant,
     artifacts: Vec<Artifact>,
     inputs: BTreeMap<PathBuf, Option<SystemTime>>,
     plans: Vec<Plan>,
@@ -93,17 +98,27 @@ struct Cached {
 
 impl Discovery {
     pub fn plans(&mut self, config: &Config) -> Result<(Vec<Plan>, Vec<String>), LoreError> {
+        if let Some(previous) = self.cached.as_ref().filter(|cached| cached.walked.elapsed() < walk_every()) {
+            return Ok((previous.plans.clone(), previous.notes.clone()));
+        }
+        let walked = std::time::Instant::now();
         let artifacts = artifacts(config)?;
-        if let Some(previous) = &self.cached {
+        if let Some(previous) = &mut self.cached {
             if previous.artifacts == artifacts && previous.inputs.iter().all(|(path, stamp)| input_stamp(path) == *stamp) {
+                previous.walked = walked;
                 return Ok((previous.plans.clone(), previous.notes.clone()));
             }
         }
         let mut inputs = BTreeMap::new();
         let (plans, notes) = discover(&config.root, &artifacts, &mut inputs)?;
-        self.cached = Some(Cached { artifacts, inputs, plans: plans.clone(), notes: notes.clone() });
+        self.cached = Some(Cached { walked, artifacts, inputs, plans: plans.clone(), notes: notes.clone() });
         Ok((plans, notes))
     }
+}
+
+fn walk_every() -> std::time::Duration {
+    std::env::var("LORE_ATLAS_DISCOVERY_SECS").ok().and_then(|value| value.trim().parse().ok())
+        .map_or(WALK_EVERY, std::time::Duration::from_secs)
 }
 
 fn error(detail: impl std::fmt::Display) -> LoreError {

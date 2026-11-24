@@ -1,17 +1,21 @@
 //! Bounded semantic candidates for the existing Atlas rank fusion.
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use super::{error, params, Atlas, LoreError, OptionalExtension, PreparedFilter, DEPTH};
+use super::{error, params, Atlas, Filter, LoreError, OptionalExtension, PreparedFilter, DEPTH};
 use crate::atlas::ann::{Binding, Reader, Unavailable};
 use crate::atlas::unreal::digest;
 
 pub(super) const EXACT_LIMIT: usize = 4096;
 const FILTER_PROBES: usize = 16_384;
+/// A generation that lags the snapshot: chunks it does not hold as they are
+/// now are scored exactly, at most this many, out of at most DELTA_SCAN rows.
+const DELTA_LIMIT: usize = EXACT_LIMIT;
+const DELTA_SCAN: usize = 262_144;
 const FILTER_SQL: &str = "substr(c.path, 1, length(?3)) = ?3 COLLATE NOCASE AND (?4 = '' OR f.lang = ?4)";
 
 #[derive(Default)]
@@ -39,7 +43,8 @@ impl SearchTimings {
 }
 
 enum Route {
-    Ann(Arc<Reader>),
+    /// `behind`: built for an older revision of this source.
+    Ann(Arc<Reader>, bool),
     Exact,
     Text,
 }
@@ -49,11 +54,21 @@ pub(in crate::atlas) struct SemanticPlan {
     state: &'static str,
     pub note: Option<String>,
     filtered_budget_reached: bool,
+    delta_budget_reached: bool,
 }
 
 impl SemanticPlan {
     pub fn text(state: &'static str, note: Option<String>) -> Self {
-        Self { route: Route::Text, state, note, filtered_budget_reached: false }
+        Self::routed(Route::Text, state, note)
+    }
+
+    fn routed(route: Route, state: &'static str, note: Option<String>) -> Self {
+        Self { route, state, note, filtered_budget_reached: false, delta_budget_reached: false }
+    }
+
+    /// An ANN generation is missing or lags the snapshot: worth scheduling a build.
+    pub fn wants_build(&self) -> bool {
+        matches!(self.route, Route::Ann(_, true)) || matches!(self.state, "ann_missing" | "ann_stale")
     }
 
     pub fn uses_vectors(&self) -> bool {
@@ -75,13 +90,16 @@ impl SemanticPlan {
     }
 
     pub fn json(&self) -> Value {
-        let mode = match self.route { Route::Ann(_) => "ann", Route::Exact => "exact", Route::Text => "text" };
+        let mode = match self.route { Route::Ann(..) => "ann", Route::Exact => "exact", Route::Text => "text" };
         let mut value = json!({"mode": mode, "state": self.state});
         if let Some(note) = &self.note {
             value["note"] = json!(note);
         }
         if self.filtered_budget_reached {
             value["filter_budget_reached"] = json!(true);
+        }
+        if self.delta_budget_reached {
+            value["delta_budget_reached"] = json!(true);
         }
         value
     }
@@ -102,7 +120,12 @@ impl SemanticPlan {
                 timings.sqlite_rerank = started.elapsed();
                 rows
             }
-            Route::Ann(reader) => atlas.ann_meaning(reader, query, model, filter, timings, &mut self.filtered_budget_reached),
+            Route::Ann(reader, behind) => {
+                let mut delta = (*behind).then_some(false);
+                let ids = atlas.ann_meaning(reader, query, model, filter, timings, &mut self.filtered_budget_reached, delta.as_mut());
+                self.delta_budget_reached = delta.unwrap_or(false);
+                ids
+            }
         };
         match result {
             Ok(ids) => ids,
@@ -138,15 +161,24 @@ impl Atlas {
         let started = Instant::now();
         let small = self.small_enough_for_exact().unwrap_or(false);
         let covered = self.compatible_coverage(model, dimension);
+        let exact = || SemanticPlan::routed(Route::Exact, "ready", None);
         let plan = match covered {
             Some(0) if !small || !allow_fill => SemanticPlan::text("no_vectors", None),
-            Some(0) => SemanticPlan { route: Route::Exact, state: "ready", note: None, filtered_budget_reached: false },
+            Some(0) => exact(),
             Some(covered) => {
                 let reader = self.ann_binding(space, model, dimension, covered)
-                    .ok_or(Unavailable::Stale).and_then(|binding| Reader::open(&self.path, &binding));
+                    .ok_or(Unavailable::Stale)
+                    .and_then(|binding| Reader::open(&self.path, &binding).map(|reader| {
+                        let behind = !reader.fresh_for(&binding);
+                        (reader, behind)
+                    }));
                 match reader {
-                    Ok(reader) => SemanticPlan { route: Route::Ann(reader), state: "ready", note: None, filtered_budget_reached: false },
-                    Err(_) if small => SemanticPlan { route: Route::Exact, state: "ready", note: None, filtered_budget_reached: false },
+                    Ok((reader, false)) => SemanticPlan::routed(Route::Ann(reader, false), "ready", None),
+                    // Exact similarity is complete for a small source.
+                    _ if small => exact(),
+                    Ok((reader, true)) => SemanticPlan::routed(Route::Ann(reader, true), "behind", Some(
+                        "ANN index lags the snapshot. Changed chunks are scored exactly until it is rebuilt".to_owned(),
+                    )),
                     Err(reason) => {
                         let (state, note) = match reason {
                             Unavailable::Missing => ("ann_missing", "ANN index is missing".to_owned()),
@@ -157,9 +189,7 @@ impl Atlas {
                     }
                 }
             }
-            None if small && (allow_fill || self.vector_count(model) > 0) => {
-                SemanticPlan { route: Route::Exact, state: "ready", note: None, filtered_budget_reached: false }
-            }
+            None if small && (allow_fill || self.vector_count(model) > 0) => exact(),
             None if small => SemanticPlan::text("no_vectors", None),
             None => SemanticPlan::text("ann_stale", Some("ANN needs a compatible SQLite snapshot. Showing text results".to_owned())),
         };
@@ -197,7 +227,8 @@ impl Atlas {
         result.ok()
     }
 
-    fn ann_meaning(&self, reader: &Reader, query: &[f32], model: &str, selection: &PreparedFilter<'_>, timings: &mut SearchTimings, limited: &mut bool) -> Result<Vec<i64>, LoreError> {
+    #[allow(clippy::too_many_arguments)]
+    fn ann_meaning(&self, reader: &Reader, query: &[f32], model: &str, selection: &PreparedFilter<'_>, timings: &mut SearchTimings, limited: &mut bool, delta: Option<&mut bool>) -> Result<Vec<i64>, LoreError> {
         let filter = selection.filter;
         let selected = selection.selected.and_then(|_| self.selected_hashes(timings));
         let started = Instant::now();
@@ -262,8 +293,52 @@ impl Atlas {
                 scored.push((id as i64, value));
             }
         }
+        if let Some(delta_limited) = delta {
+            *delta_limited = self.delta_meaning(reader, query, model, filter, &mut scored)?;
+        }
         timings.sqlite_rerank = started.elapsed();
         Ok(top(scored))
+    }
+
+    /// Chunks with a compatible vector whose ID and embedding hash a lagging
+    /// generation does not hold, scored exactly. True when a budget cut the set.
+    fn delta_meaning(&self, reader: &Reader, query: &[f32], model: &str, filter: &Filter, scored: &mut Vec<(i64, f64)>) -> Result<bool, LoreError> {
+        let bytes = query.len() * 4;
+        let mut rows = self.db.prepare_cached(&format!(
+            "SELECT c.id, c.ehash FROM chunks c
+             JOIN files f ON f.path=c.path
+             JOIN atlas_vector_sizes s ON s.hash=c.ehash AND s.model=?1 AND s.bytes=?2
+             WHERE {FILTER_SQL} LIMIT ?5"
+        )).map_err(error)?;
+        let mut scanned = 0;
+        let mut changed = Vec::new();
+        let mut found = rows.query(params![model, bytes, filter.path, filter.lang, DELTA_SCAN]).map_err(error)?;
+        while let Some(row) = found.next().map_err(error)? {
+            scanned += 1;
+            let id: i64 = row.get(0).map_err(error)?;
+            let hash: String = row.get(1).map_err(error)?;
+            let held = u64::try_from(id).ok().and_then(|id| reader.hash(id)).is_some_and(|known| known == hash);
+            if !held {
+                changed.push((id, hash));
+            }
+        }
+        let limited = scanned >= DELTA_SCAN || changed.len() > DELTA_LIMIT;
+        changed.truncate(DELTA_LIMIT);
+        let known: HashSet<i64> = scored.iter().map(|(id, _)| *id).collect();
+        let mut vector = self.db.prepare_cached(
+            "SELECT vec FROM vectors WHERE model=?1 AND hash=?2 AND typeof(vec)='blob' AND length(vec)=?3"
+        ).map_err(error)?;
+        for (id, hash) in changed {
+            if known.contains(&id) {
+                continue;
+            }
+            let value = vector.query_row(params![model, hash, bytes], |row| Ok(score(row.get_ref(0)?.as_blob()?, query)))
+                .optional().map_err(error)?.flatten();
+            if let Some(value) = value {
+                scored.push((id, value));
+            }
+        }
+        Ok(limited)
     }
 }
 

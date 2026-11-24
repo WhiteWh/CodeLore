@@ -20,11 +20,19 @@ const CONTROL: &str = "atlas-watch-control.lock";
 const LEASE: &str = "atlas-watch-worker.lock";
 const STATE: &str = "atlas-watch.json";
 const MCP_MARKER: &str = "mcp";
+/// Touched by every MCP lookup that needs the worker. A worker an MCP server
+/// started retires after `mcp_idle()` without one; `watch start` keeps it.
+const HEARTBEAT: &str = "atlas-watch.mcp-seen";
+const MCP_IDLE: Duration = Duration::from_secs(30 * 60);
 const START_GRACE: Duration = Duration::from_secs(3);
 const POLL: Duration = Duration::from_millis(200);
 const QUIET: Duration = Duration::from_millis(250);
 const MAX_DEBOUNCE: Duration = Duration::from_secs(1);
 const RECONCILE: Duration = Duration::from_secs(30);
+/// A refresh a file event wakes starts from the quick print (git diff-files and
+/// folder stamps); the periodic one, at most this often, is a full scan that
+/// also catches what no event reports, such as ignore rules outside the checkout.
+const FULL_RECONCILE: Duration = RECONCILE;
 const RETRY: Duration = Duration::from_secs(2);
 const WATCH_RETRY: Duration = Duration::from_secs(5);
 
@@ -198,6 +206,37 @@ pub(super) fn ensure_mcp(config: &Config) -> Result<PathBuf, LoreError> {
     start(config, true)
 }
 
+fn mcp_idle() -> Option<Duration> {
+    let idle = std::env::var("LORE_ATLAS_MCP_IDLE").ok().and_then(|value| value.trim().parse().ok())
+        .map_or(MCP_IDLE, Duration::from_secs);
+    (!idle.is_zero()).then_some(idle)
+}
+
+/// Started by an MCP server and not asked for since `mcp_idle()`.
+fn idle(dir: &Path) -> bool {
+    let Some(limit) = mcp_idle() else { return false };
+    if !fs::read_to_string(dir.join(ENABLED)).is_ok_and(|mode| mode == MCP_MARKER) {
+        return false;
+    }
+    let age = |name: &str| dir.join(name).metadata().and_then(|meta| meta.modified()).ok().and_then(|time| time.elapsed().ok());
+    age(HEARTBEAT).or_else(|| age(ENABLED)).is_some_and(|age| age >= limit)
+}
+
+/// Clears the enabled marker of an idle MCP worker under the control lock, so a
+/// lookup racing with it either sees a running worker or starts a new one.
+fn retire(dir: &Path) -> Result<bool, LoreError> {
+    let control = store::lock_file(dir, CONTROL)?;
+    FileExt::lock_exclusive(&control).map_err(error)?;
+    if !idle(dir) {
+        return Ok(false);
+    }
+    match fs::remove_file(dir.join(ENABLED)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(true),
+        Err(e) => Err(error(e)),
+    }
+}
+
 pub(super) fn dependencies(config: &Config) -> super::dependencies::Catalogue {
     worker_dir(&config.root).map_or_else(|| super::dependencies::Catalogue {
         state: "unconfigured".to_owned(), ..Default::default()
@@ -214,9 +253,17 @@ fn start(config: &Config, mcp: bool) -> Result<PathBuf, LoreError> {
     let dir = config::simplify(&fs::canonicalize(dir).map_err(error)?);
     let control = store::lock_file(&dir, CONTROL)?;
     FileExt::lock_exclusive(&control).map_err(error)?;
+    if mcp {
+        // Under the control lock: an idle worker deciding to retire sees it.
+        let _ = fs::write(dir.join(HEARTBEAT), std::process::id().to_string());
+    }
     if running(&dir).map_err(error)? {
         if !enabled(&dir) {
             return Err(error("worker is stopping; retry once lore atlas watch status shows disabled"));
+        }
+        // `watch start` adopts a worker an MCP server started: it no longer retires when idle.
+        if !mcp {
+            fs::write(dir.join(ENABLED), "").map_err(error)?;
         }
     } else if !enabled(&dir) || !starting(&dir, &status_file(&dir)) {
         write_state(&dir, &json!({"state": "starting"}))?;
@@ -258,8 +305,12 @@ fn relevant(event: &Event, root: &Path, dir: &Path) -> bool {
         }
     }
     let git = root.join(".git");
+    // Build outputs and package folders are never indexed (scan::default_excluded):
+    // a compiler writing thousands of files there is no reason to refresh.
+    let never_indexed = |path: &Path| path.strip_prefix(root).ok().and_then(Path::to_str)
+        .is_some_and(|relative| super::scan::default_excluded(&relative.replace('\\', "/")));
     event.paths.is_empty() || event.paths.iter().any(|path| {
-        !path.starts_with(dir) && (!path.starts_with(&git)
+        !path.starts_with(dir) && !never_indexed(path) && (!path.starts_with(&git)
             || path.starts_with(git.join("refs"))
             || ["", "HEAD", "index", "info", "info/exclude", "packed-refs"].iter().any(|part| path == &git.join(part)))
     })
@@ -291,7 +342,7 @@ fn debounce(wake: &mpsc::Receiver<()>) {
     }
 }
 
-fn reconcile(root: &Path, dir: &Path, started: impl FnOnce() -> Result<(), LoreError>) -> Result<bool, LoreError> {
+fn reconcile(root: &Path, dir: &Path, kind: RefreshKind, started: impl FnOnce() -> Result<(), LoreError>) -> Result<bool, LoreError> {
     let mcp = fs::read_to_string(dir.join(ENABLED)).is_ok_and(|mode| mode == MCP_MARKER);
     let config = if mcp { super::mcp::project_config(root)? } else { config::load(root)? };
     if config.root != root {
@@ -302,7 +353,7 @@ fn reconcile(root: &Path, dir: &Path, started: impl FnOnce() -> Result<(), LoreE
     }
     let Some(mut writer) = store::writer(&config, Some(dir), Duration::ZERO)? else { return Ok(false) };
     started()?;
-    writer.refresh_with(&config, RefreshKind::Reconcile, || enabled(dir))?;
+    writer.refresh_with(&config, kind, || enabled(dir))?;
     let space = store::unreal_store::VectorSpace::new(config.embedding_model());
     let model = if config.atlas.unreal_root.is_some() { &space.key } else { space.model.id() };
     super::ann::schedule(&writer, &config, &space.key, model, space.dimension);
@@ -331,10 +382,14 @@ pub(crate) fn run_worker(root: &Path, dir: &Path) -> Result<(), LoreError> {
     let mut next_attach = Instant::now();
     let mut next_refresh = Instant::now();
     let mut attempts = 0;
+    let mut last_full: Option<Instant> = None;
     let publish = |phase, attempts, message, watch_error: &Option<String>| write_state(dir, &json!({
         "state": phase, "pid": std::process::id(), "updates": attempts, "error": message, "watcher_error": watch_error,
     }));
     while enabled(dir) {
+        if idle(dir) && retire(dir)? {
+            break;
+        }
         let watcher_fault = fault.lock().expect("watcher fault lock").take().or_else(|| {
             // Some backends lose the root silently if it is moved or removed.
             (watcher.is_some() && !root.is_dir()).then(|| format!("watched checkout disappeared: {}", root.display()))
@@ -363,12 +418,17 @@ pub(crate) fn run_worker(root: &Path, dir: &Path) -> Result<(), LoreError> {
             next_attach = Instant::now() + WATCH_RETRY;
         }
         if Instant::now() >= next_refresh {
-            let attempt = reconcile(root, dir, || {
+            let full = last_full.is_none_or(|time| time.elapsed() >= FULL_RECONCILE);
+            let kind = if full { RefreshKind::Reconcile } else { RefreshKind::Quick };
+            let attempt = reconcile(root, dir, kind, || {
                 attempts += 1;
                 publish("updating", attempts, None::<String>, &watch_error)
             });
             match attempt {
                 Ok(true) => {
+                    if full {
+                        last_full = Some(Instant::now());
+                    }
                     publish("idle", attempts, None::<String>, &watch_error)?;
                     next_refresh = Instant::now() + RECONCILE;
                 }

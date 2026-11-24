@@ -130,9 +130,28 @@ fn index_embedder(config: &Config, text_only: bool) -> (Option<embed::Embedder>,
 
 /// Queries reuse the same local service as `lore find`. Snapshot reads may
 /// start a server for installed weights. They do not start downloads.
-fn query_embedder(model: embed::EmbeddingModel, allow_fetch: bool) -> (Option<crate::builtin::QueryModel>, Vec<String>) {
+fn query_embedder(model: embed::EmbeddingModel, allow_fetch: bool) -> (Option<std::sync::Arc<crate::builtin::QueryModel>>, Vec<String>) {
+    // A long-lived MCP server keeps one query model, or its server connection,
+    // across requests instead of opening one per call.
+    static KEPT: std::sync::Mutex<Option<std::sync::Arc<crate::builtin::QueryModel>>> = std::sync::Mutex::new(None);
+    let keep = mcp::serving();
+    if keep {
+        if let Some(kept) = KEPT.lock().ok().and_then(|kept| kept.clone()) {
+            if kept.model() == model && kept.reusable() {
+                return (Some(kept), Vec::new());
+            }
+        }
+    }
     match crate::builtin::open_query_model(model) {
-        Ok(embedder) => (Some(embedder), Vec::new()),
+        Ok(embedder) => {
+            let embedder = std::sync::Arc::new(embedder);
+            if keep {
+                if let Ok(mut kept) = KEPT.lock() {
+                    *kept = Some(std::sync::Arc::clone(&embedder));
+                }
+            }
+            (Some(embedder), Vec::new())
+        }
         Err(_) if allow_fetch && crate::builtin::auto_fetch() => {
             (None, vec![crate::builtin::fetch_in_background(model)])
         }

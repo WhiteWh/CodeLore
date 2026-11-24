@@ -181,6 +181,7 @@ fn atlas_ann_cli_and_mcp_share_one_encoding_and_guard_snapshot_candidates() {
             .env("LORE_MODELS", fixture.temp.path().join("models"))
             .env("LORE_MODEL_DIR", fixture.temp.path().join("invalid-model"))
             .env("LORE_MODEL_FETCH", "off").env("LORE_EMBED_SERVE", "on").env("LORE_EMBED_MAX_TOKENS", "2048")
+            .env("LORE_ATLAS_ANN_REBUILD_SECS", "0").env("LORE_ATLAS_DISCOVERY_SECS", "0")
             .env("LORE_ATLAS_SEARCH_TIMINGS", "1").env_remove("LORE_ATLAS").env_remove("LORE_ATLAS_SNAPSHOT");
         cmd
     };
@@ -271,7 +272,7 @@ fn atlas_ann_cli_and_mcp_share_one_encoding_and_guard_snapshot_candidates() {
     assert_eq!(meaning_paths(&unchanged),["src/engine.cpp"]);
 
     let count = encoder.count();
-    for key in ["space", "vector_generation", "source_key"] {
+    for key in ["space", "source_key"] {
         let mut invalid = ready.clone();
         invalid["binding"][key] = json!("other");
         emit_json(&pointer, invalid);
@@ -280,6 +281,28 @@ fn atlas_ann_cli_and_mcp_share_one_encoding_and_guard_snapshot_candidates() {
         assert!(meaning_paths(&response).is_empty());
     }
     assert_eq!(encoder.count(), count);
+
+    // A generation of the same source and space built for an older revision
+    // keeps serving: candidates are re-checked, and chunks it lacks are scored exactly.
+    let mut older = ready.clone();
+    older["binding"]["vector_generation"] = json!("older");
+    emit_json(&pointer, older);
+    let lagging = client.tool("code_search",json!({"source":"runtime","query":"UShared::Probe"}),false);
+    assert_eq!(external(&lagging,"runtime")["semantic_search"]["state"],"behind", "{lagging}");
+    assert_eq!(external(&lagging,"runtime")["semantic_search"]["mode"],"ann");
+    assert!(meaning_paths(&lagging).contains(&"src/engine.cpp"), "{lagging}");
+    emit_json(&pointer, ready.clone());
+    let conn = rusqlite::Connection::open(&db).unwrap();
+    conn.busy_timeout(Duration::from_secs(3)).unwrap();
+    let blob: Vec<_> = unit_vector().iter().flat_map(|v| v.to_le_bytes()).collect();
+    let fresh_hash = "f".repeat(40);
+    conn.execute("INSERT INTO chunks(path,start,stop,symbols,ehash,body) VALUES('src/engine.cpp',99,99,'',?1,'')", [&fresh_hash]).unwrap();
+    conn.execute("INSERT INTO vectors VALUES(?1,?2,?3)", rusqlite::params![space, fresh_hash, blob]).unwrap();
+    drop(conn);
+    let delta = client.tool("code_search",json!({"source":"runtime","query":prompt,"path":"src/engine.cpp","limit":20}),false);
+    assert_eq!(external(&delta,"runtime")["semantic_search"]["state"],"behind", "{delta}");
+    assert!(delta["results"].as_array().unwrap().iter().any(|hit| hit["start"] == 99
+        && hit["via"].as_array().unwrap().contains(&json!("meaning"))), "a chunk the graph lacks is scored exactly: {delta}");
 }
 
 #[test]
@@ -308,6 +331,7 @@ fn atlas_ann_reuses_and_recovers_published_generations() {
             .env("LORE_MODELS", fixture.temp.path().join("models"))
             .env("LORE_MODEL_DIR", fixture.temp.path().join("invalid-model"))
             .env("LORE_MODEL_FETCH", "off").env("LORE_EMBED_SERVE", "on").env("LORE_EMBED_MAX_TOKENS", "2048")
+            .env("LORE_ATLAS_ANN_REBUILD_SECS", "0").env("LORE_ATLAS_DISCOVERY_SECS", "0")
             .env_remove("LORE_ATLAS").env_remove("LORE_ATLAS_SNAPSHOT");
         cmd
     };
@@ -380,7 +404,10 @@ fn atlas_ann_reuses_and_recovers_published_generations() {
     assert_eq!(external(&damaged, "runtime")["revision"], rev);
     assert!(external(&damaged, "runtime")["ann"]["error"].as_str().unwrap().contains("invalid active SQLite vector"));
     assert_eq!(manifest(), original);
-    assert!(meaning_paths(&hybrid(&mut second)).is_empty());
+    // The previous generation keeps serving; the damaged vector itself is never scored.
+    let partial = hybrid(&mut second);
+    assert_eq!(meaning_paths(&partial).len(), 1, "{partial}");
+    assert!(!meaning_paths(&partial).contains(&initial[0].2.as_str()), "{partial}");
 
     conn.execute("UPDATE vectors SET vec=?1 WHERE model=?2 AND hash=?3", rusqlite::params![blob, space, hash]).unwrap();
     let repaired = ready(&mut second);
@@ -428,9 +455,11 @@ fn atlas_ann_reuses_and_recovers_published_generations() {
     let edit_lease = lock(&dir, "build.lock");
     fs::write(&cpp, "void UShared::AfterEdit() {}\n").unwrap();
     first.wait(|result| external(result, "runtime")["revision"] != rev);
+    // The rebuild waits for the lease; the previous generation still serves
+    // the unchanged chunk, and the edited chunk's old candidate is dropped.
     let stale = hybrid(&mut second);
-    assert!(meaning_paths(&stale).is_empty(), "{stale}");
-    assert_eq!(external(&stale, "runtime")["semantic_search"]["state"], "ann_stale");
+    assert_eq!(meaning_paths(&stale), ["library.rs"], "{stale}");
+    assert_eq!(external(&stale, "runtime")["semantic_search"]["state"], "behind");
     drop(edit_lease);
     ready(&mut second);
     assert_eq!(meaning_paths(&hybrid(&mut first)), ["library.rs"]);

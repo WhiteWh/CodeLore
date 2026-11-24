@@ -1,5 +1,5 @@
 //! Background publication for one source and vector space.
-use super::{current, inspect, options, valid_generation, Binding, Manifest, Stamp, Unavailable, CONNECTIVITY, EXPANSION_ADD};
+use super::{current, inspect, inspect_compatible, options, valid_generation, Binding, Manifest, Stamp, Unavailable, CONNECTIVITY, EXPANSION_ADD};
 use crate::atlas::store::{self, Atlas};
 use crate::config::Config;
 use crate::LoreError;
@@ -22,6 +22,19 @@ const THREADS: usize = 4;
 const BATCH: usize = 4096;
 const START_GRACE: Duration = Duration::from_secs(5);
 const RETRY: Duration = Duration::from_secs(5);
+/// While a published generation for the same source and space serves
+/// searches, a rebuild waits this long after the last publication.
+const REBUILD_AFTER: Duration = Duration::from_secs(60);
+
+fn rebuild_after() -> Duration {
+    std::env::var("LORE_ATLAS_ANN_REBUILD_SECS").ok().and_then(|value| value.trim().parse().ok())
+        .map_or(REBUILD_AFTER, Duration::from_secs)
+}
+
+fn published_within(dir: &Path, limit: Duration) -> bool {
+    fs::metadata(dir.join("current.json")).and_then(|m| m.modified()).ok()
+        .and_then(|m| m.elapsed().ok()).is_some_and(|age| age < limit)
+}
 
 #[derive(Serialize, Deserialize)]
 struct Job {
@@ -100,13 +113,25 @@ pub(in crate::atlas) fn status(atlas: &Atlas, config: &Config, space: &str, mode
         Ok((manifest, _, _)) => return json!({"mode":"ann","state":"ready","generation":manifest.generation}),
         Err(reason) => reason,
     };
+    // An older generation of this source keeps serving while a new one builds.
+    let behind = inspect_compatible(&dir, &binding).ok().map(|(manifest, _, _)| manifest.generation);
+    let mode = if behind.is_some() { "ann" } else { "text" };
+    let with_generation = |mut value: Value| {
+        if let Some(generation) = &behind {
+            value["generation"] = json!(generation);
+        }
+        value
+    };
     if let Some(state) = read_state(&dir) {
         if locked(&dir) || state.state == "starting" && recent(&dir, START_GRACE) {
-            return json!({"mode":"text","state":state.state,"pid":state.pid});
+            return with_generation(json!({"mode":mode,"state":state.state,"pid":state.pid}));
         }
         if state.binding == binding && state.state == "error" {
-            return json!({"mode":"text","state":"error","error":state.error});
+            return with_generation(json!({"mode":mode,"state":"error","error":state.error}));
         }
+    }
+    if behind.is_some() {
+        return with_generation(json!({"mode":"ann","state":"behind"}));
     }
     match failure {
         Unavailable::Missing => json!({"mode":"text","state":"unindexed"}),
@@ -123,6 +148,11 @@ pub(in crate::atlas) fn schedule(atlas: &Atlas, config: &Config, space: &str, mo
     let Ok(db) = fs::canonicalize(&atlas.path) else { return };
     let dir = binding.directory(&db);
     if inspect(&dir, &binding).is_ok() {
+        return;
+    }
+    // Searches use the older generation and score changed chunks exactly, so
+    // a burst of edits costs one rebuild per interval, not one per edit.
+    if inspect_compatible(&dir, &binding).is_ok() && published_within(&dir, rebuild_after()) {
         return;
     }
     if let Err(error) = start(atlas, &db, &dir, &binding) {
@@ -239,9 +269,6 @@ fn build(db: &Path, dir: &Path, job: &Job, binding: &mut Binding) -> Result<(), 
             if group.len() == BATCH {
                 add(&index, &group)?;
                 group.clear();
-                if latest(&open(db, job, false)?, job).as_ref() != Some(binding) {
-                    return Err(problem("SQLite changed while building ANN"));
-                }
             }
         }
         add(&index, &group)?;
@@ -272,8 +299,12 @@ fn build(db: &Path, dir: &Path, job: &Job, binding: &mut Binding) -> Result<(), 
         index: Stamp::read(&index_file).map_err(problem)?, keys: Stamp::read(&keys).map_err(problem)? };
     // Serialize publication with SQLite's writer, but finish all expensive
     // work before taking it. On any failure the old pointer stays in place.
+    // The rows came from one read transaction, so the generation matches
+    // `binding` exactly. SQLite may have moved on since: readers then treat it
+    // as behind and score the changed chunks themselves, and the next
+    // schedule builds again. Only a different source or space is refused.
     let writer = open(db, job, true)?;
-    if latest(&writer, job).as_ref() != Some(binding) {
+    if !latest(&writer, job).is_some_and(|now| now.compatible(binding)) {
         return Err(problem("SQLite changed before ANN publication"));
     }
     write(&dir.join("current.json"), &manifest)?;

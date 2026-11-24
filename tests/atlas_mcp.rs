@@ -1,6 +1,7 @@
 //! Exercise the public stdio entry point with MCP clients using Git fixtures.
 #![cfg(feature = "atlas")]
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -48,7 +49,9 @@ impl Fixture {
         hide(&mut command);
         command.current_dir(cwd).env("LORE_CACHE", &self.cache)
             .env_remove("LORE_ATLAS").env_remove("LORE_ATLAS_SNAPSHOT")
-            .env("LORE_MODEL_FETCH", "off").env("LORE_EMBED_SERVE", "off");
+            .env("LORE_MODEL_FETCH", "off").env("LORE_EMBED_SERVE", "off")
+            // Tests write build evidence after the worker starts.
+            .env("LORE_ATLAS_DISCOVERY_SECS", "0");
         command
     }
 
@@ -477,6 +480,39 @@ fn atlas_mcp_works_with_legacy_clients_and_confirmed_cwd() {
     let mut pinned = fixture.client(fixture.temp.path(), Some(&fixture.first), Some(vec![fixture.second.clone()]), true, "2024-11-05");
     assert_eq!(pinned.status()["root"], json!(fixture.first));
     assert_eq!(pinned.requested_roots, 0);
+}
+
+#[test]
+fn atlas_mcp_answers_pipelined_requests_and_retires_an_idle_worker() {
+    let fixture = Fixture::new();
+    let mut command = fixture.command(&fixture.first);
+    command.env("LORE_ATLAS_MCP_IDLE", "2").args(["mcp", "serve"]);
+    let mut client = Client::start(command, None, false, "2025-11-25");
+    // A tool call runs on its own thread: a ping sent behind it is answered,
+    // and every request gets exactly one answer under its own id.
+    client.send(json!({"jsonrpc": "2.0", "id": "search", "method": "tools/call",
+        "params": {"name": "code_search", "arguments": {"query": "AlphaFunction", "text_only": true}}}));
+    client.send(json!({"jsonrpc": "2.0", "id": "ping", "method": "ping"}));
+    let mut answered = BTreeSet::new();
+    while answered.len() < 2 {
+        let line = client.output.recv_timeout(Duration::from_secs(8)).expect("an answer");
+        let frame: Value = serde_json::from_str(&line).unwrap();
+        assert!(frame["error"].is_null(), "{frame}");
+        assert!(answered.insert(frame["id"].as_str().unwrap().to_owned()), "{frame}");
+    }
+    assert_eq!(answered, BTreeSet::from(["ping".to_owned(), "search".to_owned()]));
+    // A cancellation for a call that already answered changes nothing.
+    client.send(json!({"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": "search"}}));
+    assert_eq!(client.call("ping", json!({})), json!({}));
+
+    let started = client.wait(|status| status["snapshot"]["state"] == "ready");
+    assert_ne!(started["snapshot"]["worker"]["state"], "disabled", "{started}");
+    // code_status does not count as a lookup that needs the worker.
+    let retired = client.wait(|status| status["snapshot"]["worker"]["state"] == "disabled");
+    assert_eq!(retired["snapshot"]["state"], "ready", "the snapshot outlives the worker");
+    client.tool("code_search", json!({"query": "AlphaFunction", "text_only": true}), false);
+    let restarted = client.status();
+    assert_ne!(restarted["snapshot"]["worker"]["state"], "disabled", "{restarted}");
 }
 
 fn emit_json(path: &Path, payload: Value) {

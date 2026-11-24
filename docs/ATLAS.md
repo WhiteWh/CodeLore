@@ -124,9 +124,17 @@ The first lookup starts the project's background text index if necessary and
 returns its state. Poll `code_status` in the same connection until the snapshot
 is ready. Atlas reads the existing project's filters when `lore.toml` is present
 and uses defaults in a checkout without it. The worker shares the CLI cache
-and continues refreshing after the MCP connection closes. Use
-`lore -C <workspace> atlas watch stop` to stop it. A subsequent MCP lookup can start
-it again. Set `LORE_ATLAS=off` in the server environment to disable Atlas.
+and keeps refreshing after the MCP connection closes, until 30 minutes pass
+without an MCP lookup of that workspace (`LORE_ATLAS_MCP_IDLE`, in seconds;
+`0` keeps it running). It then stops, with its dependency worker, and the next
+lookup starts it again. `lore atlas watch start` adopts such a worker so that it
+no longer stops when idle. Use `lore -C <workspace> atlas watch stop` to stop
+it at once. Set `LORE_ATLAS=off` in the server environment to disable Atlas.
+
+Each tool call runs on its own thread: `ping` and other calls are answered
+while a long search runs, and `notifications/cancelled` drops the answer of
+a call still running. The server keeps one query model, or its connection to
+the local model server, for its lifetime instead of opening one per call.
 
 ### External sources from build evidence
 
@@ -142,7 +150,10 @@ outputs. It probes those output paths one directory below a workspace as
 well. A scoped workspace can use its containing checkout's build output.
 Only reports whose `Data.Source` belongs to the active workspace contribute
 observations. Toolchain and SDK paths have their own filter. The watcher reads
-the exact recorded external C/C++ files into a reusable SQLite index.
+the exact recorded external C/C++ files into a reusable SQLite index. Build
+outputs are walked again at most every 30 seconds
+(`LORE_ATLAS_DISCOVERY_SECS`); configured source trees keep their own
+file watchers between walks.
 
 For CMake-generated Ninja builds, Atlas matches `compile_commands.json`
 source/output pairs to compiler edges in the adjacent `build.ninja`. Link
@@ -197,8 +208,8 @@ stop` stops both processes for that workspace.
 ### Configured external source trees
 
 Add one table per source to `lore.toml` for paths shared by all checkouts,
-or to an optional, Git-ignored `lore.local.toml` beside it for machine-local
-installations. The local file accepts only `[atlas.sources.<name>]` tables.
+or to an optional `lore.local.toml` beside it for machine-local
+installations. Keep that file out of Git: add it to `.gitignore`. The local file accepts only `[atlas.sources.<name>]` tables.
 A local source replaces the whole shared profile with the same name. The
 CLI, MCP and watcher all use these settings. Without the local file, the
 workspace still uses the shared configuration.
@@ -280,8 +291,13 @@ model, path and language in the selected SQLite snapshot before rescoring
 the original F32 vector. Up to 80 candidates enter rank fusion.
 
 A source with at most 4096 chunks can use exact similarity. For a larger
-source, an absent, stale or damaged ANN graph leaves text and symbol
-results available. Search reports its `semantic_search` mode and state
+source, an absent or damaged ANN graph, or one built for another source or
+vector space, leaves text and symbol results available. A graph built for an
+older revision of the same source and space keeps serving (`state: "behind"`):
+its candidates are re-checked against the current snapshot as always, and
+chunks it does not hold as they are now are scored exactly, up to 4096 of
+them (`delta_budget_reached` marks a cut). CLI search embeds up to 48 new
+chunks itself and schedules a rebuild when the graph is missing or behind. Search reports its `semantic_search` mode and state
 per source. An incompatible vector space supplies no semantic results.
 Filtered ANN uses SQLite predicates on the current snapshot and caps the
 number of filter probes. `filter_budget_reached` marks a partial filtered
@@ -308,7 +324,9 @@ files immutable. Search only reads a prepared generation.
 
 The project and source watchers schedule ANN construction for snapshots
 above the exact-search limit when compatible vectors already exist.
-An explicit vector fill can schedule the same job. Construction runs in
+An explicit vector fill or a CLI search can schedule the same job. While a
+graph of the same source and space serves searches, a rebuild starts at most
+once a minute after the last publication (`LORE_ATLAS_ANN_REBUILD_SECS`). Construction runs in
 a separate local process with up to four insertion threads. It reads the
 committed SQLite vectors in batches and leaves embedding generation to
 the existing indexing command. A build lease belongs to the shared
@@ -318,16 +336,18 @@ publication.
 SQLite tracks vector writes with a per-model counter, including replacements
 that keep the same coverage and text revision. The sidecar binding combines
 that counter and the database clock with the live text snapshot. A builder
-checks the binding while building and under a short SQLite writer
-transaction before atomically replacing `current.json`. An interrupted
+reads the vectors in one SQLite read transaction, so the generation matches
+the binding it records even when edits land meanwhile; it then checks under
+a short SQLite writer transaction that the source and vector space are still
+the same before atomically replacing `current.json`. An interrupted
 build leaves the previous pointer available, and the watcher retries.
 Newer publications retain the previous generation and remove abandoned
 generation files when the OS releases them.
 
 `lore atlas status` and MCP `code_status` expose `ann.mode`, `ann.state`,
 and the published generation or the worker error where applicable. While
-an updated graph builds, a large source can still return text and symbol
-matches from its latest SQLite snapshot.
+an updated graph builds, a large source keeps semantic results from the
+previous generation (`ann.state` is `behind`, or the builder's state).
 
 ### Background project refresh
 
@@ -340,8 +360,12 @@ lore atlas search "UInventoryWeapon::Equip" --snapshot --text-only
 
 `watch start` enables background refresh for the current checkout and cache.
 The worker builds the first text index and refreshes it after batches of file
-changes. It also reconciles with Git every 30 seconds to recover changes
-outside the watcher, including Git ignore rules stored outside the checkout.
+changes. Events under folders Atlas never indexes (`target`, `build`,
+`node_modules`, `dist`, `vendor`, `.venv`, `__pycache__`) are ignored. A refresh
+after file events starts from the quick check of `git diff-files` and folder
+stamps. Every 30 seconds the worker also reconciles fully with Git to recover
+changes outside the watcher, including Git ignore rules stored outside the
+checkout.
 Use the same `LORE_CACHE` for the worker and its queries.
 
 Project queries use the latest completed snapshot while background refresh is

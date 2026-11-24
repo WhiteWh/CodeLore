@@ -411,7 +411,7 @@ fn hit_json(hit: &Hit) -> Value {
 
 fn query_vector(result: Result<Vec<f32>, LoreError>, model: &crate::builtin::QueryModel, notes: &mut Vec<String>) -> Option<Vec<f32>> {
     if let Some(note) = model.fallback_note() {
-        notes.push(note.to_owned());
+        notes.push(note);
     }
     match result {
         Ok(vector) => Some(vector),
@@ -457,8 +457,10 @@ fn find(config: &Config, query: &str, limit: usize, filter: &Filter, text_only: 
     if let Some(embedder) = &embedder {
         // A few new pieces are embedded here; many wait for `lore atlas index`.
         // A model that fails here leaves the search to the text, as an index does.
-        let filled = if snapshot || !plan.exact() { Ok((0, 0)) } else {
-            atlas.vector_batch(|_| atlas.ensure_vectors(embedder, model.id(), model.document_prefix(), Some(super::store::SEARCH_EMBED_BUDGET), &mut |_, _| {}))
+        // A lagging ANN generation scores changed chunks exactly, so they need
+        // vectors here as much as a small source does.
+        let filled = if snapshot { Ok((0, 0)) } else {
+            atlas.vector_batch(|_| atlas.ensure_vectors(&**embedder, model.id(), model.document_prefix(), Some(super::store::SEARCH_EMBED_BUDGET), &mut |_, _| {}))
         };
         let encoded = match filled {
             Ok((_, missing)) => {
@@ -476,6 +478,11 @@ fn find(config: &Config, query: &str, limit: usize, filter: &Filter, text_only: 
     }
     let meaning = plan.retrieve(&atlas, vector.as_deref(), model.id(), &filter, &mut timings);
     notes.extend(plan.note.iter().cloned());
+    if !snapshot && plan.wants_build() {
+        // Without a watcher nothing else would bring the graph up to date.
+        let space = super::store::unreal_store::VectorSpace::new(model);
+        super::ann::schedule(&atlas, config, &space.key, model.id(), space.dimension);
+    }
     let hits = atlas.search_with_meaning(query, limit, &filter, meaning, &mut timings)?;
     if json {
         let mut response = json!({"query": query, "notes": notes, "results": hits.iter().map(hit_json).collect::<Vec<_>>()});

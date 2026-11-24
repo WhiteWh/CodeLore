@@ -378,10 +378,15 @@ impl Finder for Builtin {
 /// model open. If it fails, open the same model locally at most once in this
 /// process and finish the request with it.
 pub(crate) struct QueryModel {
-    remote: Option<embed::serve::Remote>,
+    /// Replaced when the server this process used exits and another answers.
+    remote: std::sync::Mutex<Option<embed::serve::Remote>>,
+    /// Whether the server was in use when this model was opened.
+    #[cfg_attr(not(feature = "atlas"), allow(dead_code))]
+    served: bool,
     model: embed::EmbeddingModel,
     local: std::sync::OnceLock<std::result::Result<embed::Embedder, embed::Error>>,
-    fallback: std::sync::OnceLock<String>,
+    /// Taken by the request that reports it.
+    fallback: std::sync::Mutex<Option<String>>,
 }
 
 pub(crate) fn open_query_model(model: embed::EmbeddingModel) -> std::result::Result<QueryModel, embed::Error> {
@@ -393,17 +398,18 @@ pub(crate) fn open_query_model(model: embed::EmbeddingModel) -> std::result::Res
         remote = embed::serve::wait_for(model, embed::serve::wait_limit());
     }
     let local = std::sync::OnceLock::new();
-    let fallback = std::sync::OnceLock::new();
+    let mut fallback = None;
     if remote.is_none() {
         let loaded = embed::Embedder::open_model_for_queries(model, embed::ModelSource::Cache)?;
         let _ = local.set(Ok(loaded));
         if starting {
-            let _ = fallback.set("the model server was not ready. Used the local model.".to_owned());
+            fallback = Some("the model server was not ready. Used the local model.".to_owned());
             // A subsequent CLI request may reuse the server if it comes up.
             embed::serve::start(model, spawn_detached);
         }
     }
-    Ok(QueryModel { remote, model, local, fallback })
+    let served = remote.is_some();
+    Ok(QueryModel { remote: std::sync::Mutex::new(remote), served, model, local, fallback: std::sync::Mutex::new(fallback) })
 }
 
 impl QueryModel {
@@ -416,9 +422,28 @@ impl QueryModel {
         }).ok_or_else(|| crate::LoreError::new("invalid query vector"))
     }
 
+    /// What this request should report about falling back to the local
+    /// model, once: a long-lived process keeps the model across requests.
     #[cfg(feature = "atlas")]
-    pub(crate) fn fallback_note(&self) -> Option<&str> {
-        self.fallback.get().map(String::as_str)
+    pub(crate) fn fallback_note(&self) -> Option<String> {
+        self.fallback.lock().ok().and_then(|mut note| note.take())
+    }
+
+    #[cfg(feature = "atlas")]
+    pub(crate) fn model(&self) -> embed::EmbeddingModel {
+        self.model
+    }
+
+    /// Whether a long-lived process may keep using this model for the next
+    /// request. Not when it fell back to its own copy while a server could
+    /// serve again, so that the copy is dropped and the server used.
+    #[cfg(feature = "atlas")]
+    pub(crate) fn reusable(&self) -> bool {
+        if self.local.get().is_none() {
+            return true;
+        }
+        let serve = background_allowed() && embed::serve::enabled();
+        !(serve && (self.served || embed::serve::connect(self.model).is_some()))
     }
 
     #[cfg(feature = "atlas")]
@@ -432,12 +457,26 @@ impl QueryModel {
 
 impl embed::Embeddings for QueryModel {
     fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        if let Some(remote) = &self.remote {
-            if self.local.get().is_none() {
-                match remote.embed(texts) {
-                    Ok(vectors) => return Ok(vectors),
-                    Err(error) => {
-                        let _ = self.fallback.set(format!("{error}. Falling back to the local model."));
+        let remote = self.remote.lock().ok().and_then(|remote| remote.clone());
+        if let (Some(remote), None) = (remote, self.local.get()) {
+            match remote.embed(texts) {
+                Ok(vectors) => return Ok(vectors),
+                Err(error) => {
+                    // The server exits when idle; another may have started since.
+                    if let Some(again) = embed::serve::connect(self.model) {
+                        if let Ok(vectors) = again.embed(texts) {
+                            if let Ok(mut current) = self.remote.lock() {
+                                *current = Some(again);
+                            }
+                            return Ok(vectors);
+                        }
+                    }
+                    if let Ok(mut note) = self.fallback.lock() {
+                        *note = Some(format!("{error}. Falling back to the local model."));
+                    }
+                    if background_allowed() && embed::serve::enabled() {
+                        // For the next request of this or another process.
+                        embed::serve::start(self.model, spawn_detached);
                     }
                 }
             }
