@@ -125,7 +125,7 @@ pub fn fetch_in_background(model: embed::EmbeddingModel) -> String {
 }
 
 #[cfg(windows)]
-fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<()> {
+pub(crate) fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
@@ -162,7 +162,7 @@ fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<()> {
 }
 
 #[cfg(not(windows))]
-fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<()> {
+pub(crate) fn spawn_detached(command: &mut std::process::Command) -> std::io::Result<()> {
     command.spawn().map(|_| ())
 }
 
@@ -206,30 +206,15 @@ impl Builtin {
             return (None, notes);
         }
         let selected = config.embedding_model();
-        // A search asks the model server first (src/embed/serve.rs): no model of
-        // its own to open, the query is embedded in the server's memory.
-        let serve = !wait && background_allowed() && embed::serve::enabled();
-        let served = |remote| (Some(std::sync::Arc::new(ServerOrOwn { remote, model: selected, own: std::sync::OnceLock::new() }) as embed::Shared), Vec::new());
-        if serve {
-            if let Some(remote) = embed::serve::connect(selected) {
-                return served(remote);
-            }
-            // No server yet: start one (unless another search is starting it)
-            // and wait for it, so that searches at once - several agents' first
-            // ones - hold one copy of the model, not one each. A model not yet
-            // fetched has no server to wait for.
-            if embed::status_for(selected, &embed::model_dir(selected)).available {
-                embed::serve::start(selected, spawn_detached);
-                if let Some(remote) = embed::serve::wait_for(selected, embed::serve::wait_limit()) {
-                    return served(remote);
-                }
-            }
-        }
-        // `wait` is an index being built: the GPU for its thousands of texts; a
-        // search embeds one query and a few new records, faster on the CPU.
+        // Indexing keeps its own device and fetch policy. Search shares the
+        // local query model with the code map.
         let open = || {
-            let opened = if wait { embed::Embedder::open_model(selected, embed::ModelSource::Cache) } else { embed::Embedder::open_model_for_queries(selected, embed::ModelSource::Cache) };
-            opened.map(|embedder| std::sync::Arc::new(embedder) as embed::Shared)
+            if wait {
+                embed::Embedder::open_model(selected, embed::ModelSource::Cache)
+                    .map(|embedder| std::sync::Arc::new(embedder) as embed::Shared)
+            } else {
+                open_query_model(selected).map(|embedder| std::sync::Arc::new(embedder) as embed::Shared)
+            }
         };
         let mut opened = open();
         if opened.is_err() && auto_fetch() && !embed::status_for(selected, &embed::model_dir(selected)).available {
@@ -244,13 +229,7 @@ impl Builtin {
             }
         }
         match opened {
-            Ok(shared) => {
-                if serve {
-                    // for the searches after this one
-                    embed::serve::start(selected, spawn_detached);
-                }
-                (Some(shared), notes)
-            }
+            Ok(shared) => (Some(shared), notes),
             Err(_error) => {
                 let status = embed::status_for(selected, &embed::model_dir(selected));
                 notes.push(format!(
@@ -395,27 +374,119 @@ impl Finder for Builtin {
     }
 }
 
-/// The model server, and this process's own model when the server fails
-/// mid-search (gone, busy past its timeout): the search keeps its meaning
-/// instead of falling to text only.
-struct ServerOrOwn {
-    remote: embed::serve::Remote,
+/// Shared by Atlas and the lore finder. A running service needs no local
+/// model open. If it fails, open the same model locally at most once in this
+/// process and finish the request with it.
+pub(crate) struct QueryModel {
+    /// Replaced when the server this process used exits and another answers.
+    remote: std::sync::Mutex<Option<embed::serve::Remote>>,
+    /// Whether the server was in use when this model was opened.
+    #[cfg_attr(not(feature = "atlas"), allow(dead_code))]
+    served: bool,
     model: embed::EmbeddingModel,
-    own: std::sync::OnceLock<Option<embed::Embedder>>,
+    local: std::sync::OnceLock<std::result::Result<embed::Embedder, embed::Error>>,
+    /// Taken by the request that reports it.
+    fallback: std::sync::Mutex<Option<String>>,
 }
 
-impl embed::Embeddings for ServerOrOwn {
-    fn embed(&self, texts: &[String]) -> std::result::Result<Vec<Vec<f32>>, crate::LoreError> {
-        match self.remote.embed(texts) {
-            Ok(vectors) => Ok(vectors),
-            Err(error) => match self.own.get_or_init(|| embed::Embedder::open_model_for_queries(self.model, embed::ModelSource::Cache).ok()) {
-                Some(own) => embed::Embeddings::embed(own, texts),
-                None => Err(error),
-            },
+pub(crate) fn open_query_model(model: embed::EmbeddingModel) -> std::result::Result<QueryModel, embed::Error> {
+    let serve = background_allowed() && embed::serve::enabled();
+    let mut remote = if serve { embed::serve::connect(model) } else { None };
+    let starting = serve && remote.is_none() && embed::status_for(model, &embed::model_dir(model)).available;
+    if starting {
+        embed::serve::start(model, spawn_detached);
+        remote = embed::serve::wait_for(model, embed::serve::wait_limit());
+    }
+    let local = std::sync::OnceLock::new();
+    let mut fallback = None;
+    if remote.is_none() {
+        let loaded = embed::Embedder::open_model_for_queries(model, embed::ModelSource::Cache)?;
+        let _ = local.set(Ok(loaded));
+        if starting {
+            fallback = Some("the model server was not ready. Used the local model.".to_owned());
+            // A subsequent CLI request may reuse the server if it comes up.
+            embed::serve::start(model, spawn_detached);
         }
+    }
+    let served = remote.is_some();
+    Ok(QueryModel { remote: std::sync::Mutex::new(remote), served, model, local, fallback: std::sync::Mutex::new(fallback) })
+}
+
+impl QueryModel {
+    #[cfg(feature = "atlas")]
+    pub(crate) fn embed_query(&self, text: &str) -> Result<Vec<f32>> {
+        let text = embed::prefixed_query(self.model, text);
+        let mut vectors = embed::Embeddings::embed(self, &[text])?;
+        vectors.pop().filter(|vector| {
+            vector.len() == self.model.dimensions() && vector.iter().all(|value| value.is_finite())
+        }).ok_or_else(|| crate::LoreError::new("invalid query vector"))
+    }
+
+    /// What this request should report about falling back to the local
+    /// model, once: a long-lived process keeps the model across requests.
+    #[cfg(feature = "atlas")]
+    pub(crate) fn fallback_note(&self) -> Option<String> {
+        self.fallback.lock().ok().and_then(|mut note| note.take())
+    }
+
+    #[cfg(feature = "atlas")]
+    pub(crate) fn model(&self) -> embed::EmbeddingModel {
+        self.model
+    }
+
+    /// Whether a long-lived process may keep using this model for the next
+    /// request. Not when it fell back to its own copy while a server could
+    /// serve again, so that the copy is dropped and the server used.
+    #[cfg(feature = "atlas")]
+    pub(crate) fn reusable(&self) -> bool {
+        if self.local.get().is_none() {
+            return true;
+        }
+        let serve = background_allowed() && embed::serve::enabled();
+        !(serve && (self.served || embed::serve::connect(self.model).is_some()))
+    }
+
+    #[cfg(feature = "atlas")]
+    pub(crate) fn encoding_device(&self) -> String {
+        match self.local.get() {
+            Some(Ok(model)) => model.device().label(),
+            _ => "local model server".to_owned(),
+        }
+    }
+}
+
+impl embed::Embeddings for QueryModel {
+    fn embed(&self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let remote = self.remote.lock().ok().and_then(|remote| remote.clone());
+        if let (Some(remote), None) = (remote, self.local.get()) {
+            match remote.embed(texts) {
+                Ok(vectors) => return Ok(vectors),
+                Err(error) => {
+                    // The server exits when idle; another may have started since.
+                    if let Some(again) = embed::serve::connect(self.model) {
+                        if let Ok(vectors) = again.embed(texts) {
+                            if let Ok(mut current) = self.remote.lock() {
+                                *current = Some(again);
+                            }
+                            return Ok(vectors);
+                        }
+                    }
+                    if let Ok(mut note) = self.fallback.lock() {
+                        *note = Some(format!("{error}. Falling back to the local model."));
+                    }
+                    if background_allowed() && embed::serve::enabled() {
+                        // For the next request of this or another process.
+                        embed::serve::start(self.model, spawn_detached);
+                    }
+                }
+            }
+        }
+        let local = self.local.get_or_init(|| embed::Embedder::open_model_for_queries(self.model, embed::ModelSource::Cache));
+        let local = local.as_ref().map_err(|error| crate::LoreError::new(error.to_string()))?;
+        embed::Embeddings::embed(local, texts)
     }
 
     fn dimensions(&self) -> usize {
-        embed::Embeddings::dimensions(&self.remote)
+        self.model.dimensions()
     }
 }

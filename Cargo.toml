@@ -18,9 +18,8 @@ path = "src/main.rs"
 # off at runtime until a project sets `[atlas] enabled` (or LORE_ATLAS=on).
 # `--no-default-features` leaves it out.
 default = ["atlas"]
-# The code map beside the lore: `lore atlas ...` (docs/ATLAS.md). No new
-# dependency - SQLite, regex and the built-in embedder are already here.
-atlas = []
+# The code map beside the lore: `lore atlas ...` (docs/ATLAS.md).
+atlas = ["dep:memmap2", "dep:notify", "dep:url", "dep:usearch"]
 # Build with candle's CUDA backend; the device is picked at runtime (see
 # embed::models::device) and reported by `lore model status`.
 cuda = ["candle-core/cuda"]
@@ -32,6 +31,11 @@ directml = ["dep:ort", "dep:lzma-rust2"]
 [dependencies]
 anyhow = "1"
 fs2 = "0.4"
+notify = { version = "8.2", optional = true }
+serde = { version = "1", features = ["derive"] }
+url = { version = "2.5", optional = true }
+usearch = { version = "=2.26.6", optional = true }
+memmap2 = { version = "0.9.12", optional = true }
 serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
 regex = "1"
 unicode-normalization = "0.1"

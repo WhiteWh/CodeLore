@@ -1,0 +1,101 @@
+{
+  "measured_at": "2026-11-18T14:20:00+03:00",
+  "method": {
+    "socraticode_status": "hgs socraticode status <corpus path> --json",
+    "socraticode_paths": "Qdrant POST /collections/<collection>/points/scroll (with_payload=[relativePath], no vectors), unique relativePath values counted",
+    "socraticode_metadata": "Qdrant scroll of socraticode_metadata filtered by projectPath",
+    "atlas_status": "lore -C <RogueDOD checkout> atlas status --json with LORE_CACHE set to a private copy",
+    "atlas_paths": "python sqlite3 read-only query over atlas.sqlite files table"
+  },
+  "roguedod": {
+    "atlas": {
+      "path": "<LORE_CACHE>/<repository key>/atlas.sqlite",
+      "files": 6277,
+      "pieces": 40816,
+      "symbols": 43923,
+      "imports": 35857,
+      "edges": 13934,
+      "vectors": 0,
+      "semantic_configured": true,
+      "model": "multilingual-e5-base",
+      "model_installed": true,
+      "db_file_rows": 6287,
+      "file_extensions": {
+        "cpp": 2621,
+        "h": 2609,
+        "md": 408,
+        "py": 345,
+        "ush": 84,
+        "Build.cs": 83,
+        "usf": 74,
+        "ps1": 17,
+        "sh": 16,
+        "hlsl": 15
+      },
+      "docs": 413,
+      "cpp_plus_h": 5230,
+      "plugin_files": 3020,
+      "vacuus_plugin_indexed": false,
+      "vacuus_plugin_source_files": 893,
+      "vacuus_note": "Only 104 paths contain 'VaCuus' and all are the game's integrations/docs (Source/RogueDOD/.../UI/VaCuus, Docs/VaCuus); Plugins/VaCuus/** is excluded by RogueDOD/.atlasignore (third-party plugin whitelist does not re-include it)."
+    },
+    "socraticode": {
+      "collection": "codebase_3658ab1b6e89",
+      "files_reported": 5157,
+      "files_total": 5157,
+      "chunks": 28978,
+      "unique_files_in_payload": 5154,
+      "last_indexed_at": "2026-11-07T14:08:33.481Z",
+      "built_by_version": "1.16.2",
+      "query_version": "1.16.1",
+      "embedding": {
+        "provider": "ollama",
+        "model": "nomic-embed-text",
+        "dimensions": 768,
+        "query_prefix": "search_query: ",
+        "document_includes_path": true
+      },
+      "top_dirs": {
+        "Source": 2751,
+        "Balance": 1221,
+        "Plugins": 855,
+        "Docs": 272,
+        "Tools": 22,
+        "Config": 19
+      },
+      "plugins": {
+        "RoguePCG": 460,
+        "RogueArena": 149,
+        "RogueBalance": 119,
+        "ProjectQueryServer": 65,
+        "RogueCoreUtility": 62
+      },
+      "file_extensions": {
+        "h": 1817,
+        "cpp": 1706,
+        "json": 1271,
+        "md": 271,
+        "py": 32,
+        "cs": 21,
+        "ini": 21
+      },
+      "vacuus_plugin_indexed": false,
+      "vacuus_plugin_source_files": 893,
+      "vacuus_note": "Plugins/VaCuus/** is absent from the collection; the only VaCuus hits are Source/RogueDOD/.../UI/VaCuus, Docs/VaCuus and Tools/VaCuusBake."
+    }
+  },
+  "ue": {
+    "socraticode": {
+      "collection": "codebase_55cbf89225aa",
+      "files_reported": 63034,
+      "files_total": 63037,
+      "chunks": 388711,
+      "last_indexed_at": "2026-09-02T23:24:51.589Z",
+      "coreminimal_chunks": 2,
+      "actorcomponent_chunks": 159,
+      "actor_cpp_chunks": 287,
+      "stale_note": "Index built 2026-09-02; Runtime/Engine/Private/Components/ActorComponent.cpp was last written 2026-10-22, so the index may not match the current tree byte for byte. Content checks (the SetComponentTickEnabled key) still land at the current line numbers.",
+      "atlas_indexed": false
+    }
+  }
+}

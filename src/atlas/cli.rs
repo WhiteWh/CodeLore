@@ -1,27 +1,42 @@
 //! `lore atlas <command>`: the code map's commands, text or `--json`.
 use super::store::{Atlas, Filter, Hit};
-use super::{embedder, open_fresh};
+use super::{index_embedder, open_fresh, query_embedder, refresh_project, watch};
 use crate::config::{self, Config};
 use crate::search::{self, Filters};
 use crate::LoreError;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+#[path = "calls_cli.rs"]
+mod calls_cli;
+#[path = "sources.rs"]
+mod sources;
 
 pub const USAGE: &str = "usage: lore atlas <command>
   status                         what the map holds, where, and whether it is on
   index [--rebuild] [--text-only]
                                  bring the map up to date and embed its pieces
+  watch start|stop|status        manage background refresh for the project
   search <query...> [-n N] [--lang L] [--path P] [--text-only]
                                  the places in the code, by words, terms, symbols and meaning (`-` reads stdin)
   symbol <name>                  where a symbol is defined, which files name it, what the lore says
   symbols <file>                 a file's definitions
+  calls-index --compdb PATH [--libclang PATH] [--source project|unreal|NAME]
+                                 build a C++ call index for a compilation context
+  calls <name|id|file:line> [--direction in|out] [--depth N] [-n N] [--candidates]
+                                 navigate C++ callers and callees
+  calls-status                   show call index availability and diagnostics
   deps <file>                    what a file imports, and what imports it
   impact <file|dir|symbol> [--depth N]
                                  every file a change reaches, and the lore about each
   cycles                         the import cycles
   drift                          records whose files or symbols the code no longer has
-  guide                          how an agent uses the map";
+  guide                          how an agent uses the map
+
+  status, index, search, symbol, symbols, calls and calls-status accept --source project|unreal|all
+  status, index, search, symbol and symbols also accept a configured source name
+  calls commands accept a configured source name to select a project + external graph
+  project reads accept --snapshot to use the last completed index without refreshing";
 
 /// What the command layer hands the atlas: the words after `atlas`, the folder
 /// it runs in, stdin, and the global switches already read.
@@ -37,13 +52,16 @@ pub struct Out {
     pub code: i32,
     pub stdout: String,
     pub stderr: String,
+    snapshot_only: bool,
+    snapshot: Option<watch::Snapshot>,
+    dependencies: Option<super::dependencies::Catalogue>,
 }
 
-struct Opts {
-    command: String,
-    positional: Vec<String>,
-    options: BTreeMap<String, String>,
-    flags: BTreeSet<String>,
+pub(super) struct Opts {
+    pub command: String,
+    pub positional: Vec<String>,
+    pub options: BTreeMap<String, String>,
+    pub flags: BTreeSet<String>,
 }
 
 fn parse(argv: &[String]) -> Result<Opts, String> {
@@ -52,7 +70,7 @@ fn parse(argv: &[String]) -> Result<Opts, String> {
     while at < argv.len() {
         let word = &argv[at];
         at += 1;
-        let valued = |name: &str| matches!(name, "-n" | "--limit" | "--lang" | "--path" | "--depth");
+        let valued = |name: &str| matches!(name, "-n" | "--limit" | "--lang" | "--path" | "--depth" | "--source" | "--direction" | "--profile" | "--compdb" | "--libclang");
         if word.starts_with('-') && word != "-" {
             let (name, inline) = match word.split_once('=') {
                 Some((name, value)) => (name.to_owned(), Some(value.to_owned())),
@@ -69,7 +87,7 @@ fn parse(argv: &[String]) -> Result<Opts, String> {
                 };
                 let key = if name == "--limit" { "-n".to_owned() } else { name };
                 opts.options.insert(key, value);
-            } else if matches!(name.as_str(), "--rebuild" | "--text-only" | "--json" | "--all") {
+            } else if matches!(name.as_str(), "--rebuild" | "--text-only" | "--json" | "--all" | "--candidates" | "--snapshot") {
                 opts.flags.insert(name);
             } else {
                 return Err(format!("unrecognized arguments: {word}"));
@@ -87,7 +105,7 @@ fn parse(argv: &[String]) -> Result<Opts, String> {
 
 /// Runs one `lore atlas` command.
 pub fn run(call: &Call<'_>) -> Out {
-    let mut out = Out { code: 0, stdout: String::new(), stderr: String::new() };
+    let mut out = Out { code: 0, stdout: String::new(), stderr: String::new(), snapshot_only: false, snapshot: None, dependencies: None };
     let opts = match parse(call.argv) {
         Ok(opts) => opts,
         Err(message) => {
@@ -97,6 +115,7 @@ pub fn run(call: &Call<'_>) -> Out {
         }
     };
     let json = call.json || opts.flags.contains("--json");
+    out.snapshot_only = watch::requested(opts.flags.contains("--snapshot"));
     if opts.command.is_empty() || opts.command == "help" {
         out.stdout = format!("{USAGE}\n");
         out.code = if opts.command.is_empty() { 2 } else { 0 };
@@ -106,21 +125,55 @@ pub fn run(call: &Call<'_>) -> Out {
         out.stdout = format!("{}\n", GUIDE.trim_end());
         return out;
     }
-    let result = config::load(&call.start).and_then(|config| {
+    let config = if opts.command == "watch" && matches!(opts.positional.as_slice(), [action] if action == "status" || action == "stop") {
+        watch::control_root(&call.start).map(|root| Config::defaults(&root))
+    } else {
+        config::load(&call.start)
+    };
+    let result = config.and_then(|config| {
         for warning in &config.warnings {
             out.stderr.push_str(&format!("lore: warning: {warning}\n"));
         }
+        if !config.atlas.sources.is_empty() && matches!(opts.command.as_str(), "status" | "search" | "symbol" | "symbols")
+            && !matches!(opts.options.get("--source").map(String::as_str), Some("project" | "unreal"))
+        {
+            out.dependencies = Some(watch::dependencies(&config));
+        }
         dispatch(&opts, &config, call, json, &mut out)
     });
+    finish(&mut out, json, result);
+    out
+}
+
+/// MCP already resolved the project and validated typed tool arguments. It
+/// uses the same command results while always reading the published map.
+pub(super) fn run_snapshot(config: &Config, opts: &Opts, dependencies: Option<super::dependencies::Catalogue>) -> (i32, Value) {
+    let mut out = Out { code: 0, stdout: String::new(), stderr: String::new(), snapshot_only: true, snapshot: None, dependencies };
+    let call = Call { argv: &[], start: config.root.clone(), stdin: &[], json: true, text_only: false };
+    let result = dispatch(opts, config, &call, true, &mut out);
+    finish(&mut out, true, result);
+    let mut payload = serde_json::from_str::<Value>(&out.stdout).unwrap_or_else(|error| json!({"error": format!("invalid Atlas result: {error}")}));
+    if let Some(dependencies) = &out.dependencies {
+        payload["dependencies"] = json!({"state": dependencies.state, "notes": dependencies.notes});
+    }
+    (out.code, payload)
+}
+
+fn finish(out: &mut Out, json: bool, result: Result<(), LoreError>) {
     if let Err(error) = result {
         if json {
-            out.stdout = format!("{}\n", serde_json::to_string_pretty(&json!({"error": error.message, "details": error.details})).unwrap_or_default());
+            out.stdout.clear();
+            emit(out, &json!({"error": error.message, "details": error.details}));
         } else {
             out.stderr.push_str(&format!("lore: {error}\n"));
         }
         out.code = 1;
     }
-    out
+    if !json {
+        if let Some(snapshot) = &out.snapshot {
+            out.stdout.insert_str(0, &format!("{}\n", snapshot.describe()));
+        }
+    }
 }
 
 fn say(out: &mut Out, text: &str) {
@@ -129,7 +182,12 @@ fn say(out: &mut Out, text: &str) {
 }
 
 fn emit(out: &mut Out, value: &Value) {
-    out.stdout.push_str(&serde_json::to_string_pretty(value).unwrap_or_default());
+    let enriched = out.snapshot.as_ref().map(|snapshot| {
+        let mut value = if value.is_object() { value.clone() } else { json!({"results": value}) };
+        value["snapshot"] = snapshot.value.clone();
+        value
+    });
+    out.stdout.push_str(&serde_json::to_string_pretty(enriched.as_ref().unwrap_or(value)).unwrap_or_default());
     out.stdout.push('\n');
 }
 
@@ -148,7 +206,25 @@ fn number(opts: &Opts, name: &str, default: usize) -> Result<usize, LoreError> {
 }
 
 fn dispatch(opts: &Opts, config: &Config, call: &Call<'_>, json: bool, out: &mut Out) -> Result<(), LoreError> {
+    if opts.command == "watch" {
+        let [action] = opts.positional.as_slice() else {
+            return Err(LoreError::new("use lore atlas watch start, stop or status"));
+        };
+        let status = watch::manage(config, action)?;
+        if json {
+            emit(out, &status.value);
+        } else {
+            say(out, &status.describe());
+        }
+        return Ok(());
+    }
+    if matches!(opts.command.as_str(), "calls" | "calls-index" | "calls-status") {
+        return calls_cli::dispatch(opts, config, json, out);
+    }
     let text_only = call.text_only || opts.flags.contains("--text-only");
+    if sources::dispatch(opts, config, call, json, text_only, out)? {
+        return Ok(());
+    }
     match opts.command.as_str() {
         "status" => status(config, json, out),
         "index" => index(config, opts.flags.contains("--rebuild"), text_only, json, out),
@@ -162,7 +238,7 @@ fn dispatch(opts: &Opts, config: &Config, call: &Call<'_>, json: bool, out: &mut
         }
         "symbol" => symbol(config, &need(opts, "a symbol name")?, json, out),
         "symbols" => {
-            let (atlas, _) = open_fresh(config)?;
+            let (atlas, _) = open_project(config, out)?;
             let path = relative_target(config, &need(opts, "a file")?);
             let found = atlas.symbols_of(&path)?;
             if json {
@@ -179,7 +255,7 @@ fn dispatch(opts: &Opts, config: &Config, call: &Call<'_>, json: bool, out: &mut
         "deps" => deps(config, &need(opts, "a file")?, json, out),
         "impact" => impact(config, &need(opts, "a file, folder or symbol")?, number(opts, "--depth", 3)?, json, out),
         "cycles" => {
-            let (atlas, _) = open_fresh(config)?;
+            let (atlas, _) = open_project(config, out)?;
             let groups = super::graph::cycles(&atlas.import_edges()?);
             if json {
                 emit(out, &json!(groups));
@@ -197,6 +273,21 @@ fn dispatch(opts: &Opts, config: &Config, call: &Call<'_>, json: bool, out: &mut
     }
 }
 
+fn open_project(config: &Config, out: &mut Out) -> Result<(Atlas, super::store::Refresh), LoreError> {
+    if let Some(reason) = super::off_reason(config) {
+        return Err(LoreError::new(reason));
+    }
+    let background = watch::enabled_dir(&config.root);
+    if background.is_none() && !out.snapshot_only {
+        return open_fresh(config);
+    }
+    let mode = if background.is_some() { "background" } else { "snapshot" };
+    let (atlas, snapshot) = watch::snapshot(config, background.as_deref(), mode);
+    let result = atlas.map(|atlas| (atlas, super::store::Refresh::default())).ok_or_else(|| snapshot.missing());
+    out.snapshot = Some(snapshot);
+    result
+}
+
 fn status(config: &Config, json: bool, out: &mut Out) -> Result<(), LoreError> {
     let off = super::off_reason(config);
     if let Some(reason) = &off {
@@ -207,10 +298,23 @@ fn status(config: &Config, json: bool, out: &mut Out) -> Result<(), LoreError> {
         }
         return Ok(());
     }
-    let (atlas, refresh) = open_fresh(config)?;
+    let (atlas, refresh) = match open_project(config, out) {
+        Ok(found) => found,
+        Err(error) if out.snapshot.is_some() => {
+            if json {
+                emit(out, &json!({"enabled": true, "note": error.message}));
+            } else {
+                say(out, &error.message);
+            }
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     let counts = atlas.counts()?;
     let model = config.embedding_model();
     let vectors = atlas.vector_count(model.id());
+    let space = super::store::unreal_store::VectorSpace::new(model);
+    let ann = super::ann::status(&atlas, config, &space.key, model.id(), space.dimension);
     let installed = crate::embed::status_for(model, &crate::embed::model_dir(model)).available;
     if json {
         emit(out, &json!({
@@ -221,6 +325,7 @@ fn status(config: &Config, json: bool, out: &mut Out) -> Result<(), LoreError> {
             "model": model.id(),
             "model_installed": installed,
             "semantic": config.atlas.semantic,
+            "ann": ann,
             "refreshed": {"files_read": refresh.files_read, "files_dropped": refresh.files_dropped},
         }));
         return Ok(());
@@ -238,6 +343,10 @@ fn status(config: &Config, json: bool, out: &mut Out) -> Result<(), LoreError> {
         format!("{} of {} pieces embedded with {}", vectors, counts["chunks"], model.id())
     };
     say(out, &format!("  meaning: {meaning}"));
+    say(out, &format!("  semantic search {} [{}]", ann["mode"].as_str().unwrap_or_default(), ann["state"].as_str().unwrap_or_default()));
+    if let Some(error) = ann["error"].as_str() {
+        say(out, &format!("  {error}"));
+    }
     if refresh.files_read + refresh.files_dropped > 0 {
         say(out, &format!("  brought up to date: {} file(s) read, {} dropped", refresh.files_read, refresh.files_dropped));
     }
@@ -245,15 +354,9 @@ fn status(config: &Config, json: bool, out: &mut Out) -> Result<(), LoreError> {
 }
 
 fn index(config: &Config, rebuild: bool, text_only: bool, json: bool, out: &mut Out) -> Result<(), LoreError> {
-    if let Some(reason) = super::off_reason(config) {
-        return Err(LoreError::new(reason));
-    }
-    if rebuild {
-        super::store::remove(&config.root)?;
-    }
     let started = std::time::Instant::now();
-    let (atlas, refresh) = open_fresh(config)?;
-    let (embedder, mut notes) = embedder(config, text_only, true);
+    let (atlas, refresh) = refresh_project(config, rebuild)?;
+    let (embedder, mut notes) = index_embedder(config, text_only);
     let model = config.embedding_model();
     let mut embedded = 0;
     if let Some(embedder) = &embedder {
@@ -264,10 +367,14 @@ fn index(config: &Config, rebuild: bool, text_only: bool, json: bool, out: &mut 
                 eprintln!("lore: atlas: embedded {done} / {total} pieces");
             }
         };
-        match atlas.ensure_vectors(embedder, model.id(), model.document_prefix(), None, &mut progress) {
+        match atlas.vector_batch(|_| atlas.ensure_vectors(embedder, model.id(), model.document_prefix(), None, &mut progress)) {
             Ok((done, _)) => embedded = done,
             Err(error) => notes.push(format!("code meaning unavailable: {error}; text only")),
         }
+    }
+    if !text_only {
+        let space = super::store::unreal_store::VectorSpace::new(model);
+        super::ann::schedule(&atlas, config, &space.key, model.id(), space.dimension);
     }
     let counts = atlas.counts()?;
     let seconds = started.elapsed().as_secs_f64();
@@ -302,33 +409,92 @@ fn hit_json(hit: &Hit) -> Value {
     json!({"path": hit.path, "start": hit.start, "end": hit.end, "symbols": hit.symbols, "lang": hit.lang, "score": hit.score, "via": hit.via, "text": hit.text})
 }
 
+fn query_vector(result: Result<Vec<f32>, LoreError>, model: &crate::builtin::QueryModel, notes: &mut Vec<String>) -> Option<Vec<f32>> {
+    if let Some(note) = model.fallback_note() {
+        notes.push(note);
+    }
+    match result {
+        Ok(vector) => Some(vector),
+        Err(error) => {
+            notes.push(format!("code meaning unavailable: {error}; text only"));
+            None
+        }
+    }
+}
+
 fn find(config: &Config, query: &str, limit: usize, filter: &Filter, text_only: bool, json: bool, out: &mut Out) -> Result<(), LoreError> {
     if query.trim().is_empty() {
         return Err(LoreError::new("nothing to search for"));
     }
-    let (atlas, _) = open_fresh(config)?;
-    let (embedder, mut notes) = embedder(config, text_only, false);
+    let (atlas, _) = open_project(config, out)?;
     let model = config.embedding_model();
+    let snapshot = out.snapshot.is_some();
+    let semantic = !text_only && config.atlas.semantic && config.embed_provider != "none";
+    let mut timings = super::store::SearchTimings::default();
+    let filter = atlas.prepare_filter(filter, &mut timings);
+    let mut plan = if semantic && filter.is_empty() {
+        super::store::SemanticPlan::text("empty_filter", None)
+    } else if semantic {
+        let space = super::store::unreal_store::VectorSpace::new(model);
+        atlas.prepare_semantics(&space.key, model.id(), space.dimension, !snapshot, &mut timings)
+    } else {
+        super::store::SemanticPlan::text("disabled", None)
+    };
+    let (embedder, mut notes) = if text_only {
+        (None, Vec::new())
+    } else if !config.atlas.semantic || config.embed_provider == "none" {
+        let notes = (!snapshot).then(|| "code meaning is off (atlas.semantic = false or embed.provider = \"none\"); text only".to_owned());
+        (None, notes.into_iter().collect())
+    } else if plan.no_vectors() {
+        (None, vec!["no compatible vectors in the snapshot. Run lore atlas index to fill them.".to_owned()])
+    } else if !plan.uses_vectors() {
+        (None, Vec::new())
+    } else {
+        query_embedder(model, !snapshot)
+    };
     let mut vector = None;
+    let mut encoding_ms = None;
     if let Some(embedder) = &embedder {
         // A few new pieces are embedded here; many wait for `lore atlas index`.
         // A model that fails here leaves the search to the text, as an index does.
-        match atlas.ensure_vectors(embedder, model.id(), model.document_prefix(), Some(super::store::SEARCH_EMBED_BUDGET), &mut |_, _| {}) {
+        // A lagging ANN generation scores changed chunks exactly, so they need
+        // vectors here as much as a small source does.
+        let filled = if snapshot { Ok((0, 0)) } else {
+            atlas.vector_batch(|_| atlas.ensure_vectors(&**embedder, model.id(), model.document_prefix(), Some(super::store::SEARCH_EMBED_BUDGET), &mut |_, _| {}))
+        };
+        let encoded = match filled {
             Ok((_, missing)) => {
                 if missing > 0 {
                     notes.push(format!("{missing} code pieces have no vector yet; `lore atlas index` embeds them"));
                 }
-                match embedder.embed_query(query) {
-                    Ok(v) => vector = Some(v),
-                    Err(error) => notes.push(format!("code meaning unavailable: {error}; text only")),
-                }
+                let started = std::time::Instant::now();
+                let encoded = embedder.embed_query(query);
+                encoding_ms = Some(started.elapsed().as_secs_f64() * 1000.0);
+                encoded
             }
-            Err(error) => notes.push(format!("code meaning unavailable: {error}; text only")),
-        }
+            Err(error) => Err(error),
+        };
+        vector = query_vector(encoded, embedder, &mut notes);
     }
-    let hits = atlas.search(query, limit, filter, vector.as_deref().map(|v| (v, model.id())))?;
+    let meaning = plan.retrieve(&atlas, vector.as_deref(), model.id(), &filter, &mut timings);
+    notes.extend(plan.note.iter().cloned());
+    if !snapshot && plan.wants_build() {
+        // Without a watcher nothing else would bring the graph up to date.
+        let space = super::store::unreal_store::VectorSpace::new(model);
+        super::ann::schedule(&atlas, config, &space.key, model.id(), space.dimension);
+    }
+    let hits = atlas.search_with_meaning(query, limit, &filter, meaning, &mut timings)?;
     if json {
-        emit(out, &json!({"query": query, "notes": notes, "results": hits.iter().map(hit_json).collect::<Vec<_>>()}));
+        let mut response = json!({"query": query, "notes": notes, "results": hits.iter().map(hit_json).collect::<Vec<_>>()});
+        if semantic {
+            response["semantic_search"] = plan.json();
+        }
+        if super::store::SearchTimings::requested() {
+            let mut measured = timings.json();
+            measured["encoding"] = json!(encoding_ms);
+            response["timings_ms"] = measured;
+        }
+        emit(out, &response);
         return Ok(());
     }
     for note in &notes {
@@ -368,6 +534,9 @@ pub fn list_short(items: &[String], most: usize) -> String {
 }
 
 fn records(config: &Config) -> Vec<Value> {
+    if config.atlas.checkout.is_some() {
+        return Vec::new();
+    }
     crate::store::load_worktree(&config.root, &config.dir).map(|snapshot| snapshot.all()).unwrap_or_default()
 }
 
@@ -395,7 +564,7 @@ fn record_line(record: &Value) -> String {
 }
 
 fn symbol(config: &Config, name: &str, json: bool, out: &mut Out) -> Result<(), LoreError> {
-    let (atlas, _) = open_fresh(config)?;
+    let (atlas, _) = open_project(config, out)?;
     let definitions = atlas.definitions(name)?;
     let defined_in: BTreeSet<String> = definitions.iter().map(|d| d.path.clone()).collect();
     let mentions: Vec<String> = atlas.mentions(name, 200)?.into_iter().filter(|path| !defined_in.contains(path)).collect();
@@ -429,7 +598,7 @@ fn symbol(config: &Config, name: &str, json: bool, out: &mut Out) -> Result<(), 
 }
 
 fn deps(config: &Config, target: &str, json: bool, out: &mut Out) -> Result<(), LoreError> {
-    let (atlas, _) = open_fresh(config)?;
+    let (atlas, _) = open_project(config, out)?;
     let path = relative_target(config, target);
     if !atlas.has_file(&path) {
         return Err(LoreError::new(format!("{path} is not in the code map")));
@@ -468,7 +637,7 @@ fn targets(atlas: &Atlas, config: &Config, target: &str) -> Result<(Vec<String>,
 }
 
 fn impact(config: &Config, target: &str, depth: usize, json: bool, out: &mut Out) -> Result<(), LoreError> {
-    let (atlas, _) = open_fresh(config)?;
+    let (atlas, _) = open_project(config, out)?;
     let (start, what) = targets(&atlas, config, target)?;
     let reached = atlas.dependents(&start, depth.max(1))?;
     let mut by_distance: BTreeMap<usize, Vec<String>> = BTreeMap::new();
@@ -514,7 +683,7 @@ fn impact(config: &Config, target: &str, depth: usize, json: bool, out: &mut Out
 }
 
 fn drift(config: &Config, all: bool, json: bool, out: &mut Out) -> Result<(), LoreError> {
-    let (atlas, _) = open_fresh(config)?;
+    let (atlas, _) = open_project(config, out)?;
     let records = records(config);
     let filters = Filters { all, ..Filters::default() };
     let mut rows: Vec<Value> = Vec::new();
@@ -532,7 +701,7 @@ fn drift(config: &Config, all: bool, json: bool, out: &mut Out) -> Result<(), Lo
             .into_iter()
             .filter(|symbol| {
                 let short = symbol.rsplit(['.', ':']).next().unwrap_or(symbol);
-                short.chars().all(|c| c.is_alphanumeric() || c == '_') && short.len() >= 3 && atlas.definitions(symbol).map(|d| d.is_empty()).unwrap_or(false) && atlas.mentions(symbol, 1).map(|m| m.is_empty()).unwrap_or(false)
+                short.chars().all(|c| c.is_alphanumeric() || c == '_') && short.len() >= 3 && atlas.definitions_exact(symbol).map(|d| d.is_empty()).unwrap_or(false) && atlas.mentions(symbol, 1).map(|m| m.is_empty()).unwrap_or(false)
             })
             .collect();
         if missing_files.is_empty() && missing_symbols.is_empty() {
@@ -572,5 +741,8 @@ The code map (lore atlas) - where things are in the code now, beside what the lo
 - `lore atlas deps <file>`, `lore atlas cycles`: the import graph.
 - After a refactor: `lore atlas drift` lists records that cite files or symbols the code no
   longer has; update them or mark them obsolete.
-- The map refreshes itself on every command from git's blob ids; `lore atlas index` embeds
-  new pieces for search by meaning.";
+- The map refreshes itself from git's blob ids. With `lore atlas watch start`, a worker
+  refreshes it and commands read the last completed snapshot. Check it with
+  `lore atlas watch status`; `lore atlas watch stop` restores synchronous refresh.
+- `lore atlas search --snapshot <query>` reads an existing snapshot without a worker.
+  `lore atlas index` embeds new pieces for search by meaning.";

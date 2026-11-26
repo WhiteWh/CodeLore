@@ -357,6 +357,11 @@ impl Embedder {
         &self.device
     }
 
+    #[cfg(all(feature = "atlas", feature = "directml"))]
+    pub(crate) fn fell_back_to_cpu(&self) -> bool {
+        self.fallback.get().is_some()
+    }
+
     pub fn model(&self) -> EmbeddingModel {
         self.inner.kind()
     }
@@ -402,12 +407,7 @@ impl Embedder {
 
     /// The embedding of a search query, with the model's query prefix.
     pub fn embed_query(&self, text: &str) -> Result<Vec<f32>, Error> {
-        let prefix = self.inner.kind().query_prefix();
-        let prefixed = if !prefix.is_empty() && text.starts_with(prefix) {
-            text.to_owned()
-        } else {
-            format!("{prefix}{text}")
-        };
+        let prefixed = prefixed_query(self.inner.kind(), text);
         let mut vectors = self.run(&[prefixed.as_str()], 1, 1)?;
         vectors.pop().ok_or_else(|| Error::Run("the model returned no vector".into()))
     }
@@ -416,6 +416,13 @@ impl Embedder {
     pub fn embed_prefixed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>, Error> {
         self.run(texts, self.batch_size, self.threads)
     }
+}
+
+/// Atlas accepts an already-prefixed query as well as plain text. The local
+/// and served paths send the same text to the tokenizer.
+pub(crate) fn prefixed_query(model: EmbeddingModel, text: &str) -> String {
+    let prefix = model.query_prefix();
+    if text.starts_with(prefix) { text.to_owned() } else { format!("{prefix}{text}") }
 }
 
 /// The index calls `embed` with texts that already carry their prefix.

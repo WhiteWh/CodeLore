@@ -1,10 +1,11 @@
 //! `lore.toml` (CodeLore's `config.py`): finding it, reading it, refusing what
 //! it may not say.
 use crate::LoreError;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 pub const CONFIG_NAME: &str = "lore.toml";
+const LOCAL_CONFIG_NAME: &str = "lore.local.toml";
 pub const MODES: &[&str] = &["none", "plain", "shared-tree"];
 /// `builtin` is the model `embed.model` names (`auto`: by the device) in this process and `none` is
 /// text only; `lore init` writes `builtin` and `auto`. `ollama` is the
@@ -14,7 +15,7 @@ pub const PROVIDERS: &[&str] = &["builtin", "ollama", "none"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {
-    /// The repository root, where lore.toml is.
+    /// The repository root, or the published workspace root for scoped Atlas.
     pub root: PathBuf,
     /// Relative to root, forward slashes.
     pub dir: String,
@@ -55,6 +56,12 @@ pub struct Config {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Atlas {
     pub enabled: bool,
+    /// For a scoped MCP index, the containing Git checkout. Set at runtime.
+    pub checkout: Option<PathBuf>,
+    /// The absolute installation root of a shared Unreal Engine source map.
+    pub unreal_root: Option<PathBuf>,
+    /// Named source trees declared by this project.
+    pub sources: BTreeMap<String, AtlasSource>,
     /// Embed code chunks with the built-in model (else text only).
     pub semantic: bool,
     /// `lore for <file>` also names the files that import it and what the lore
@@ -75,7 +82,7 @@ pub struct Atlas {
 
 impl Default for Atlas {
     fn default() -> Self {
-        Self { enabled: false, semantic: true, in_for: true, in_find: false, include: Vec::new(), exclude: Vec::new(), exclude_files: Vec::new(), max_kib: 512 }
+        Self { enabled: false, checkout: None, unreal_root: None, sources: BTreeMap::new(), semantic: true, in_for: true, in_find: false, include: Vec::new(), exclude: Vec::new(), exclude_files: Vec::new(), max_kib: 512 }
     }
 }
 
@@ -90,21 +97,90 @@ impl Atlas {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AtlasSource {
+    pub(crate) config_file: &'static str,
+    pub root: PathBuf,
+    pub include: BTreeSet<String>,
+    pub exclude: Vec<String>,
+    pub max_kib: u64,
+}
+
+pub(crate) fn atlas_source_name(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    !matches!(name, "all" | "project" | "unreal" | "dependency" | "dependencies" | "external")
+        && name.len() <= 64
+        && bytes.next().is_some_and(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit())
+        && bytes.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || matches!(ch, b'-' | b'_'))
+}
+
+fn atlas_strings(key: &str, value: &toml::Value, bad: &mut Vec<String>) -> Vec<String> {
+    match value.as_array().filter(|items| items.iter().all(toml::Value::is_str)) {
+        Some(items) => items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect(),
+        None => {
+            bad.push(format!("`{key}` must be a list of strings"));
+            Vec::new()
+        }
+    }
+}
+
+fn parse_atlas_sources(value: &toml::Value, config_file: &'static str, bad: &mut Vec<String>) -> BTreeMap<String, AtlasSource> {
+    let mut sources = BTreeMap::new();
+    let Some(table) = value.as_table() else {
+        bad.push("`[atlas.sources]` must be a table".into());
+        return sources;
+    };
+    for (name, value) in table {
+        let place = format!("atlas.sources.{name}");
+        if !atlas_source_name(name) {
+            bad.push(format!("invalid Atlas source name {name:?}"));
+            continue;
+        }
+        let Some(source) = value.as_table() else {
+            bad.push(format!("`{place}` must be a table"));
+            continue;
+        };
+        let Some(root) = source.get("root").and_then(toml::Value::as_str).filter(|root| !root.trim().is_empty()) else {
+            bad.push(format!("`{place}.root` must be a nonempty directory path"));
+            continue;
+        };
+        let mut profile = AtlasSource { config_file, root: PathBuf::from(root), include: BTreeSet::new(), exclude: Vec::new(), max_kib: 512 };
+        for (key, value) in source {
+            let key_path = format!("{place}.{key}");
+            match key.as_str() {
+                "root" => {}
+                "include" => {
+                    profile.include = atlas_strings(&key_path, value, bad).into_iter()
+                        .map(|ext| ext.trim().trim_start_matches('.').to_ascii_lowercase())
+                        .filter(|ext| !ext.is_empty()).collect();
+                }
+                "exclude" => {
+                    profile.exclude = atlas_strings(&key_path, value, bad).into_iter().map(|pattern| {
+                        let pattern = pattern.trim().trim_start_matches("./").replace('\\', "/");
+                        if pattern.contains('*') { pattern } else { pattern.trim_end_matches('/').to_owned() }
+                    }).filter(|pattern| !pattern.is_empty()).collect();
+                    profile.exclude.sort_unstable();
+                    profile.exclude.dedup();
+                }
+                "max_kib" => match value.as_integer().filter(|n| (1..=16_384).contains(n)) {
+                    Some(n) => profile.max_kib = n as u64,
+                    None => bad.push(format!("`{key_path}` must be a whole number from 1 to 16384")),
+                },
+                _ => bad.push(format!("unknown key `{key_path}`")),
+            }
+        }
+        sources.insert(name.clone(), profile);
+    }
+    sources
+}
+
 fn parse_atlas(value: &toml::Value, bad: &mut Vec<String>) -> Atlas {
     let mut atlas = Atlas::default();
     let Some(table) = value.as_table() else {
         bad.push("`[atlas]` must be a table".into());
         return atlas;
     };
-    let strings = |key: &str, value: &toml::Value, bad: &mut Vec<String>| -> Vec<String> {
-        match value.as_array().filter(|items| items.iter().all(toml::Value::is_str)) {
-            Some(items) => items.iter().filter_map(|item| item.as_str().map(str::to_owned)).collect(),
-            None => {
-                bad.push(format!("`atlas.{key}` must be a list of strings"));
-                Vec::new()
-            }
-        }
-    };
+    let strings = |key: &str, value: &toml::Value, bad: &mut Vec<String>| atlas_strings(&format!("atlas.{key}"), value, bad);
     for (key, value) in table {
         let flag = |bad: &mut Vec<String>| -> bool {
             value.as_bool().unwrap_or_else(|| {
@@ -114,6 +190,20 @@ fn parse_atlas(value: &toml::Value, bad: &mut Vec<String>) -> Atlas {
         };
         match key.as_str() {
             "enabled" => atlas.enabled = flag(bad),
+            "sources" => atlas.sources = parse_atlas_sources(value, CONFIG_NAME, bad),
+            "unreal" => {
+                if let Some(unreal) = value.as_table() {
+                    for key in unreal.keys().filter(|key| *key != "root") {
+                        bad.push(format!("unknown key `atlas.unreal.{key}`"));
+                    }
+                    match unreal.get("root").and_then(toml::Value::as_str).map(PathBuf::from) {
+                        Some(root) if root.is_absolute() => atlas.unreal_root = Some(root),
+                        _ => bad.push("`atlas.unreal.root` must be an absolute installation path".into()),
+                    }
+                } else {
+                    bad.push("`[atlas.unreal]` must be a table".into());
+                }
+            }
             "semantic" => atlas.semantic = flag(bad),
             "for" => atlas.in_for = flag(bad),
             "find" => atlas.in_find = flag(bad),
@@ -500,11 +590,49 @@ pub fn simplify(path: &Path) -> PathBuf {
 
 pub fn load(start: &Path) -> Result<Config, LoreError> {
     let root = find_root(start)?;
+    load_at(&root)
+}
+
+pub(crate) fn load_at(root: &Path) -> Result<Config, LoreError> {
     let path = root.join(CONFIG_NAME);
-    let text = std::fs::read(&path).map_err(|error| LoreError::new(format!("{}: {error}", path.display())))?;
-    let text = String::from_utf8(text).map_err(|error| LoreError::new(format!("{}: not valid TOML: {error}", path.display())))?;
-    let data: toml::Value = toml::from_str(&text).map_err(|error| LoreError::new(format!("{}: not valid TOML: {}", path.display(), error.message())))?;
-    parse(&data, &root, &path.display().to_string())
+    let bytes = std::fs::read(&path).map_err(|error| LoreError::new(format!("{}: {error}", path.display())))?;
+    let data = parse_toml(&path, bytes)?;
+    let mut config = parse(&data, root, &path.display().to_string())?;
+
+    let path = root.join(LOCAL_CONFIG_NAME);
+    let bytes = match std::fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(config),
+        Err(error) => return Err(LoreError::new(format!("{}: {error}", path.display()))),
+    };
+    config.atlas.sources.extend(local_atlas_sources(&path, &parse_toml(&path, bytes)?)?);
+    Ok(config)
+}
+
+fn parse_toml(path: &Path, bytes: Vec<u8>) -> Result<toml::Value, LoreError> {
+    let text = String::from_utf8(bytes).map_err(|error| LoreError::new(format!("{}: not valid TOML: {error}", path.display())))?;
+    toml::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|error| LoreError::new(format!("{}: not valid TOML: {}", path.display(), error.message())))
+}
+
+fn local_atlas_sources(path: &Path, data: &toml::Value) -> Result<BTreeMap<String, AtlasSource>, LoreError> {
+    let invalid = |reason| LoreError::new(format!("{}: {reason}", path.display()));
+    let table = data.as_table().ok_or_else(|| invalid("expected a TOML table".to_owned()))?;
+    if let Some(key) = table.keys().find(|key| *key != "atlas") {
+        return Err(invalid(format!("`{key}` belongs in {CONFIG_NAME}")));
+    }
+    let Some(atlas) = table.get("atlas") else { return Ok(BTreeMap::new()) };
+    let atlas = atlas.as_table().ok_or_else(|| invalid("`[atlas]` must be a table".to_owned()))?;
+    if let Some(key) = atlas.keys().find(|key| *key != "sources") {
+        return Err(invalid(format!("`atlas.{key}` belongs in {CONFIG_NAME}")));
+    }
+    let Some(sources) = atlas.get("sources") else { return Ok(BTreeMap::new()) };
+    let mut bad = Vec::new();
+    let sources = parse_atlas_sources(sources, LOCAL_CONFIG_NAME, &mut bad);
+    if !bad.is_empty() {
+        return Err(invalid(bad.join("; ")));
+    }
+    Ok(sources)
 }
 
 pub fn parse(data: &toml::Value, root: &Path, place: &str) -> Result<Config, LoreError> {

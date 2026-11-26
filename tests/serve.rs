@@ -1,18 +1,19 @@
 //! The model server (src/embed/serve.rs): a search's query embedded in a
 //! `lore model serve` process gets the vector a model of its own would give,
-//! a wrong token is refused, and the server ends once idle. Needs the nomic
-//! model installed; without it the test says so and passes.
+//! a wrong token is refused, and the server ends once idle. Uses one of the
+//! installed built-in models.
 use codelore::embed::{self, EmbeddingModel, Embedder, Embeddings, ModelSource};
 use std::io::{BufRead, BufReader, Write};
 use std::time::{Duration, Instant};
 
 #[test]
 fn a_query_embedded_by_the_server_is_the_local_vector() {
-    let model = EmbeddingModel::Nomic;
-    if !embed::status_for(model, &embed::model_dir(model)).available {
-        eprintln!("skipped: {} is not installed", model.id());
+    let Some(model) = [EmbeddingModel::Nomic, EmbeddingModel::E5Base, EmbeddingModel::BgeM3]
+        .into_iter().find(|&model| embed::status_for(model, &embed::model_dir(model)).available)
+    else {
+        eprintln!("skipped: no built-in model is installed");
         return;
-    }
+    };
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_lore"))
         .args(["model", "serve", "--model", model.id()])
         .env("LORE_EMBED_SERVE_IDLE", "3")

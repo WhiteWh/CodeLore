@@ -82,6 +82,7 @@ fn token() -> String {
 }
 
 /// A server's answer to the queries of this process.
+#[derive(Clone)]
 pub struct Remote {
     addr: SocketAddr,
     token: String,
@@ -114,7 +115,13 @@ impl Embeddings for Remote {
         if let Some(error) = reply["error"].as_str() {
             return Err(fail(error.to_owned()));
         }
-        serde_json::from_value(reply["vectors"].clone()).map_err(|error| fail(error.to_string()))
+        let vectors: Vec<Vec<f32>> = serde_json::from_value(reply["vectors"].clone()).map_err(|error| fail(error.to_string()))?;
+        if vectors.len() != texts.len() || vectors.iter().any(|vector| {
+            vector.len() != self.dimensions || vector.iter().any(|value| !value.is_finite())
+        }) {
+            return Err(fail("returned invalid vectors".to_owned()));
+        }
+        Ok(vectors)
     }
 
     fn dimensions(&self) -> usize {
@@ -285,17 +292,29 @@ pub fn wait_for(model: EmbeddingModel, limit: Duration) -> Option<Remote> {
 /// starting already (a marker under a minute old). `spawn` is the caller's
 /// detached spawn.
 pub fn start(model: EmbeddingModel, spawn: impl FnOnce(&mut std::process::Command) -> std::io::Result<()>) {
-    if starting(model) {
+    let build = build();
+    let marker = starting_marker(model, &build);
+    // Serialize the decision to start, including replacement of an old
+    // marker. Hand off to the marker before making the executable copy, so
+    // other CLI processes can join the wait for the same server immediately.
+    let claimed = (|| -> std::io::Result<bool> {
+        std::fs::create_dir_all(state_dir())?;
+        let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(marker.with_extension("lock"))?;
+        fs2::FileExt::lock_exclusive(&lock)?;
+        if starting(model) || connect(model).is_some() {
+            return Ok(false);
+        }
+        std::fs::write(&marker, std::process::id().to_string())?;
+        Ok(true)
+    })();
+    if !matches!(claimed, Ok(true)) {
         return;
     }
-    let marker = starting_marker(model, &build());
     let started = (|| -> std::io::Result<()> {
-        std::fs::create_dir_all(state_dir())?;
-        std::fs::write(&marker, std::process::id().to_string())?;
         let mut command = std::process::Command::new(server_exe()?);
         command
             .args(["model", "serve", "--model", model.id()])
-            .env("LORE_SERVE_BUILD", build())
+            .env("LORE_SERVE_BUILD", build)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null());

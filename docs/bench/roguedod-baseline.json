@@ -1,0 +1,2912 @@
+{
+  "spec": "tools/bench/roguedod_queries.json",
+  "env": {
+    "startedAt": "2026-11-18T11:36:36.004Z",
+    "platform": "win32 10.0.26200 x64",
+    "node": "v24.15.0",
+    "lore": {
+      "binary": "<LORE_BIN>",
+      "version": "lore 0.4.1 (9de6304)"
+    },
+    "socraticode": {
+      "entry": "<SOCRATICODE_ENTRY>",
+      "version": "1.16.1"
+    },
+    "atlasCache": "<LORE_CACHE>",
+    "reps": 3
+  },
+  "indexes": {
+    "roguedod_socraticode": {
+      "docker": true,
+      "index": {
+        "chunks": 28978,
+        "collection": "codebase_3658ab1b6e89",
+        "files_indexed": 5157,
+        "files_total": 5157,
+        "last_indexed_at": "2026-11-07T14:08:33.481Z",
+        "state": "indexed"
+      },
+      "node": true,
+      "ollama": {
+        "installed": true,
+        "model": "nomic-embed-text",
+        "model_present": true,
+        "provider": "ollama",
+        "reachable": true,
+        "url": "http://localhost:11434"
+      },
+      "path": "<RogueDOD checkout>/RogueDOD",
+      "plugin": {
+        "installed": false,
+        "version": null
+      },
+      "project_id": "3658ab1b6e89",
+      "qdrant": {
+        "agents": true,
+        "mode": "managed",
+        "native": {
+          "installable": true,
+          "installed": false,
+          "version": "1.19.1"
+        },
+        "reachable": true,
+        "url": "http://127.0.0.1:16333"
+      },
+      "runner": {
+        "running": false
+      },
+      "watching": false
+    },
+    "ue_socraticode": {
+      "docker": true,
+      "index": {
+        "chunks": 388711,
+        "collection": "codebase_55cbf89225aa",
+        "files_indexed": 63034,
+        "files_total": 63037,
+        "last_indexed_at": "2026-09-02T23:24:51.589Z",
+        "state": "indexed"
+      },
+      "node": true,
+      "ollama": {
+        "installed": true,
+        "model": "nomic-embed-text",
+        "model_present": true,
+        "provider": "ollama",
+        "reachable": true,
+        "url": "http://localhost:11434"
+      },
+      "path": "<UE installation>/Engine/Source",
+      "plugin": {
+        "installed": false,
+        "version": null
+      },
+      "project_id": "55cbf89225aa",
+      "qdrant": {
+        "agents": true,
+        "mode": "managed",
+        "native": {
+          "installable": true,
+          "installed": false,
+          "version": "1.19.1"
+        },
+        "reachable": true,
+        "url": "http://127.0.0.1:16333"
+      },
+      "runner": {
+        "running": false
+      },
+      "watching": false
+    },
+    "roguedod_atlas": {
+      "enabled": true,
+      "path": "<LORE_CACHE>/<repository key>/atlas.sqlite",
+      "counts": {
+        "chunks": 40816,
+        "edges": 13934,
+        "files": 6277,
+        "imports": 35857,
+        "symbols": 43923
+      },
+      "vectors": 0,
+      "model": "multilingual-e5-base",
+      "model_installed": true,
+      "semantic": true,
+      "refreshed": {
+        "files_read": 0,
+        "files_dropped": 0
+      }
+    }
+  },
+  "coverage": {
+    "measured_at": "2026-11-18T14:20:00+03:00",
+    "method": {
+      "socraticode_status": "hgs socraticode status <corpus path> --json",
+      "socraticode_paths": "Qdrant POST /collections/<collection>/points/scroll (with_payload=[relativePath], no vectors), unique relativePath values counted",
+      "socraticode_metadata": "Qdrant scroll of socraticode_metadata filtered by projectPath",
+      "atlas_status": "lore -C <RogueDOD checkout> atlas status --json with LORE_CACHE set to a private copy",
+      "atlas_paths": "python sqlite3 read-only query over atlas.sqlite files table"
+    },
+    "roguedod": {
+      "atlas": {
+        "path": "<LORE_CACHE>/<repository key>/atlas.sqlite",
+        "files": 6277,
+        "pieces": 40816,
+        "symbols": 43923,
+        "imports": 35857,
+        "edges": 13934,
+        "vectors": 0,
+        "semantic_configured": true,
+        "model": "multilingual-e5-base",
+        "model_installed": true,
+        "db_file_rows": 6287,
+        "file_extensions": {
+          "cpp": 2621,
+          "h": 2609,
+          "md": 408,
+          "py": 345,
+          "ush": 84,
+          "Build.cs": 83,
+          "usf": 74,
+          "ps1": 17,
+          "sh": 16,
+          "hlsl": 15
+        },
+        "docs": 413,
+        "cpp_plus_h": 5230,
+        "plugin_files": 3020,
+        "vacuus_plugin_indexed": false,
+        "vacuus_plugin_source_files": 893,
+        "vacuus_note": "Only 104 paths contain 'VaCuus' and all are the game's integrations/docs (Source/RogueDOD/.../UI/VaCuus, Docs/VaCuus); Plugins/VaCuus/** is excluded by RogueDOD/.atlasignore (third-party plugin whitelist does not re-include it)."
+      },
+      "socraticode": {
+        "collection": "codebase_3658ab1b6e89",
+        "files_reported": 5157,
+        "files_total": 5157,
+        "chunks": 28978,
+        "unique_files_in_payload": 5154,
+        "last_indexed_at": "2026-11-07T14:08:33.481Z",
+        "built_by_version": "1.16.2",
+        "query_version": "1.16.1",
+        "embedding": {
+          "provider": "ollama",
+          "model": "nomic-embed-text",
+          "dimensions": 768,
+          "query_prefix": "search_query: ",
+          "document_includes_path": true
+        },
+        "top_dirs": {
+          "Source": 2751,
+          "Balance": 1221,
+          "Plugins": 855,
+          "Docs": 272,
+          "Tools": 22,
+          "Config": 19
+        },
+        "plugins": {
+          "RoguePCG": 460,
+          "RogueArena": 149,
+          "RogueBalance": 119,
+          "ProjectQueryServer": 65,
+          "RogueCoreUtility": 62
+        },
+        "file_extensions": {
+          "h": 1817,
+          "cpp": 1706,
+          "json": 1271,
+          "md": 271,
+          "py": 32,
+          "cs": 21,
+          "ini": 21
+        },
+        "vacuus_plugin_indexed": false,
+        "vacuus_plugin_source_files": 893,
+        "vacuus_note": "Plugins/VaCuus/** is absent from the collection; the only VaCuus hits are Source/RogueDOD/.../UI/VaCuus, Docs/VaCuus and Tools/VaCuusBake."
+      }
+    },
+    "ue": {
+      "socraticode": {
+        "collection": "codebase_55cbf89225aa",
+        "files_reported": 63034,
+        "files_total": 63037,
+        "chunks": 388711,
+        "last_indexed_at": "2026-09-02T23:24:51.589Z",
+        "coreminimal_chunks": 2,
+        "actorcomponent_chunks": 159,
+        "actor_cpp_chunks": 287,
+        "stale_note": "Index built 2026-09-02; Runtime/Engine/Private/Components/ActorComponent.cpp was last written 2026-10-22, so the index may not match the current tree byte for byte. Content checks (the SetComponentTickEnabled key) still land at the current line numbers.",
+        "atlas_indexed": false
+      }
+    }
+  },
+  "summary": {
+    "roguedod/socraticode": {
+      "queries": 6,
+      "expected_at_1": 5,
+      "expected_at_3": 5,
+      "expected_at_10": 6,
+      "answered_at_10": 6,
+      "latency_median_ms": 51.5
+    },
+    "roguedod/atlas": {
+      "queries": 6,
+      "expected_at_1": 0,
+      "expected_at_3": 4,
+      "expected_at_10": 5,
+      "answered_at_10": 5,
+      "latency_median_ms": 1045.5
+    },
+    "ue/socraticode": {
+      "queries": 6,
+      "expected_at_1": 1,
+      "expected_at_3": 2,
+      "expected_at_10": 3,
+      "answered_at_10": 3,
+      "latency_median_ms": 175
+    }
+  },
+  "results": [
+    {
+      "id": "rd-equip-exact",
+      "corpus": "roguedod",
+      "kind": "exact",
+      "query": "UInventoryWeapon::Equip",
+      "keys": [
+        "void UInventoryWeapon::Equip"
+      ],
+      "expected": {
+        "path": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+        "line": 28,
+        "symbol": "UInventoryWeapon::Equip",
+        "role": "definition"
+      },
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 87,
+          "latency_reps_ms": [
+            87,
+            123,
+            136
+          ],
+          "answer_rank": 1,
+          "expected_rank": 1,
+          "rank_reps": [
+            {
+              "expected": 1,
+              "answer": 1
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Source\\RogueDOD\\Private\\Items\\InventoryWeapon.cpp",
+              "start": 1,
+              "end": 51,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Plugins\\RogueCoreUtility\\Source\\RogueCoreUtility\\Public\\Types\\Bitset.h",
+              "start": 182,
+              "end": 185,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Source\\RogueDOD\\Private\\Components\\RogueSpriteMarkerComponent.cpp",
+              "start": 305,
+              "end": 317,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Source\\RogueDOD\\Public\\Items\\InventoryWeapon.h",
+              "start": 1,
+              "end": 27,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Source\\RogueDOD\\Public\\Map\\RogueFastTravelSubsystem.h",
+              "start": 15,
+              "end": 28,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Source\\RogueDOD\\Private\\Items\\ItemsDataRow.cpp",
+              "start": 1,
+              "end": 36,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Plugins\\RoguePCG\\Source\\RoguePCGEditor\\Private\\AssetTypeActions\\PCGPointBufferTypeActions.cpp",
+              "start": 83,
+              "end": 93,
+              "score": 0.2
+            },
+            {
+              "rank": 8,
+              "path": "Balance\\schema.json",
+              "start": 15931,
+              "end": 16030,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Plugins\\RogueCoreUtility\\Source\\RogueCoreUtility\\Public\\Utility\\FunctionInvocationHelper.h",
+              "start": 769,
+              "end": 770,
+              "score": 0.1667
+            },
+            {
+              "rank": 10,
+              "path": "Balance\\tables\\Presets\\DT_EnemyDataPresets\\Pusher.Hammer.Default.json",
+              "start": 1,
+              "end": 100,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "ok",
+          "latency_ms": 1035,
+          "latency_reps_ms": [
+            1035,
+            1096,
+            1267
+          ],
+          "answer_rank": 2,
+          "expected_rank": 2,
+          "rank_reps": [
+            {
+              "expected": 2,
+              "answer": 2
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            }
+          ],
+          "notes": [],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "RogueDOD/Source/RogueDOD/Public/Items/InventoryWeapon.h",
+              "start": 1,
+              "end": 27,
+              "score": 0.04892,
+              "symbols": [
+                "UInventoryWeapon"
+              ],
+              "via": [
+                "words",
+                "symbol"
+              ]
+            },
+            {
+              "rank": 2,
+              "path": "RogueDOD/Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+              "start": 28,
+              "end": 50,
+              "score": 0.01639,
+              "symbols": [
+                "UInventoryWeapon::Equip",
+                "UInventoryWeapon::Unequip"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 3,
+              "path": "RogueDOD/Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+              "start": 1,
+              "end": 27,
+              "score": 0.01587,
+              "symbols": [
+                "UInventoryWeapon::InitializeItem"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 4,
+              "path": "RogueDOD/Source/RogueDOD/Private/Items/InventoryRangeWeaponItem.cpp",
+              "start": 27,
+              "end": 49,
+              "score": 0.01563,
+              "symbols": [
+                "UInventoryRangeWeaponItem::Equip",
+                "UInventoryRangeWeaponItem::Unequip"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 5,
+              "path": "RogueDOD/Source/RogueDOD/Public/Items/InventoryRangeWeaponItem.h",
+              "start": 1,
+              "end": 28,
+              "score": 0.01538,
+              "symbols": [
+                "UInventoryRangeWeaponItem"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 6,
+              "path": "RogueDOD/Docs/Guides/WeaponAuthoringGuide.md",
+              "start": 121,
+              "end": 180,
+              "score": 0.01515,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 7,
+              "path": "RogueDOD/Docs/Guides/WeaponAuthoringGuide.md",
+              "start": 361,
+              "end": 369,
+              "score": 0.01493,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 8,
+              "path": "RogueDOD/Docs/Guides/EnemyAuthoringGuide.md",
+              "start": 1,
+              "end": 60,
+              "score": 0.01471,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 9,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/Weapon/RogueWeaponPanelLibrary.cpp",
+              "start": 1,
+              "end": 18,
+              "score": 0.01449,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 10,
+              "path": "RogueDOD/Source/RogueDOD/Public/Equipment/EquipmentData.h",
+              "start": 1,
+              "end": 25,
+              "score": 0.01429,
+              "symbols": [
+                "EEquipmentItemActorVisibility"
+              ],
+              "via": [
+                "words"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "rd-equip-nl",
+      "corpus": "roguedod",
+      "kind": "natural-language",
+      "query": "where equipping a weapon item hands the weapon data to the owner's weapon component and initializes its weapon actors",
+      "keys": [
+        "InitializeWeaponActors(ItemGuid)"
+      ],
+      "expected": {
+        "path": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+        "line": 28,
+        "symbol": "UInventoryWeapon::Equip",
+        "role": "body"
+      },
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 54,
+          "latency_reps_ms": [
+            54,
+            140,
+            130
+          ],
+          "answer_rank": 5,
+          "expected_rank": 5,
+          "rank_reps": [
+            {
+              "expected": 5,
+              "answer": 5
+            },
+            {
+              "expected": 5,
+              "answer": 5
+            },
+            {
+              "expected": 6,
+              "answer": 6
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Balance\\tables\\Items\\DT_EnemyWeaponsItems\\AI.HeadBomb.json",
+              "start": 1,
+              "end": 100,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Source\\RogueDOD\\Private\\Weapons\\WeaponComponent.cpp",
+              "start": 236,
+              "end": 256,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Source\\RogueDOD\\Private\\Weapons\\WeaponComponent.cpp",
+              "start": 54,
+              "end": 80,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Balance\\tables\\Items\\DT_PlayerWeaponsItems\\PairSwords.json",
+              "start": 91,
+              "end": 190,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Source\\RogueDOD\\Private\\Items\\InventoryWeapon.cpp",
+              "start": 1,
+              "end": 51,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Balance\\tables\\Items\\DT_EnemyWeaponsItems\\AI.HeadBomb.Elite.json",
+              "start": 1,
+              "end": 100,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Docs\\KeySubsystems.md",
+              "start": 66,
+              "end": 68,
+              "score": 0.2
+            },
+            {
+              "rank": 8,
+              "path": "Config\\DefaultGameplayTags.ini",
+              "start": 1,
+              "end": 100,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Balance\\tables\\Items\\DT_EnemyWeaponsItems\\AI.Sword.json",
+              "start": 91,
+              "end": 190,
+              "score": 0.1667
+            },
+            {
+              "rank": 10,
+              "path": "Source\\RogueDOD\\Private\\AbilitySystem\\Abilities\\ModularAbility\\AbilityModules\\LaunchComponentAbilityModule.cpp",
+              "start": 209,
+              "end": 218,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "ok",
+          "latency_ms": 1056,
+          "latency_reps_ms": [
+            2089,
+            1131,
+            1056
+          ],
+          "answer_rank": null,
+          "expected_rank": null,
+          "rank_reps": [
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            }
+          ],
+          "notes": [],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "RogueDOD/Docs/Guides/EnemyAuthoringGuide.md",
+              "start": 1,
+              "end": 60,
+              "score": 0.01639,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 2,
+              "path": "RogueDOD/Docs/Guides/WeaponAuthoringGuide.md",
+              "start": 1,
+              "end": 60,
+              "score": 0.01613,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 3,
+              "path": "RogueDOD/Source/RogueDOD/Public/Equipment/EquipmentRuntimeData.h",
+              "start": 71,
+              "end": 157,
+              "score": 0.01587,
+              "symbols": [
+                "FEquipmentRuntimeInitializeParameters",
+                "FEquipmentRuntimeData"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 4,
+              "path": "RogueDOD/Docs/Guides/WeaponAuthoringGuide.md",
+              "start": 301,
+              "end": 360,
+              "score": 0.01563,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 5,
+              "path": "RogueDOD/Source/RogueDOD/Private/Equipment/EquipmentRuntimeData.cpp",
+              "start": 110,
+              "end": 137,
+              "score": 0.01538,
+              "symbols": [
+                "FEquipmentRuntimeData::SetOwnerItemData",
+                "FEquipmentRuntimeData::ApplyOwnerItemDataToActor"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 6,
+              "path": "RogueDOD/Source/RogueDOD/Private/Equipment/EquipmentProcessorComponent.cpp",
+              "start": 453,
+              "end": 466,
+              "score": 0.01429,
+              "symbols": [
+                "UEquipmentProcessorComponent::SetEquipmentData"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 7,
+              "path": "RogueDOD/Source/RogueDOD/Private/Weapons/MeleeWeaponTraceComponent.cpp",
+              "start": 274,
+              "end": 299,
+              "score": 0.01408,
+              "symbols": [
+                "UMeleeWeaponTraceComponent::InitializeOwnerData",
+                "UMeleeWeaponTraceComponent::ProcessTrace"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 8,
+              "path": "RogueDOD/Docs/Guides/EnemyAuthoringGuide.md",
+              "start": 601,
+              "end": 619,
+              "score": 0.01389,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 9,
+              "path": "RogueDOD/Source/RogueDOD/Public/Equipment/EquipmentData.h",
+              "start": 1,
+              "end": 25,
+              "score": 0.0137,
+              "symbols": [
+                "EEquipmentItemActorVisibility"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 10,
+              "path": "RogueDOD/Source/RogueDOD/Private/Weapons/EquipmentWeapon.cpp",
+              "start": 1,
+              "end": 23,
+              "score": 0.01333,
+              "symbols": [
+                "AEquipmentWeapon::OnEquipmentInitialized_Implementation"
+              ],
+              "via": [
+                "words"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "rd-equip-edge",
+      "corpus": "roguedod",
+      "kind": "static-call",
+      "query": "which UWeaponComponent functions does UInventoryWeapon::Equip call after Super::Equip",
+      "keys": [
+        "SwitchWeapon(WeaponData, EWeaponType::None",
+        "InitializeWeaponActors(ItemGuid)"
+      ],
+      "expected": {
+        "path": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+        "line": 28,
+        "symbol": "UInventoryWeapon::Equip",
+        "role": "body"
+      },
+      "edges": [
+        {
+          "from": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp:30",
+          "to": "Source/RogueDOD/Private/Items/InventoryItem.cpp:89",
+          "call": "Super::Equip -> UInventoryItem::Equip"
+        },
+        {
+          "from": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp:34",
+          "to": "Source/RogueDOD/Private/Weapons/WeaponComponent.cpp:207",
+          "call": "OwningWeaponComponent->SwitchWeapon -> UWeaponComponent::SwitchWeapon"
+        },
+        {
+          "from": "Source/RogueDOD/Private/Items/InventoryWeapon.cpp:35",
+          "to": "Source/RogueDOD/Private/Weapons/WeaponComponent.cpp:237",
+          "call": "OwningWeaponComponent->InitializeWeaponActors -> UWeaponComponent::InitializeWeaponActors"
+        }
+      ],
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 41,
+          "latency_reps_ms": [
+            41,
+            122,
+            85
+          ],
+          "answer_rank": 1,
+          "expected_rank": 1,
+          "rank_reps": [
+            {
+              "expected": 1,
+              "answer": 1
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Source\\RogueDOD\\Private\\Items\\InventoryWeapon.cpp",
+              "start": 1,
+              "end": 51,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Source\\RogueDOD\\Private\\Interaction\\Terminal\\RogueTerminalActor.cpp",
+              "start": 103,
+              "end": 113,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Source\\RogueDOD\\Private\\UI\\Settings\\RogueSettingDataSources.cpp",
+              "start": 346,
+              "end": 358,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Source\\RogueDOD\\Public\\Items\\InventoryWeapon.h",
+              "start": 1,
+              "end": 27,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Source\\RogueDOD\\Private\\Settings\\RogueUpscaleApplier.cpp",
+              "start": 189,
+              "end": 203,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Source\\RogueDOD\\Private\\Items\\InventoryRangeWeaponItem.cpp",
+              "start": 1,
+              "end": 50,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Plugins\\RogueCoreUtility\\Source\\RogueCoreUtility\\Private\\RogueCoreUtility.cpp",
+              "start": 1,
+              "end": 20,
+              "score": 0.2333
+            },
+            {
+              "rank": 8,
+              "path": "Source\\RogueDOD\\Public\\AI_V2\\Navigation\\Tactical\\RogueTacticalNavSubsystem.h",
+              "start": 221,
+              "end": 238,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Source\\RogueDOD\\Private\\Weapons\\WeaponComponent.cpp",
+              "start": 171,
+              "end": 180,
+              "score": 0.2
+            },
+            {
+              "rank": 10,
+              "path": "Source\\RogueDOD\\Private\\Subsystems\\EquipmentSubsystem.cpp",
+              "start": 1,
+              "end": 92,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "ok",
+          "latency_ms": 988,
+          "latency_reps_ms": [
+            988,
+            1306,
+            1335
+          ],
+          "answer_rank": 3,
+          "expected_rank": 3,
+          "rank_reps": [
+            {
+              "expected": 3,
+              "answer": 3
+            },
+            {
+              "expected": 3,
+              "answer": 3
+            },
+            {
+              "expected": 3,
+              "answer": 3
+            }
+          ],
+          "notes": [],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "RogueDOD/Source/RogueDOD/Public/Items/InventoryWeapon.h",
+              "start": 1,
+              "end": 27,
+              "score": 0.04918,
+              "symbols": [
+                "UInventoryWeapon"
+              ],
+              "via": [
+                "words",
+                "symbol"
+              ]
+            },
+            {
+              "rank": 2,
+              "path": "RogueDOD/Source/RogueDOD/Public/Weapons/WeaponComponent.h",
+              "start": 69,
+              "end": 148,
+              "score": 0.04152,
+              "symbols": [
+                "UWeaponComponent"
+              ],
+              "via": [
+                "words",
+                "symbol"
+              ]
+            },
+            {
+              "rank": 3,
+              "path": "RogueDOD/Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+              "start": 28,
+              "end": 50,
+              "score": 0.01613,
+              "symbols": [
+                "UInventoryWeapon::Equip",
+                "UInventoryWeapon::Unequip"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 4,
+              "path": "RogueDOD/Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+              "start": 1,
+              "end": 27,
+              "score": 0.01587,
+              "symbols": [
+                "UInventoryWeapon::InitializeItem"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 5,
+              "path": "RogueDOD/Source/RogueDOD/Public/Items/InventoryRangeWeaponItem.h",
+              "start": 1,
+              "end": 28,
+              "score": 0.01563,
+              "symbols": [
+                "UInventoryRangeWeaponItem"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 6,
+              "path": "RogueDOD/Source/RogueDOD/Private/Weapons/WeaponComponent.cpp",
+              "start": 435,
+              "end": 459,
+              "score": 0.01538,
+              "symbols": [
+                "UWeaponComponent::IsAIControlled",
+                "UWeaponComponent::CallServerHitEvent"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 7,
+              "path": "RogueDOD/Source/RogueDOD/Private/Items/InventoryRangeWeaponItem.cpp",
+              "start": 27,
+              "end": 49,
+              "score": 0.01515,
+              "symbols": [
+                "UInventoryRangeWeaponItem::Equip",
+                "UInventoryRangeWeaponItem::Unequip"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 8,
+              "path": "RogueDOD/Source/RogueDOD/Private/Weapons/WeaponComponent.cpp",
+              "start": 82,
+              "end": 171,
+              "score": 0.01493,
+              "symbols": [
+                "UWeaponComponent::EndPlay",
+                "UWeaponComponent::TickComponent"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 9,
+              "path": "RogueDOD/Source/RogueDOD/Private/Items/InventoryRangeWeaponItem.cpp",
+              "start": 1,
+              "end": 26,
+              "score": 0.01429,
+              "symbols": [
+                "UInventoryRangeWeaponItem::InitializeItem"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 10,
+              "path": "RogueDOD/Source/RogueDOD/Private/Weapons/BaseWeapon.cpp",
+              "start": 84,
+              "end": 110,
+              "score": 0.01205,
+              "symbols": [
+                "ABaseWeapon::BeginPlay",
+                "ABaseWeapon::EquipmentDropRequest_Implementation"
+              ],
+              "via": [
+                "words"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "rd-weapon-switch-exact",
+      "corpus": "roguedod",
+      "kind": "exact",
+      "query": "UWeaponComponent::SwitchWeapon",
+      "keys": [
+        "void UWeaponComponent::SwitchWeapon"
+      ],
+      "expected": {
+        "path": "Source/RogueDOD/Private/Weapons/WeaponComponent.cpp",
+        "line": 207,
+        "symbol": "UWeaponComponent::SwitchWeapon",
+        "role": "definition"
+      },
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 56,
+          "latency_reps_ms": [
+            56,
+            136,
+            131
+          ],
+          "answer_rank": 1,
+          "expected_rank": 1,
+          "rank_reps": [
+            {
+              "expected": 1,
+              "answer": 1
+            },
+            {
+              "expected": 1,
+              "answer": 1
+            },
+            {
+              "expected": 1,
+              "answer": 1
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Source\\RogueDOD\\Private\\Weapons\\WeaponComponent.cpp",
+              "start": 206,
+              "end": 235,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Plugins\\RogueCoreUtility\\Source\\RogueCoreUtility\\Public\\Types\\Bitset.h",
+              "start": 182,
+              "end": 185,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Source\\RogueDOD\\Private\\Components\\RogueSpriteMarkerComponent.cpp",
+              "start": 305,
+              "end": 317,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Source\\RogueDOD\\Private\\Items\\InventoryWeapon.cpp",
+              "start": 1,
+              "end": 51,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Source\\RogueDOD\\Private\\Weapons\\WeaponComponent.cpp",
+              "start": 181,
+              "end": 205,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Source\\RogueDOD\\Public\\Map\\RogueFastTravelSubsystem.h",
+              "start": 15,
+              "end": 28,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Source\\RogueDOD\\Public\\Weapons\\WeaponComponent.h",
+              "start": 65,
+              "end": 164,
+              "score": 0.2
+            },
+            {
+              "rank": 8,
+              "path": "Plugins\\RoguePCG\\Source\\RoguePCGEditor\\Private\\AssetTypeActions\\PCGPointBufferTypeActions.cpp",
+              "start": 83,
+              "end": 93,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Balance\\tables\\Abilities\\DT_EnemyAbilities\\AI.SwitchWeapon.json",
+              "start": 1,
+              "end": 81,
+              "score": 0.1667
+            },
+            {
+              "rank": 10,
+              "path": "Plugins\\RogueCoreUtility\\Source\\RogueCoreUtility\\Public\\Utility\\FunctionInvocationHelper.h",
+              "start": 769,
+              "end": 770,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "ok",
+          "latency_ms": 981,
+          "latency_reps_ms": [
+            997,
+            981,
+            1168
+          ],
+          "answer_rank": 2,
+          "expected_rank": 2,
+          "rank_reps": [
+            {
+              "expected": 2,
+              "answer": 2
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            }
+          ],
+          "notes": [],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "RogueDOD/Source/RogueDOD/Public/Weapons/WeaponComponent.h",
+              "start": 69,
+              "end": 148,
+              "score": 0.04817,
+              "symbols": [
+                "UWeaponComponent"
+              ],
+              "via": [
+                "words",
+                "symbol"
+              ]
+            },
+            {
+              "rank": 2,
+              "path": "RogueDOD/Source/RogueDOD/Private/Weapons/WeaponComponent.cpp",
+              "start": 207,
+              "end": 226,
+              "score": 0.01639,
+              "symbols": [
+                "UWeaponComponent::SwitchWeapon"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 3,
+              "path": "RogueDOD/Source/RogueDOD/Private/Weapons/WeaponComponent.cpp",
+              "start": 172,
+              "end": 206,
+              "score": 0.01613,
+              "symbols": [
+                "UWeaponComponent::GetLifetimeReplicatedProps",
+                "UWeaponComponent::SetNewWeaponData"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 4,
+              "path": "RogueDOD/Source/RogueDOD/Private/Weapons/MobWeaponComponent.cpp",
+              "start": 124,
+              "end": 168,
+              "score": 0.01587,
+              "symbols": [
+                "UMobWeaponComponent::SwitchWeaponByType"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 5,
+              "path": "RogueDOD/Source/RogueDOD/Private/AbilitySystem/Abilities/WeaponSwitchGameplayAbility.cpp",
+              "start": 1,
+              "end": 26,
+              "score": 0.0102,
+              "symbols": [
+                "UWeaponSwitchGameplayAbility::OnNativeEventReceived"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 6,
+              "path": "RogueDOD/Source/RogueDOD/Public/Weapons/WeaponComponent.h",
+              "start": 285,
+              "end": 295,
+              "score": 0.0098,
+              "symbols": [
+                "FScopedWeaponListLock",
+                "WEAPON_SCOPE_LOCK"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 7,
+              "path": "RogueDOD/Source/RogueDOD/Private/AbilitySystem/Abilities/ActivateRangeAttackAbility.cpp",
+              "start": 36,
+              "end": 43,
+              "score": 0.00971,
+              "symbols": [
+                "UActivateRangeAttackAbility::GetOwnerWeaponComponent"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 8,
+              "path": "RogueDOD/Source/RogueDOD/Private/Helpers/WeaponHelper.cpp",
+              "start": 32,
+              "end": 47,
+              "score": 0.00962,
+              "symbols": [
+                "GET_COMPONENT_FROM_ACTOR",
+                "UWeaponHelper::GetWeaponComponentByActor"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 9,
+              "path": "RogueDOD/Source/RogueDOD/Private/Items/InventoryWeapon.cpp",
+              "start": 28,
+              "end": 50,
+              "score": 0.00952,
+              "symbols": [
+                "UInventoryWeapon::Equip",
+                "UInventoryWeapon::Unequip"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 10,
+              "path": "RogueDOD/Source/RogueDOD/Public/Components/Interfaces/WeaponComponentOwnerInterface.h",
+              "start": 17,
+              "end": 28,
+              "score": 0.00935,
+              "symbols": [
+                "IWeaponComponentOwnerInterface"
+              ],
+              "via": [
+                "words"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "rd-vacuus-exact",
+      "corpus": "roguedod",
+      "kind": "exact",
+      "query": "URogueVaCuusScreen::LoadDocument",
+      "keys": [
+        "void URogueVaCuusScreen::LoadDocument"
+      ],
+      "expected": {
+        "path": "Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+        "line": 308,
+        "symbol": "URogueVaCuusScreen::LoadDocument",
+        "role": "definition"
+      },
+      "edges": [
+        {
+          "from": "Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp:318",
+          "to": "Plugins/VaCuus/Source/VaCuus/Private/VaCuusView.cpp:166",
+          "call": "View->LoadDocument -> UVaCuusView::LoadDocument",
+          "note": "callee is in Plugins/VaCuus, which neither indexed corpus covers"
+        }
+      ],
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 49,
+          "latency_reps_ms": [
+            49,
+            86,
+            122
+          ],
+          "answer_rank": 1,
+          "expected_rank": 1,
+          "rank_reps": [
+            {
+              "expected": 1,
+              "answer": 1
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Source\\RogueDOD\\Private\\UI\\VaCuus\\RogueVaCuusScreen.cpp",
+              "start": 307,
+              "end": 331,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Plugins\\RogueCoreUtility\\Source\\RogueCoreUtility\\Public\\Types\\Bitset.h",
+              "start": 182,
+              "end": 185,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Source\\RogueDOD\\Private\\UI\\VaCuus\\RogueVaCuusScreen.cpp",
+              "start": 140,
+              "end": 171,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Source\\RogueDOD\\Private\\Components\\RogueSpriteMarkerComponent.cpp",
+              "start": 305,
+              "end": 317,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Source\\RogueDOD\\Public\\Map\\RogueFastTravelSubsystem.h",
+              "start": 15,
+              "end": 28,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Docs\\VaCuus\\reports\\13-runtime.md",
+              "start": 91,
+              "end": 190,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Docs\\VaCuus\\reports\\20-settings-doc.md",
+              "start": 631,
+              "end": 651,
+              "score": 0.2
+            },
+            {
+              "rank": 8,
+              "path": "Plugins\\RoguePCG\\Source\\RoguePCGEditor\\Private\\AssetTypeActions\\PCGPointBufferTypeActions.cpp",
+              "start": 83,
+              "end": 93,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Plugins\\RogueCoreUtility\\Source\\RogueCoreUtility\\Public\\Utility\\FunctionInvocationHelper.h",
+              "start": 769,
+              "end": 770,
+              "score": 0.1667
+            },
+            {
+              "rank": 10,
+              "path": "Source\\RogueDOD\\Public\\UI\\VaCuus\\RogueVaCuusScreen.h",
+              "start": 111,
+              "end": 195,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "ok",
+          "latency_ms": 1229,
+          "latency_reps_ms": [
+            1229,
+            1450,
+            1764
+          ],
+          "answer_rank": 2,
+          "expected_rank": 2,
+          "rank_reps": [
+            {
+              "expected": 2,
+              "answer": 2
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            }
+          ],
+          "notes": [],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "RogueDOD/Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusScreen.h",
+              "start": 65,
+              "end": 144,
+              "score": 0.04866,
+              "symbols": [
+                "URogueVaCuusScreen"
+              ],
+              "via": [
+                "words",
+                "symbol"
+              ]
+            },
+            {
+              "rank": 2,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+              "start": 298,
+              "end": 327,
+              "score": 0.01639,
+              "symbols": [
+                "URogueVaCuusScreen::NativeTick",
+                "URogueVaCuusScreen::LoadDocument"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 3,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+              "start": 141,
+              "end": 172,
+              "score": 0.01613,
+              "symbols": [
+                "URogueVaCuusScreen::EnsureDocumentAndPresenter"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 4,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusConsole.cpp",
+              "start": 140,
+              "end": 170,
+              "score": 0.01515,
+              "symbols": [
+                "OpenOnViewport"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 5,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusItemsPresenter.cpp",
+              "start": 158,
+              "end": 175,
+              "score": 0.01493,
+              "symbols": [
+                "URogueVaCuusItemsPresenter::BindModels",
+                "URogueVaCuusItemsPresenter::OnDocumentLoaded"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 6,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusNotesPresenter.cpp",
+              "start": 115,
+              "end": 132,
+              "score": 0.01471,
+              "symbols": [
+                "URogueVaCuusNotesPresenter::BindModels",
+                "URogueVaCuusNotesPresenter::OnDocumentLoaded"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 7,
+              "path": "RogueDOD/Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusPresenter.h",
+              "start": 60,
+              "end": 139,
+              "score": 0.01429,
+              "symbols": [
+                "URogueVaCuusPresenter"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 8,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusConsole.cpp",
+              "start": 106,
+              "end": 139,
+              "score": 0.01351,
+              "symbols": [
+                "OpenOnLayer"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 9,
+              "path": "RogueDOD/Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusPresenter.h",
+              "start": 1,
+              "end": 59,
+              "score": 0.01299,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 10,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusPauseScreen.cpp",
+              "start": 165,
+              "end": 228,
+              "score": 0.0125,
+              "symbols": [
+                "URogueVaCuusPauseScreen::HandleTabRequested",
+                "URogueVaCuusPauseScreen::ApplyTab"
+              ],
+              "via": [
+                "words"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "rd-vacuus-nl",
+      "corpus": "roguedod",
+      "kind": "natural-language",
+      "query": "how a Rogue VaCuus screen swaps its document on the existing view while keeping bound models alive",
+      "keys": [
+        "View->LoadDocument(VfsPath)",
+        "Swaps the document on the EXISTING view"
+      ],
+      "expected": {
+        "path": "Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+        "line": 308,
+        "symbol": "URogueVaCuusScreen::LoadDocument",
+        "role": "definition"
+      },
+      "alternates": [
+        {
+          "path": "Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusScreen.h",
+          "line": 111
+        }
+      ],
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 49,
+          "latency_reps_ms": [
+            49,
+            127,
+            101
+          ],
+          "answer_rank": 1,
+          "expected_rank": 1,
+          "rank_reps": [
+            {
+              "expected": 1,
+              "answer": 1
+            },
+            {
+              "expected": 1,
+              "answer": 1
+            },
+            {
+              "expected": 1,
+              "answer": 1
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Source\\RogueDOD\\Public\\UI\\VaCuus\\RogueVaCuusScreen.h",
+              "start": 111,
+              "end": 195,
+              "score": 0.75
+            },
+            {
+              "rank": 2,
+              "path": "Source\\RogueDOD\\Public\\UI\\VaCuus\\RogueVaCuusPauseSettings.h",
+              "start": 13,
+              "end": 112,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Source\\RogueDOD\\Public\\UI\\VaCuus\\RogueVaCuusPauseScreen.h",
+              "start": 13,
+              "end": 56,
+              "score": 0.4333
+            },
+            {
+              "rank": 4,
+              "path": "Source\\RogueDOD\\Public\\UI\\VaCuus\\RogueVaCuusPresenter.h",
+              "start": 15,
+              "end": 114,
+              "score": 0.3833
+            },
+            {
+              "rank": 5,
+              "path": "Docs\\VaCuus\\agents\\vacuus-screen-bind.md",
+              "start": 1,
+              "end": 100,
+              "score": 0.375
+            },
+            {
+              "rank": 6,
+              "path": "Docs\\VaCuus\\agents\\vacuus-runtime.md",
+              "start": 91,
+              "end": 119,
+              "score": 0.254
+            },
+            {
+              "rank": 7,
+              "path": "Source\\RogueDOD\\Private\\UI\\VaCuus\\RogueVaCuusPresenter.cpp",
+              "start": 8,
+              "end": 24,
+              "score": 0.24
+            },
+            {
+              "rank": 8,
+              "path": "Docs\\VaCuus\\agents\\vacuus-runtime.md",
+              "start": 1,
+              "end": 100,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Source\\RogueDOD\\Private\\UI\\VaCuus\\RogueVaCuusScreen.cpp",
+              "start": 140,
+              "end": 171,
+              "score": 0.1714
+            },
+            {
+              "rank": 10,
+              "path": "Source\\RogueDOD\\Private\\UI\\VaCuus\\RogueVaCuusPauseScreen.cpp",
+              "start": 169,
+              "end": 227,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "ok",
+          "latency_ms": 1084,
+          "latency_reps_ms": [
+            1232,
+            1084,
+            1321
+          ],
+          "answer_rank": 4,
+          "expected_rank": 4,
+          "rank_reps": [
+            {
+              "expected": 4,
+              "answer": 4
+            },
+            {
+              "expected": 4,
+              "answer": 4
+            },
+            {
+              "expected": 4,
+              "answer": 4
+            }
+          ],
+          "notes": [],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "RogueDOD/Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusPauseSettings.h",
+              "start": 1,
+              "end": 19,
+              "score": 0.01639,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 2,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+              "start": 141,
+              "end": 172,
+              "score": 0.01613,
+              "symbols": [
+                "URogueVaCuusScreen::EnsureDocumentAndPresenter"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 3,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusPauseScreen.cpp",
+              "start": 165,
+              "end": 228,
+              "score": 0.01587,
+              "symbols": [
+                "URogueVaCuusPauseScreen::HandleTabRequested",
+                "URogueVaCuusPauseScreen::ApplyTab"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 4,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+              "start": 298,
+              "end": 327,
+              "score": 0.01563,
+              "symbols": [
+                "URogueVaCuusScreen::NativeTick",
+                "URogueVaCuusScreen::LoadDocument"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 5,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusItemsPresenter.cpp",
+              "start": 158,
+              "end": 175,
+              "score": 0.01538,
+              "symbols": [
+                "URogueVaCuusItemsPresenter::BindModels",
+                "URogueVaCuusItemsPresenter::OnDocumentLoaded"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 6,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusNotesPresenter.cpp",
+              "start": 115,
+              "end": 132,
+              "score": 0.01515,
+              "symbols": [
+                "URogueVaCuusNotesPresenter::BindModels",
+                "URogueVaCuusNotesPresenter::OnDocumentLoaded"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 7,
+              "path": "RogueDOD/Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusScreen.h",
+              "start": 65,
+              "end": 144,
+              "score": 0.01493,
+              "symbols": [
+                "URogueVaCuusScreen"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 8,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusPausePresenter.cpp",
+              "start": 240,
+              "end": 288,
+              "score": 0.01471,
+              "symbols": [
+                "URogueVaCuusPausePresenter::OnDocumentLoaded",
+                "URogueVaCuusPausePresenter::HandleModelWrite"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 9,
+              "path": "RogueDOD/Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusPauseScreen.h",
+              "start": 1,
+              "end": 46,
+              "score": 0.01449,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 10,
+              "path": "RogueDOD/Docs/VaCuus/agents/vacuus-runtime.md",
+              "start": 1,
+              "end": 60,
+              "score": 0.01429,
+              "symbols": [],
+              "via": [
+                "words"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "rd-vacuus-plugin-gap",
+      "corpus": "roguedod",
+      "kind": "exact",
+      "query": "UVaCuusView::LoadDocument",
+      "keys": [
+        "void UVaCuusView::LoadDocument"
+      ],
+      "expected": {
+        "path": "Plugins/VaCuus/Source/VaCuus/Private/VaCuusView.cpp",
+        "line": 166,
+        "symbol": "UVaCuusView::LoadDocument",
+        "role": "definition"
+      },
+      "gap": true,
+      "gap_note": "Plugins/VaCuus (893 .cpp/.h files) is outside both indexed corpora; this probe documents the gap and is excluded from accuracy totals.",
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 60,
+          "latency_reps_ms": [
+            60,
+            132,
+            91
+          ],
+          "answer_rank": null,
+          "expected_rank": null,
+          "rank_reps": [
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Plugins\\RogueCoreUtility\\Source\\RogueCoreUtility\\Public\\Types\\Bitset.h",
+              "start": 182,
+              "end": 185,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Docs\\VaCuus\\reports\\13-runtime.md",
+              "start": 91,
+              "end": 190,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Source\\RogueDOD\\Public\\UI\\VaCuus\\RogueVaCuusScreen.h",
+              "start": 111,
+              "end": 195,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Source\\RogueDOD\\Private\\Components\\RogueSpriteMarkerComponent.cpp",
+              "start": 305,
+              "end": 317,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Source\\RogueDOD\\Public\\Map\\RogueFastTravelSubsystem.h",
+              "start": 15,
+              "end": 28,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Source\\RogueDOD\\Private\\UI\\VaCuus\\RogueVaCuusScreen.cpp",
+              "start": 307,
+              "end": 331,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Source\\RogueDOD\\Public\\UI\\VaCuus\\RogueVaCuusScreen.h",
+              "start": 14,
+              "end": 20,
+              "score": 0.2
+            },
+            {
+              "rank": 8,
+              "path": "Plugins\\RoguePCG\\Source\\RoguePCGEditor\\Private\\AssetTypeActions\\PCGPointBufferTypeActions.cpp",
+              "start": 83,
+              "end": 93,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Plugins\\RogueCoreUtility\\Source\\RogueCoreUtility\\Public\\Utility\\FunctionInvocationHelper.h",
+              "start": 769,
+              "end": 770,
+              "score": 0.1667
+            },
+            {
+              "rank": 10,
+              "path": "Source\\RogueDOD\\Private\\UI\\VaCuus\\RogueVaCuusScreen.cpp",
+              "start": 140,
+              "end": 171,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "ok",
+          "latency_ms": 1040,
+          "latency_reps_ms": [
+            1228,
+            1772,
+            1040
+          ],
+          "answer_rank": null,
+          "expected_rank": null,
+          "rank_reps": [
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            }
+          ],
+          "notes": [],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+              "start": 298,
+              "end": 327,
+              "score": 0.01639,
+              "symbols": [
+                "URogueVaCuusScreen::NativeTick",
+                "URogueVaCuusScreen::LoadDocument"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 2,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusScreen.cpp",
+              "start": 141,
+              "end": 172,
+              "score": 0.01613,
+              "symbols": [
+                "URogueVaCuusScreen::EnsureDocumentAndPresenter"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 3,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusItemsPresenter.cpp",
+              "start": 158,
+              "end": 175,
+              "score": 0.01587,
+              "symbols": [
+                "URogueVaCuusItemsPresenter::BindModels",
+                "URogueVaCuusItemsPresenter::OnDocumentLoaded"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 4,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusNotesPresenter.cpp",
+              "start": 115,
+              "end": 132,
+              "score": 0.01563,
+              "symbols": [
+                "URogueVaCuusNotesPresenter::BindModels",
+                "URogueVaCuusNotesPresenter::OnDocumentLoaded"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 5,
+              "path": "RogueDOD/Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusPresenter.h",
+              "start": 60,
+              "end": 139,
+              "score": 0.01515,
+              "symbols": [
+                "URogueVaCuusPresenter"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 6,
+              "path": "RogueDOD/Source/RogueDOD/Public/UI/VaCuus/RogueVaCuusScreen.h",
+              "start": 65,
+              "end": 144,
+              "score": 0.01493,
+              "symbols": [
+                "URogueVaCuusScreen"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 7,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusItemsScreen.cpp",
+              "start": 98,
+              "end": 109,
+              "score": 0.01471,
+              "symbols": [
+                "URogueVaCuusItemsScreen::HandleLoadCompleted"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 8,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusNotesScreen.cpp",
+              "start": 99,
+              "end": 110,
+              "score": 0.01449,
+              "symbols": [
+                "URogueVaCuusNotesScreen::HandleLoadCompleted"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 9,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusUnlocksScreen.cpp",
+              "start": 104,
+              "end": 115,
+              "score": 0.01429,
+              "symbols": [
+                "URogueVaCuusUnlocksScreen::HandleLoadCompleted"
+              ],
+              "via": [
+                "words"
+              ]
+            },
+            {
+              "rank": 10,
+              "path": "RogueDOD/Source/RogueDOD/Private/UI/VaCuus/RogueVaCuusPauseScreen.cpp",
+              "start": 152,
+              "end": 164,
+              "score": 0.01408,
+              "symbols": [
+                "URogueVaCuusPauseScreen::HandleLoadCompleted"
+              ],
+              "via": [
+                "words"
+              ]
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "ue-coreminimal-exact",
+      "corpus": "ue",
+      "kind": "exact",
+      "query": "CoreMinimal.h",
+      "match": "path",
+      "expected": {
+        "path": "Runtime/Core/Public/CoreMinimal.h",
+        "line": 1,
+        "symbol": "CoreMinimal.h",
+        "role": "file"
+      },
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 175,
+          "latency_reps_ms": [
+            188,
+            223,
+            175
+          ],
+          "answer_rank": null,
+          "expected_rank": null,
+          "rank_reps": [
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Runtime\\Apple\\MetalRHI\\Public\\MetalThirdParty.h",
+              "start": 1,
+              "end": 17,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Runtime\\GeometryCore\\Public\\DynamicMesh\\MeshIndexUtil.h",
+              "start": 176,
+              "end": 183,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Runtime\\MessagingRpc\\Public\\IMessageRpcClient.h",
+              "start": 246,
+              "end": 250,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Developer\\MassEntityTestSuite\\Public\\MassEntityTestFarmPlot.h",
+              "start": 1,
+              "end": 19,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Runtime\\Engine\\Public\\SkeletalMeshDeformerHelpers.h",
+              "start": 1,
+              "end": 8,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Runtime\\LevelSequence\\Public\\LevelSequenceDirector.h",
+              "start": 148,
+              "end": 150,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Runtime\\RenderCore\\Public\\RHIStaticStates.h",
+              "start": 348,
+              "end": 350,
+              "score": 0.2
+            },
+            {
+              "rank": 8,
+              "path": "Developer\\LauncherServices\\Public\\ILauncherWorker.h",
+              "start": 1,
+              "end": 8,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Runtime\\Engine\\Public\\AnimInterpFilter.h",
+              "start": 1,
+              "end": 12,
+              "score": 0.1667
+            },
+            {
+              "rank": 10,
+              "path": "Runtime\\Core\\Public\\Containers\\IntrusiveDoubleLinkedList.h",
+              "start": 315,
+              "end": 318,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "unavailable",
+          "reason": "no Atlas index for this corpus; Atlas has no cross-repository search"
+        }
+      }
+    },
+    {
+      "id": "ue-actorcomponent-file",
+      "corpus": "ue",
+      "kind": "exact",
+      "query": "ActorComponent.cpp",
+      "match": "path",
+      "expected": {
+        "path": "Runtime/Engine/Private/Components/ActorComponent.cpp",
+        "line": 1,
+        "symbol": "ActorComponent.cpp",
+        "role": "file"
+      },
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 177,
+          "latency_reps_ms": [
+            177,
+            196,
+            179
+          ],
+          "answer_rank": 1,
+          "expected_rank": 1,
+          "rank_reps": [
+            {
+              "expected": 1,
+              "answer": 1
+            },
+            {
+              "expected": 1,
+              "answer": 1
+            },
+            {
+              "expected": 2,
+              "answer": 2
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Runtime\\Engine\\Private\\Components\\ActorComponent.cpp",
+              "start": 3422,
+              "end": 3453,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Runtime\\Engine\\Private\\Rendering\\StaticLightingSystemInterface.cpp",
+              "start": 10,
+              "end": 18,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Editor\\SequenceRecorder\\Private\\ActorRecording.cpp",
+              "start": 182,
+              "end": 203,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Runtime\\Engine\\Private\\Streaming\\Texture2DMipDataProvider_DDC.cpp",
+              "start": 17,
+              "end": 26,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Editor\\BlueprintGraph\\Private\\K2Node_VariableGet.cpp",
+              "start": 124,
+              "end": 129,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Editor\\MovieSceneTools\\Private\\TrackEditors\\CustomPrimitiveDataTrackEditor.cpp",
+              "start": 483,
+              "end": 534,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Editor\\SequenceRecorder\\Private\\ActorRecording.cpp",
+              "start": 977,
+              "end": 1106,
+              "score": 0.2
+            },
+            {
+              "rank": 8,
+              "path": "Runtime\\Core\\Private\\Internationalization\\ICUTextCharacterIterator.cpp",
+              "start": 64,
+              "end": 72,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Runtime\\Engine\\Private\\Streaming\\VolumeTextureStreaming.cpp",
+              "start": 15,
+              "end": 23,
+              "score": 0.1667
+            },
+            {
+              "rank": 10,
+              "path": "Developer\\MeshUtilities\\Private\\MeshUtilities.cpp",
+              "start": 5855,
+              "end": 5886,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "unavailable",
+          "reason": "no Atlas index for this corpus; Atlas has no cross-repository search"
+        }
+      }
+    },
+    {
+      "id": "ue-actorcomponent-nl",
+      "corpus": "ue",
+      "kind": "natural-language",
+      "query": "where an actor component registers its tick functions when it is added to a world",
+      "keys": [
+        "RegisterAllComponentTickFunctions(true)"
+      ],
+      "expected": {
+        "path": "Runtime/Engine/Private/Components/ActorComponent.cpp",
+        "line": 2038,
+        "symbol": "UActorComponent::RegisterComponentWithWorld",
+        "role": "body"
+      },
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 176,
+          "latency_reps_ms": [
+            176,
+            176,
+            191
+          ],
+          "answer_rank": null,
+          "expected_rank": null,
+          "rank_reps": [
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Runtime\\Engine\\Private\\Actor.cpp",
+              "start": 1347,
+              "end": 1446,
+              "score": 0.6429
+            },
+            {
+              "rank": 2,
+              "path": "Runtime\\Engine\\Private\\Actor.cpp",
+              "start": 6185,
+              "end": 6311,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Runtime\\Engine\\Classes\\GameFramework\\Actor.h",
+              "start": 874,
+              "end": 973,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Runtime\\Engine\\Private\\WorldPartition\\ActorPartition\\PartitionActorDesc.cpp",
+              "start": 76,
+              "end": 87,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Runtime\\Engine\\Classes\\Components\\ActorComponent.h",
+              "start": 986,
+              "end": 1050,
+              "score": 0.2526
+            },
+            {
+              "rank": 6,
+              "path": "Runtime\\Engine\\Classes\\GameFramework\\Actor.h",
+              "start": 784,
+              "end": 883,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Editor\\Kismet\\Private\\SCSEditorViewportClient.cpp",
+              "start": 218,
+              "end": 263,
+              "score": 0.25
+            },
+            {
+              "rank": 8,
+              "path": "Runtime\\Engine\\Classes\\GameFramework\\Actor.h",
+              "start": 2854,
+              "end": 2953,
+              "score": 0.2222
+            },
+            {
+              "rank": 9,
+              "path": "Runtime\\AnimGraphRuntime\\Private\\BoneControllers\\AnimNode_TwoBoneIK.cpp",
+              "start": 260,
+              "end": 278,
+              "score": 0.2143
+            },
+            {
+              "rank": 10,
+              "path": "Runtime\\Engine\\Classes\\Engine\\World.h",
+              "start": 1235,
+              "end": 1317,
+              "score": 0.2095
+            }
+          ]
+        },
+        "atlas": {
+          "status": "unavailable",
+          "reason": "no Atlas index for this corpus; Atlas has no cross-repository search"
+        }
+      }
+    },
+    {
+      "id": "ue-register-edge",
+      "corpus": "ue",
+      "kind": "static-call",
+      "query": "who calls UActorComponent::RegisterComponentWithWorld while an actor registers all its components",
+      "keys": [
+        "Component->RegisterComponentWithWorld(World, Context)"
+      ],
+      "expected": {
+        "path": "Runtime/Engine/Private/Actor.cpp",
+        "line": 6262,
+        "symbol": "AActor::RegisterAllComponents",
+        "role": "caller"
+      },
+      "edges": [
+        {
+          "from": "Runtime/Engine/Private/Actor.cpp:6262",
+          "to": "Runtime/Engine/Private/Components/ActorComponent.cpp:1967",
+          "call": "Component->RegisterComponentWithWorld -> UActorComponent::RegisterComponentWithWorld"
+        }
+      ],
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 175,
+          "latency_reps_ms": [
+            201,
+            175,
+            190
+          ],
+          "answer_rank": 3,
+          "expected_rank": 3,
+          "rank_reps": [
+            {
+              "expected": 3,
+              "answer": 3
+            },
+            {
+              "expected": 4,
+              "answer": 4
+            },
+            {
+              "expected": 4,
+              "answer": 4
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Runtime\\Engine\\Private\\Components\\ActorComponent.cpp",
+              "start": 1966,
+              "end": 2077,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Runtime\\Engine\\Classes\\GameFramework\\Actor.h",
+              "start": 2854,
+              "end": 2953,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Runtime\\Engine\\Private\\Actor.cpp",
+              "start": 6185,
+              "end": 6311,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Runtime\\Engine\\Classes\\GameFramework\\Actor.h",
+              "start": 784,
+              "end": 883,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Runtime\\Engine\\Private\\Actor.cpp",
+              "start": 6100,
+              "end": 6184,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Runtime\\Engine\\Classes\\GameFramework\\Actor.h",
+              "start": 874,
+              "end": 973,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Runtime\\Engine\\Public\\Net\\Iris\\ReplicationSystem\\EngineReplicationBridge.h",
+              "start": 203,
+              "end": 296,
+              "score": 0.2111
+            },
+            {
+              "rank": 8,
+              "path": "Runtime\\NavigationSystem\\Public\\NavigationSystem.h",
+              "start": 942,
+              "end": 971,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Runtime\\Engine\\Private\\Tests\\AutoRTFM\\AutoRTFMActorComponentTests.cpp",
+              "start": 211,
+              "end": 310,
+              "score": 0.2
+            },
+            {
+              "rank": 10,
+              "path": "Runtime\\Engine\\Private\\DemoNetDriver.cpp",
+              "start": 5248,
+              "end": 5266,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "unavailable",
+          "reason": "no Atlas index for this corpus; Atlas has no cross-repository search"
+        }
+      }
+    },
+    {
+      "id": "ue-coreminimal-nl",
+      "corpus": "ue",
+      "kind": "natural-language",
+      "query": "the umbrella header that brings Unreal's core types, containers, logging and platform macros into a translation unit",
+      "match": "path",
+      "expected": {
+        "path": "Runtime/Core/Public/CoreMinimal.h",
+        "line": 1,
+        "symbol": "CoreMinimal.h",
+        "role": "file"
+      },
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 175,
+          "latency_reps_ms": [
+            180,
+            191,
+            175
+          ],
+          "answer_rank": null,
+          "expected_rank": null,
+          "rank_reps": [
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            },
+            {
+              "expected": null,
+              "answer": null
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Runtime\\CoreUObject\\Public\\UObject\\LinkerLoad.h",
+              "start": 1291,
+              "end": 1388,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "ThirdParty\\Boost\\Deploy\\boost-1.88.0\\include\\boost\\log\\support\\spirit_classic.hpp",
+              "start": 1,
+              "end": 52,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Editor\\UnrealEd\\Private\\Commandlets\\GatherTextFromSourceCommandlet.cpp",
+              "start": 1486,
+              "end": 1558,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "ThirdParty\\libFLAC\\flac-1.4.3\\include\\all.h",
+              "start": 181,
+              "end": 280,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "ThirdParty\\FreeType2\\FreeType2-2.14.1\\include\\freetype\\config\\public-macros.h",
+              "start": 91,
+              "end": 139,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "ThirdParty\\abseil\\20240722.0\\include\\absl\\flags\\declare.h",
+              "start": 1,
+              "end": 69,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "ThirdParty\\WebRTC\\5414\\Include\\third_party\\abseil-cpp\\absl\\flags\\declare.h",
+              "start": 1,
+              "end": 74,
+              "score": 0.2
+            },
+            {
+              "rank": 8,
+              "path": "Editor\\UnrealEd\\Private\\Cooker\\DiffWriterZenHeader.h",
+              "start": 1,
+              "end": 100,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Runtime\\Core\\Public\\Windows\\PreWindowsApi.h",
+              "start": 1,
+              "end": 45,
+              "score": 0.1667
+            },
+            {
+              "rank": 10,
+              "path": "ThirdParty\\ICU\\icu4c-64_1\\include\\unicode\\ures.h",
+              "start": 1,
+              "end": 53,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "unavailable",
+          "reason": "no Atlas index for this corpus; Atlas has no cross-repository search"
+        }
+      }
+    },
+    {
+      "id": "ue-tick-exact",
+      "corpus": "ue",
+      "kind": "exact",
+      "query": "UActorComponent::SetComponentTickEnabled",
+      "keys": [
+        "void UActorComponent::SetComponentTickEnabled"
+      ],
+      "expected": {
+        "path": "Runtime/Engine/Private/Components/ActorComponent.cpp",
+        "line": 1755,
+        "symbol": "UActorComponent::SetComponentTickEnabled",
+        "role": "definition"
+      },
+      "edges": [
+        {
+          "from": "Runtime/Engine/Private/Components/ActorComponent.cpp:1759",
+          "to": "Runtime/Engine/Classes/Engine/EngineBaseTypes.h:364",
+          "call": "PrimaryComponentTick.SetTickFunctionEnable -> FActorComponentTickFunction::SetTickFunctionEnable"
+        }
+      ],
+      "systems": {
+        "socraticode": {
+          "status": "ok",
+          "latency_ms": 167,
+          "latency_reps_ms": [
+            195,
+            167,
+            184
+          ],
+          "answer_rank": 3,
+          "expected_rank": 5,
+          "rank_reps": [
+            {
+              "expected": 5,
+              "answer": 3
+            },
+            {
+              "expected": 5,
+              "answer": 3
+            },
+            {
+              "expected": 5,
+              "answer": 4
+            }
+          ],
+          "top10": [
+            {
+              "rank": 1,
+              "path": "Runtime\\Engine\\Private\\Components\\ActorComponent.cpp",
+              "start": 3067,
+              "end": 3086,
+              "score": 0.5
+            },
+            {
+              "rank": 2,
+              "path": "Runtime\\Engine\\Public\\AudioDevice.h",
+              "start": 212,
+              "end": 234,
+              "score": 0.5
+            },
+            {
+              "rank": 3,
+              "path": "Runtime\\Engine\\Private\\Components\\ActorComponent.cpp",
+              "start": 1762,
+              "end": 1798,
+              "score": 0.3333
+            },
+            {
+              "rank": 4,
+              "path": "Runtime\\Core\\Public\\Async\\Future.h",
+              "start": 37,
+              "end": 39,
+              "score": 0.3333
+            },
+            {
+              "rank": 5,
+              "path": "Runtime\\Engine\\Private\\Components\\ActorComponent.cpp",
+              "start": 1754,
+              "end": 1761,
+              "score": 0.25
+            },
+            {
+              "rank": 6,
+              "path": "Runtime\\Core\\Public\\Misc\\FrameValue.h",
+              "start": 36,
+              "end": 38,
+              "score": 0.25
+            },
+            {
+              "rank": 7,
+              "path": "Runtime\\CoreUObject\\Public\\UObject\\DynamicallyTypedValue.h",
+              "start": 285,
+              "end": 289,
+              "score": 0.2
+            },
+            {
+              "rank": 8,
+              "path": "Runtime\\Engine\\Private\\Components\\ActorComponent.cpp",
+              "start": 2823,
+              "end": 2833,
+              "score": 0.2
+            },
+            {
+              "rank": 9,
+              "path": "Editor\\Sequencer\\Public\\AnimatedPropertyKey.h",
+              "start": 93,
+              "end": 101,
+              "score": 0.1667
+            },
+            {
+              "rank": 10,
+              "path": "Runtime\\Engine\\Private\\Components\\ActorComponent.cpp",
+              "start": 2812,
+              "end": 2822,
+              "score": 0.1667
+            }
+          ]
+        },
+        "atlas": {
+          "status": "unavailable",
+          "reason": "no Atlas index for this corpus; Atlas has no cross-repository search"
+        }
+      }
+    }
+  ]
+}
