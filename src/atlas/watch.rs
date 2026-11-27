@@ -1,11 +1,12 @@
 //! Explicit lifecycle for the project's background refresher. The two locks
 //! have different lifetimes: the worker lease lasts until exit, and the
 //! project writer lock is held only during a refresh.
+use super::scan::WatchRules;
 use super::store::{self, Atlas, RefreshKind};
 use crate::config::{self, Config};
 use crate::LoreError;
 use fs2::FileExt;
-use notify::event::{AccessKind, AccessMode};
+use notify::event::{AccessKind, AccessMode, CreateKind, ModifyKind, RemoveKind};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde_json::{json, Value};
 use std::fs::{self, File};
@@ -295,33 +296,83 @@ fn write_state(dir: &Path, value: &Value) -> Result<(), LoreError> {
     fs::rename(&temporary, dir.join(STATE)).map_err(error)
 }
 
-fn relevant(event: &Event, root: &Path, dir: &Path) -> bool {
-    if event.need_rescan() {
-        return true;
-    }
-    if let EventKind::Access(access) = event.kind {
-        if access != AccessKind::Close(AccessMode::Write) {
-            return false;
-        }
-    }
-    let git = root.join(".git");
-    // Build outputs and package folders are never indexed (scan::default_excluded):
-    // a compiler writing thousands of files there is no reason to refresh.
-    let never_indexed = |path: &Path| path.strip_prefix(root).ok().and_then(Path::to_str)
-        .is_some_and(|relative| super::scan::default_excluded(&relative.replace('\\', "/")));
-    event.paths.is_empty() || event.paths.iter().any(|path| {
-        !path.starts_with(dir) && !never_indexed(path) && (!path.starts_with(&git)
-            || path.starts_with(git.join("refs"))
-            || ["", "HEAD", "index", "info", "info/exclude", "packed-refs"].iter().any(|part| path == &git.join(part)))
-    })
+#[derive(Default)]
+struct Notifications {
+    rules: Option<WatchRules>,
+    reconcile: bool,
 }
 
-fn attach(root: &Path, dir: &Path, wake: &mpsc::SyncSender<()>, fault: &Arc<Mutex<Option<String>>>) -> notify::Result<RecommendedWatcher> {
+impl Notifications {
+    fn invalidate(&mut self) {
+        self.rules = None;
+        self.reconcile = true;
+    }
+
+    fn relevant(&mut self, event: &Event, root: &Path, dir: &Path) -> bool {
+        if event.need_rescan() {
+            self.invalidate();
+            return true;
+        }
+        if matches!(event.kind, EventKind::Access(access) if access != AccessKind::Close(AccessMode::Write)) {
+            return false;
+        }
+        if event.paths.is_empty() {
+            self.invalidate();
+            return true;
+        }
+        let file_only = matches!(event.kind, EventKind::Create(CreateKind::File) | EventKind::Remove(RemoveKind::File));
+        // Windows reports FILE_ACTION_MODIFIED, including the write time of
+        // a directory, as Modify(Any). Renames have their own Name events.
+        let structural = matches!(event.kind, EventKind::Any | EventKind::Create(_) | EventKind::Remove(_) |
+            EventKind::Modify(ModifyKind::Name(_))) || !cfg!(windows) && event.kind == EventKind::Modify(ModifyKind::Any);
+        let mut relevant = false;
+        // Keep checking after a relevant path: the other side of a rename
+        // can be a rule file and must request a full scan.
+        for path in &event.paths {
+            let path = if cfg!(windows) { config::simplify(path) } else { path.clone() };
+            if self.rules.as_ref().is_some_and(|rules| rules.rule_input(&path, structural && !file_only)) {
+                self.invalidate();
+                return true;
+            }
+            if path.starts_with(dir) {
+                continue;
+            }
+            let Some(relative) = path.strip_prefix(root).ok().and_then(Path::to_str) else {
+                relevant = true;
+                continue;
+            };
+            let relative = if cfg!(windows) { std::borrow::Cow::Owned(relative.replace('\\', "/")) } else { std::borrow::Cow::Borrowed(relative) };
+            let relative = relative.as_ref();
+            let matches_name = |value: &str, name: &str| value == name || cfg!(windows) && value.eq_ignore_ascii_case(name);
+            let (first, tail) = relative.split_once('/').unwrap_or((relative, ""));
+            if matches_name(first, ".git") {
+                if ["", "HEAD", "index", "info", "info/exclude", "packed-refs", "config", "config.worktree"]
+                    .iter().any(|name| matches_name(tail, name))
+                    || matches_name(tail.split('/').next().unwrap_or(""), "refs")
+                {
+                    self.invalidate();
+                    return true;
+                }
+                continue;
+            }
+            let name = relative.rsplit('/').next().unwrap_or("");
+            if [config::CONFIG_NAME, "lore.local.toml", ".gitignore", ".atlasignore"].iter().any(|rule| matches_name(name, rule)) {
+                self.invalidate();
+                return true;
+            }
+            relevant |= self.rules.as_ref().is_none_or(|rules| !rules.suppresses(relative, file_only, structural));
+        }
+        relevant
+    }
+}
+
+fn attach(root: &Path, dir: &Path, wake: &mpsc::SyncSender<()>, fault: &Arc<Mutex<Option<String>>>, notifications: &Arc<Mutex<Notifications>>) -> notify::Result<RecommendedWatcher> {
     let (root, dir, wake, fault) = (root.to_path_buf(), dir.to_path_buf(), wake.clone(), fault.clone());
+    let notifications = notifications.clone();
     let watch_root = root.clone();
     let mut watcher = RecommendedWatcher::new(move |event: notify::Result<Event>| {
         match event {
-            Ok(event) if relevant(&event, &root, &dir) => {}
+            Ok(event) if notifications.lock().expect("watcher notification lock").relevant(&event, &root, &dir) => {}
             Ok(_) => return,
             Err(e) => *fault.lock().expect("watcher fault lock") = Some(e.to_string()),
         }
@@ -342,7 +393,7 @@ fn debounce(wake: &mpsc::Receiver<()>) {
     }
 }
 
-fn reconcile(root: &Path, dir: &Path, kind: RefreshKind, started: impl FnOnce() -> Result<(), LoreError>) -> Result<bool, LoreError> {
+fn reconcile(root: &Path, dir: &Path, kind: RefreshKind, notifications: &Mutex<Notifications>, started: impl FnOnce() -> Result<(), LoreError>) -> Result<bool, LoreError> {
     let mcp = fs::read_to_string(dir.join(ENABLED)).is_ok_and(|mode| mode == MCP_MARKER);
     let config = if mcp { super::mcp::project_config(root)? } else { config::load(root)? };
     if config.root != root {
@@ -353,6 +404,15 @@ fn reconcile(root: &Path, dir: &Path, kind: RefreshKind, started: impl FnOnce() 
     }
     let Some(mut writer) = store::writer(&config, Some(dir), Duration::ZERO)? else { return Ok(false) };
     started()?;
+    if kind == RefreshKind::Reconcile || notifications.lock().expect("watcher notification lock").rules.is_none() {
+        // Git and rule files are read here, never on the native callback.
+        // A failure leaves the watcher conservative until it can read them.
+        let rules = WatchRules::load(&config).ok();
+        let mut current = notifications.lock().expect("watcher notification lock");
+        if !current.reconcile {
+            current.rules = rules;
+        }
+    }
     writer.refresh_with(&config, kind, || enabled(dir))?;
     let space = store::unreal_store::VectorSpace::new(config.embedding_model());
     let model = if config.atlas.unreal_root.is_some() { &space.key } else { space.model.id() };
@@ -377,12 +437,14 @@ pub(crate) fn run_worker(root: &Path, dir: &Path) -> Result<(), LoreError> {
     }
     let (send, wake) = mpsc::sync_channel(1);
     let fault = Arc::new(Mutex::new(None));
+    let notifications = Arc::new(Mutex::new(Notifications::default()));
     let mut watcher = None;
     let mut watch_error = None;
     let mut next_attach = Instant::now();
     let mut next_refresh = Instant::now();
     let mut attempts = 0;
     let mut last_full: Option<Instant> = None;
+    let mut force_reconcile = false;
     let publish = |phase, attempts, message, watch_error: &Option<String>| write_state(dir, &json!({
         "state": phase, "pid": std::process::id(), "updates": attempts, "error": message, "watcher_error": watch_error,
     }));
@@ -396,12 +458,13 @@ pub(crate) fn run_worker(root: &Path, dir: &Path) -> Result<(), LoreError> {
         });
         if let Some(e) = watcher_fault {
             watcher = None;
+            notifications.lock().expect("watcher notification lock").invalidate();
             watch_error = Some(e);
             next_attach = Instant::now() + RETRY;
             publish("error", attempts, None::<String>, &watch_error)?;
         }
         if watcher.is_none() && Instant::now() >= next_attach {
-            match attach(root, dir, &send, &fault) {
+            match attach(root, dir, &send, &fault, &notifications) {
                 Ok(current) => {
                     watcher = Some(current);
                     watch_error = None;
@@ -418,14 +481,16 @@ pub(crate) fn run_worker(root: &Path, dir: &Path) -> Result<(), LoreError> {
             next_attach = Instant::now() + WATCH_RETRY;
         }
         if Instant::now() >= next_refresh {
-            let full = last_full.is_none_or(|time| time.elapsed() >= FULL_RECONCILE);
+            force_reconcile |= std::mem::take(&mut notifications.lock().expect("watcher notification lock").reconcile);
+            let full = force_reconcile || last_full.is_none_or(|time| time.elapsed() >= FULL_RECONCILE);
             let kind = if full { RefreshKind::Reconcile } else { RefreshKind::Quick };
-            let attempt = reconcile(root, dir, kind, || {
+            let attempt = reconcile(root, dir, kind, &notifications, || {
                 attempts += 1;
                 publish("updating", attempts, None::<String>, &watch_error)
             });
             match attempt {
                 Ok(true) => {
+                    force_reconcile = false;
                     if full {
                         last_full = Some(Instant::now());
                     }
