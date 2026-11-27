@@ -9,6 +9,16 @@ use std::time::{Duration, Instant};
 
 const CONFIG: &str = "version = 1\n[atlas]\nenabled = true\nsemantic = false\nexclude_file = \".atlasignore\"\n";
 
+fn hidden_command(program: &str) -> Command {
+    let mut command = Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+    }
+    command
+}
+
 struct Project {
     _temp: tempfile::TempDir,
     root: PathBuf,
@@ -45,12 +55,12 @@ impl Project {
     }
 
     fn git(&self, args: &[&str]) {
-        let output = Command::new("git").current_dir(&self.root).args(args).output().unwrap();
+        let output = hidden_command("git").current_dir(&self.root).args(args).output().unwrap();
         assert!(output.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&output.stderr));
     }
 
     fn command(&self, args: &[&str]) -> Command {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_lore"));
+        let mut command = hidden_command(env!("CARGO_BIN_EXE_lore"));
         command.current_dir(self._temp.path()).arg("-C").arg(&self.root).arg("atlas").args(args)
             .env("LORE_CACHE", &self.cache)
             .env("LORE_MODEL_FETCH", "off")
@@ -180,11 +190,84 @@ fn atlas_snapshot_uses_existing_ranks_and_never_needs_git() {
 fn terminate_worker(pid: u64) {
     let pid = pid.to_string();
     let output = if cfg!(windows) {
-        Command::new("taskkill").args(["/PID", &pid, "/F"]).output().unwrap()
+        hidden_command("taskkill").args(["/PID", &pid, "/F"]).output().unwrap()
     } else {
         Command::new("kill").args(["-KILL", &pid]).output().unwrap()
     };
     assert!(output.status.success(), "stop test worker {pid}: {output:?}");
+}
+
+#[test]
+fn atlas_watch_skips_excluded_noise_and_notices_rule_changes() {
+    let project = Project::new();
+    let ignore = "Game/custom.rules";
+    let path = "Game/Saved/rescued.cpp";
+    let tracked = "Game/Saved/tracked.cpp";
+    project.write("lore.toml", &CONFIG.replace(".atlasignore", ignore));
+    project.write(ignore, "Saved/\n");
+    project.write(path, &cpp("RescuedFromSaved", 1));
+    project.write(tracked, &cpp("TrackedInSaved", 1));
+    project.git(&["add", tracked]);
+    let git_ignore = "Game/Saved/git-excludes";
+    project.write(git_ignore, "");
+    project.git(&["config", "core.excludesFile", git_ignore]);
+
+    let start = project.atlas(&["watch", "start", "--json"]);
+    project.wait_after(&start);
+    std::thread::sleep(Duration::from_millis(650));
+    let initial = project.status();
+    let updates = &initial["worker"]["updates"];
+    assert_eq!(initial["worker"]["state"], "idle");
+    assert!(!project.has_symbol("RescuedFromSaved", path));
+    for revision in 0..6 {
+        let noise = "Game/Saved/noise.cpp";
+        let renamed = "Game/Saved/moved.cpp";
+        project.write(noise, &cpp("IgnoredEventNoise", revision));
+        fs::rename(project.root.join(noise), project.root.join(renamed)).unwrap();
+        fs::remove_file(project.root.join(renamed)).unwrap();
+        std::thread::sleep(Duration::from_millis(340));
+    }
+    std::thread::sleep(Duration::from_millis(650));
+    let quiet = project.status();
+    assert_eq!(&quiet["worker"]["updates"], updates, "{initial} -> {quiet}");
+    assert_eq!(quiet["checked_at"], initial["checked_at"]);
+
+    project.write(tracked, &cpp("TrackedInSaved", 2));
+    project.wait("tracked modification starts a refresh despite exclusion", Duration::from_secs(8), |status| {
+        status["worker"]["state"] == "idle" && status["worker"]["updates"].as_u64() > updates.as_u64()
+    });
+    assert!(!project.has_symbol("TrackedInSaved", tracked));
+    project.write(ignore, "Saved/*\n!Saved/rescued.cpp\n");
+    let included = project.wait_after(&initial);
+    assert!(project.has_symbol("RescuedFromSaved", path));
+
+    project.write(path, &cpp("RescuedSave", 2));
+    let edited = project.wait_after(&included);
+    assert!(project.has_symbol("RescuedSave", path));
+
+    project.write("Game/Saved/.gitignore", "rescued.cpp\n");
+    let hidden = project.wait_after(&edited);
+    assert!(!project.has_symbol("RescuedSave", path));
+    fs::remove_file(project.root.join("Game/Saved/.gitignore")).unwrap();
+    let unhidden = project.wait_after(&hidden);
+    assert!(project.has_symbol("RescuedSave", path));
+    fs::remove_file(project.root.join(path)).unwrap();
+    let removed = project.wait_after(&unhidden);
+    assert!(!project.has_symbol("RescuedSave", path));
+
+    project.write("src/in-checkout.cpp", &cpp("InCheckoutGitRule", 1));
+    let visible = project.wait_after(&removed);
+    assert!(project.has_symbol("InCheckoutGitRule", "src/in-checkout.cpp"));
+    project.write(git_ignore, "/src/in-checkout.cpp\n");
+    let hidden = project.wait("rule file under an excluded path triggers a full refresh", Duration::from_secs(8), |status| {
+        status["worker"]["state"] == "idle" && status["revision"].as_u64() > visible["revision"].as_u64()
+    });
+    assert!(!project.has_symbol("InCheckoutGitRule", "src/in-checkout.cpp"));
+
+    project.write("Game/other.rules", "");
+    project.write("lore.toml", &CONFIG.replace(".atlasignore", "Game/other.rules"));
+    project.wait_after(&hidden);
+    assert!(project.has_symbol("TrackedInSaved", tracked));
 }
 
 #[test]

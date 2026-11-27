@@ -225,17 +225,36 @@ pub fn blob_id(bytes: &[u8]) -> String {
 /// `*` matches within a path part, `**` across parts; a pattern without one is
 /// a path prefix.
 pub fn excluded(path: &str, patterns: &[String]) -> bool {
-    patterns.iter().any(|pattern| {
-        let pattern = pattern.trim().trim_start_matches("./").replace('\\', "/");
+    patterns.iter().filter_map(|pattern| Exclusion::parse(pattern)).any(|rule| rule.matches(path, true))
+}
+
+enum Exclusion {
+    Prefix(String),
+    Glob(regex::Regex),
+}
+
+impl Exclusion {
+    fn parse(pattern: &str) -> Option<Self> {
+        let pattern = atlas_rule_path(pattern);
         if pattern.is_empty() {
-            return false;
+            return None;
         }
-        if !pattern.contains('*') {
-            let prefix = pattern.trim_end_matches('/');
-            return path == prefix || path.starts_with(&format!("{prefix}/"));
+        if pattern.contains('*') {
+            return glob(&pattern).map(Self::Glob);
         }
-        glob(&pattern, path)
-    })
+        Some(Self::Prefix(pattern.trim_end_matches('/').to_owned()))
+    }
+
+    fn matches(&self, path: &str, file_only: bool) -> bool {
+        match self {
+            Self::Prefix(prefix) => path == prefix || path.strip_prefix(prefix).is_some_and(|tail| tail.starts_with('/')),
+            Self::Glob(regex) => file_only && regex.is_match(path),
+        }
+    }
+}
+
+fn atlas_rule_path(path: &str) -> String {
+    path.trim().trim_start_matches("./").replace('\\', "/")
 }
 
 /// One line of a gitignore file.
@@ -251,16 +270,16 @@ struct Rule {
 /// The last pattern that matches decides; a file in a left-out folder stays
 /// out, as in git.
 #[derive(Default)]
-pub struct Ignore {
+struct Ignore {
     /// (the file's folder from the root, "" or "a/b/", its rules)
     sets: Vec<(String, Vec<Rule>)>,
 }
 
 impl Ignore {
-    pub fn load(root: &Path, files: &[String]) -> Result<Self, LoreError> {
+    fn load(root: &Path, files: &[String]) -> Result<Self, LoreError> {
         let mut sets = Vec::new();
         for file in files {
-            let relative = file.trim().trim_start_matches("./").replace('\\', "/");
+            let relative = atlas_rule_path(file);
             let text = std::fs::read_to_string(root.join(&relative))
                 .map_err(|error| LoreError::new(format!("atlas.exclude_file {relative}: {error}")))?;
             let base = relative.rsplit_once('/').map(|(dir, _)| format!("{dir}/")).unwrap_or_default();
@@ -269,17 +288,12 @@ impl Ignore {
         Ok(Self { sets })
     }
 
-    pub fn excludes(&self, path: &str) -> bool {
+    fn excludes(&self, path: &str, is_dir: bool) -> bool {
         self.sets.iter().any(|(base, rules)| {
             let Some(inside) = path.strip_prefix(base.as_str()) else { return false };
-            let parts: Vec<&str> = inside.split('/').collect();
             // every folder on the way, shallow first: one left out holds its files out
-            for depth in 1..parts.len() {
-                if decide(rules, &parts[..depth].join("/"), true) {
-                    return true;
-                }
-            }
-            decide(rules, inside, false)
+            inside.match_indices('/').any(|(end, _)| decide(rules, &inside[..end], true)) ||
+                decide(rules, inside, is_dir)
         })
     }
 }
@@ -356,7 +370,7 @@ fn rule(line: &str) -> Option<Rule> {
     regex::Regex::new(&pattern).ok().map(|regex| Rule { regex, negated, dir_only })
 }
 
-fn glob(pattern: &str, text: &str) -> bool {
+fn glob(pattern: &str) -> Option<regex::Regex> {
     let mut regex = String::from("^");
     let chars: Vec<char> = pattern.chars().collect();
     let mut i = 0;
@@ -373,7 +387,7 @@ fn glob(pattern: &str, text: &str) -> bool {
         i += 1;
     }
     regex.push('$');
-    regex::Regex::new(&regex).is_ok_and(|re| re.is_match(text))
+    regex::Regex::new(&regex).ok()
 }
 
 pub(super) fn language(path: &str, include: &BTreeSet<String>) -> Option<Lang> {
@@ -385,6 +399,115 @@ pub(super) fn language(path: &str, include: &BTreeSet<String>) -> Option<Lang> {
 
 pub(super) fn default_excluded(path: &str) -> bool {
     path.split('/').any(|part| matches!(part, "node_modules" | "target" | ".git" | "dist" | "build" | "__pycache__" | ".venv" | "vendor"))
+}
+
+struct SourceRules {
+    lore_dir: String,
+    include: BTreeSet<String>,
+    exclude: Vec<Exclusion>,
+    ignore: Ignore,
+}
+
+impl SourceRules {
+    fn load(config: &Config, checkout: &Path) -> Result<Self, LoreError> {
+        Ok(Self {
+            lore_dir: format!("{}/", config.dir.trim_matches('/')),
+            include: config.atlas.include.iter().map(|ext| ext.trim_start_matches('.').to_ascii_lowercase()).collect(),
+            exclude: config.atlas.exclude.iter().filter_map(|pattern| Exclusion::parse(pattern)).collect(),
+            ignore: Ignore::load(checkout, &config.atlas.exclude_files)?,
+        })
+    }
+
+    fn excludes(&self, path: &str, is_dir: bool) -> bool {
+        path.starts_with(&self.lore_dir) || default_excluded(path)
+            || self.exclude.iter().any(|rule| rule.matches(path, !is_dir))
+            || self.ignore.excludes(path, is_dir)
+    }
+
+    fn wanted(&self, path: &str) -> Option<Lang> {
+        if self.excludes(path, false) {
+            return None;
+        }
+        language(path, &self.include)
+    }
+}
+
+/// In-memory rules for notifications. Git still selects untracked files at
+/// scan time. Its tracked paths are kept here so an exclusion cannot mask a
+/// tracked file event or a structural change to one of its parent folders.
+pub(super) struct WatchRules {
+    prefix: String,
+    source: SourceRules,
+    tracked: BTreeSet<String>,
+    inputs: BTreeSet<String>,
+}
+
+impl WatchRules {
+    pub(super) fn load(config: &Config) -> Result<Self, LoreError> {
+        let scope = GitScope::new(config)?;
+        let tracked = scope.git(&["ls-files", "-z"])?;
+        let tracked = split_z(&tracked).filter_map(|path| scope.local_path(&path).map(watch_key)).collect();
+        let mut inputs = BTreeSet::new();
+        let mut add = |path: &Path| {
+            for path in [std::path::absolute(path).ok(), path.canonicalize().ok()].into_iter().flatten() {
+                let path = crate::config::simplify(&path);
+                if let Some(path) = path.to_str() {
+                    inputs.insert(watch_key(path));
+                }
+            }
+        };
+        for file in &config.atlas.exclude_files {
+            add(&scope.checkout.join(atlas_rule_path(file)));
+        }
+        if let Ok(raw) = git(scope.checkout, &["config", "-z", "--path", "--get", "core.excludesFile"]) {
+            if let Some(path) = split_z(&raw).next() {
+                add(&scope.checkout.join(path));
+            }
+        }
+        Ok(Self {
+            source: SourceRules::load(config, scope.checkout)?,
+            tracked,
+            prefix: scope.prefix.unwrap_or_default(),
+            inputs,
+        })
+    }
+
+    pub(super) fn rule_input(&self, path: &Path, structural: bool) -> bool {
+        if self.inputs.is_empty() {
+            return false;
+        }
+        let Some(path) = path.to_str() else { return false };
+        let key = watch_key(path);
+        self.inputs.contains(&key) || structural && has_descendant(&self.inputs, &key)
+    }
+
+    pub(super) fn suppresses(&self, path: &str, file_only: bool, structural: bool) -> bool {
+        let path_in_checkout = if self.prefix.is_empty() { Cow::Borrowed(path) } else { Cow::Owned(format!("{}{path}", self.prefix)) };
+        let path_in_checkout = path_in_checkout.as_ref();
+        // For an event without a file type, only drop it if both a directory
+        // and a possible source file at this path would be excluded.
+        let excluded_file = self.source.excludes(path_in_checkout, false);
+        let excluded = if file_only {
+            excluded_file
+        } else {
+            self.source.excludes(path_in_checkout, true)
+                && (excluded_file || language(path_in_checkout, &self.source.include).is_none())
+        };
+        if !excluded {
+            return false;
+        }
+        let key = watch_key(path);
+        !self.tracked.contains(&key) && (!structural || file_only || !has_descendant(&self.tracked, &key))
+    }
+}
+
+fn watch_key(path: &str) -> String {
+    if cfg!(windows) { path.replace('\\', "/").to_lowercase() } else { path.to_owned() }
+}
+
+fn has_descendant(paths: &BTreeSet<String>, path: &str) -> bool {
+    let prefix = format!("{path}/");
+    paths.range(prefix.clone()..).next().is_some_and(|next| next.starts_with(&prefix))
 }
 
 // Git normally avoids symbolic links while enumerating files. Check the
@@ -443,19 +566,8 @@ pub fn scan(config: &Config) -> Result<BTreeMap<String, Entry>, LoreError> {
 pub fn scan_with(config: &Config, changes: &Changes) -> Result<(BTreeMap<String, Entry>, BTreeSet<String>), LoreError> {
     let root = &config.root;
     let scope = GitScope::new(config)?;
-    let include: BTreeSet<String> = config.atlas.include.iter().map(|ext| ext.trim_start_matches('.').to_ascii_lowercase()).collect();
-    let lore_dir = config.dir.trim_matches('/').to_owned();
     let max_bytes = config.atlas.max_kib * 1024;
-    let ignore = Ignore::load(scope.checkout, &config.atlas.exclude_files)?;
-    let wanted = |path: &str| -> Option<Lang> {
-        if path.starts_with(&format!("{lore_dir}/")) || excluded(path, &config.atlas.exclude) || ignore.excludes(path) {
-            return None;
-        }
-        if default_excluded(path) {
-            return None;
-        }
-        language(path, &include)
-    };
+    let rules = SourceRules::load(config, scope.checkout)?;
     let mut out = BTreeMap::new();
     let mut safe_dirs = BTreeMap::new();
     let mut dirs: BTreeSet<String> = BTreeSet::from([String::new()]);
@@ -478,7 +590,7 @@ pub fn scan_with(config: &Config, changes: &Changes) -> Result<(BTreeMap<String,
         if mode == "160000" || mode == "120000" || deleted.contains(path) || modified.contains(path) {
             continue;
         }
-        let Some(lang) = wanted(repo_path) else { continue };
+        let Some(lang) = rules.wanted(repo_path) else { continue };
         let size = source_metadata(root, path, &mut safe_dirs).map(|meta| meta.len()).unwrap_or(0);
         if size == 0 || size > max_bytes {
             continue;
@@ -489,7 +601,7 @@ pub fn scan_with(config: &Config, changes: &Changes) -> Result<(BTreeMap<String,
         add_dirs(path);
     }
     for path in changes.modified.iter().chain(&changes.untracked).cloned() {
-        let Some(lang) = wanted(&scope.repo_path(&path)) else { continue };
+        let Some(lang) = rules.wanted(&scope.repo_path(&path)) else { continue };
         let size = source_metadata(root, &path, &mut safe_dirs).map(|meta| meta.len()).unwrap_or(0);
         if size == 0 || size > max_bytes {
             continue;
@@ -604,7 +716,7 @@ mod tests {
             ("Game/#hash.txt", true),
             ("Other/Plugins/Vendor/a.cpp", false),
         ] {
-            assert_eq!(ignore.excludes(path), out, "{path}");
+            assert_eq!(ignore.excludes(path, false), out, "{path}");
         }
         assert!(Ignore::load(tmp.path(), &["missing.ignore".to_owned()]).is_err());
     }

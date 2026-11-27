@@ -529,5 +529,5 @@ fn insert_plan(result: &mut BTreeMap<String, Plan>, anchor: PathBuf, declared: b
             }
         }
         append_dirs(&mut previous.source.search_paths, source.search_paths.iter().cloned());
-    }).or_insert(Plan { source, files: super::Files::Listed(group.files) });
+    }).or_insert(Plan { source, files: super::Files::Listed(group.files.into()) });
 }
