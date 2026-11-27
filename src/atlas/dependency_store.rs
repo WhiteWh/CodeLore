@@ -5,8 +5,10 @@ use super::*;
 use super::unreal_store::{VectorSpace, VectorWork};
 use crate::embed::Embeddings;
 use rusqlite::TransactionBehavior;
+use std::cell::Cell;
 
 const MAX_FILE: u64 = 512 * 1024;
+const STOP_CHECK_EVERY: usize = 64;
 
 #[derive(Default)]
 pub(in crate::atlas) struct Publication {
@@ -83,6 +85,15 @@ pub(in crate::atlas) fn fill_named_vectors(
 }
 
 pub(in crate::atlas) fn refresh(source: &Source, files: &Files, active: &impl Fn() -> bool) -> Result<Option<Publication>, LoreError> {
+    if !active() {
+        return Ok(None);
+    }
+    let checks = Cell::new(0);
+    let checkpoint = || {
+        let next = (checks.get() + 1) % STOP_CHECK_EVERY;
+        checks.set(next);
+        next != 0 || active()
+    };
     let dir = source.directory();
     fs::create_dir_all(&dir).map_err(error)?;
     let lock = lock_file(&dir, "writer.lock")?;
@@ -109,9 +120,9 @@ pub(in crate::atlas) fn refresh(source: &Source, files: &Files, active: &impl Fn
     }
     let tree_files;
     let files = match files {
-        Files::Listed(files) => files,
+        Files::Listed(files) => files.as_ref(),
         Files::Tree(profile) => {
-            let Some(selected) = named::files(&source.canonical_path, profile, active)? else { return Ok(None) };
+            let Some(selected) = named::files(&source.canonical_path, profile, &checkpoint)? else { return Ok(None) };
             tree_files = selected;
             &tree_files
         }
@@ -120,7 +131,7 @@ pub(in crate::atlas) fn refresh(source: &Source, files: &Files, active: &impl Fn
     let mut publication = Publication::default();
     let mut wanted = BTreeMap::new();
     for file in files {
-        if !active() {
+        if !checkpoint() {
             return Ok(None);
         }
         let Some(relative) = file.strip_prefix(&source.canonical_path).ok().and_then(Path::to_str) else { continue };
@@ -147,6 +158,8 @@ pub(in crate::atlas) fn refresh(source: &Source, files: &Files, active: &impl Fn
         }
         if tree.is_some() {
             record_tree_pass(&db, publication.selected)?;
+        } else {
+            record_listed_pass(&db, publication.missing)?;
         }
         return info(&db, publication).map(Some);
     }
@@ -159,7 +172,7 @@ pub(in crate::atlas) fn refresh(source: &Source, files: &Files, active: &impl Fn
     }
     let mut content_changed = version == 0;
     for (path, stamp) in wanted {
-        if !active() {
+        if !checkpoint() {
             return Ok(None);
         }
         let previous = old.remove(&path);
@@ -190,6 +203,9 @@ pub(in crate::atlas) fn refresh(source: &Source, files: &Files, active: &impl Fn
         tx.execute("INSERT OR REPLACE INTO dependency_files VALUES(?1, ?2, ?3)", params![path, stamp, blob]).map_err(error)?;
     }
     for path in old.keys() {
+        if !checkpoint() {
+            return Ok(None);
+        }
         drop_file(&tx, path)?;
         tx.execute("DELETE FROM dependency_files WHERE path=?1", [path]).map_err(error)?;
         content_changed = true;
@@ -199,6 +215,8 @@ pub(in crate::atlas) fn refresh(source: &Source, files: &Files, active: &impl Fn
     }
     if tree.is_some() {
         record_tree_pass(&tx, publication.selected)?;
+    } else {
+        record_listed_pass(&tx, publication.missing)?;
     }
     if content_changed {
         tx.execute_batch("INSERT OR REPLACE INTO meta VALUES('revision',
@@ -206,6 +224,9 @@ pub(in crate::atlas) fn refresh(source: &Source, files: &Files, active: &impl Fn
         tx.execute("INSERT OR REPLACE INTO meta VALUES('refreshed', ?1)", [chrono::Utc::now().to_rfc3339()]).map_err(error)?;
         let implementations = count_implementations(&tx)?;
         tx.execute("INSERT OR REPLACE INTO meta VALUES('dependency_implementations', ?1)", [implementations as i64]).map_err(error)?;
+    }
+    if !active() {
+        return Ok(None);
     }
     tx.commit().map_err(error)?;
     info(&db, publication).map(Some)
@@ -216,6 +237,15 @@ fn record_tree_pass(db: &Connection, selected: usize) -> Result<(), LoreError> {
         "INSERT OR REPLACE INTO meta VALUES ('dependency_tree_checked', ?1), ('dependency_selected_files', ?2),
          ('dependency_tree_scans', 1 + coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='dependency_tree_scans'), 0))",
         params![chrono::Utc::now().timestamp(), selected as i64],
+    ).map_err(error)?;
+    Ok(())
+}
+
+fn record_listed_pass(db: &Connection, missing: usize) -> Result<(), LoreError> {
+    db.execute(
+        "INSERT OR REPLACE INTO meta VALUES ('dependency_listed_missing', ?1),
+         ('dependency_listed_scans', 1 + coalesce((SELECT CAST(value AS INTEGER) FROM meta WHERE key='dependency_listed_scans'), 0))",
+        [missing],
     ).map_err(error)?;
     Ok(())
 }

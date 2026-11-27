@@ -529,6 +529,91 @@ fn dependency(status: &Value) -> &Value {
         .unwrap_or(&Value::Null)
 }
 
+fn listed_passes(source: &Value) -> u64 {
+    let db = rusqlite::Connection::open_with_flags(source["path"].as_str().unwrap(), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+    db.busy_timeout(Duration::from_secs(3)).unwrap();
+    db.query_row("SELECT CAST(value AS INTEGER) FROM meta WHERE key='dependency_listed_scans'", [], |row| row.get(0)).unwrap()
+}
+
+#[test]
+fn atlas_mcp_listed_plan_changes_do_not_rescan_unchanged_files() {
+    let fixture = Fixture::new();
+    let shared = fixture.first.parent().unwrap().join("Recorded headers");
+    fs::create_dir(&shared).unwrap();
+    let header = shared.join("Listed.hpp");
+    fs::write(&header, "struct ListedBefore {};").unwrap();
+    let report = fixture.first.join("build/editor/src.cpp.dep.json");
+    let tu = fixture.first.join("src/math.cpp");
+    msvc_dependencies(&report, &tu, &[&header]);
+    let mut client = fixture.client(&fixture.first, None, None, false, "2025-11-25");
+    client.tool("code_search", json!({"query":"AlphaFunction","text_only":true}), false);
+    let initial = client.wait(|status| dependency(status)["state"] == "ready");
+    let original = dependency(&initial);
+    assert_eq!(listed_passes(original), 1);
+
+    // Changes to the report bytes advance discovery without changing its
+    // file list or emitting events under the external container.
+    let advance_tick = |client: &mut Client| {
+        let sha = dependency(&client.status())["provenance"][0]["sha256"].clone();
+        OpenOptions::new().append(true).open(&report).unwrap().write_all(b"\n").unwrap();
+        client.wait(|status| {
+            let next = &dependency(status)["provenance"][0]["sha256"];
+            next.is_string() && *next != sha
+        })
+    };
+    for _ in 0..2 {
+        let unchanged = advance_tick(&mut client);
+        assert_eq!(dependency(&unchanged)["index_key"], original["index_key"]);
+        assert_eq!(listed_passes(dependency(&unchanged)), 1);
+    }
+
+    let writer = OpenOptions::new().read(true).write(true)
+        .open(Path::new(original["path"].as_str().unwrap()).with_file_name("writer.lock")).unwrap();
+    fs2::FileExt::lock_exclusive(&writer).unwrap();
+    fs::write(&header, "struct ListedAfterWrite {};").unwrap();
+    advance_tick(&mut client);
+    assert_eq!(listed_passes(original), 1);
+    assert!(client.tool("code_symbol", json!({"scope":"dependencies","name":"ListedAfterWrite"}), false)["definitions"].as_array().unwrap().is_empty());
+    drop(writer);
+    let changed = client.wait(|status| dependency(status)["revision"].as_u64() > original["revision"].as_u64());
+    assert_eq!(listed_passes(dependency(&changed)), 2);
+    assert_eq!(client.tool("code_symbol", json!({"scope":"dependencies","name":"ListedAfterWrite"}), false)["definitions"][0]["absolute_path"], json!(header));
+
+    let moved = shared.join("Renamed.hpp");
+    fs::rename(&header, &moved).unwrap();
+    let absent = client.wait(|status| dependency(status)["missing_files"] == 1);
+    assert_eq!(dependency(&absent)["state"], "unavailable");
+    assert_eq!(listed_passes(dependency(&absent)), 3);
+    msvc_dependencies(&report, &tu, &[&moved]);
+    let new_plan = client.wait(|status| dependency(status)["state"] == "ready" && dependency(status)["index_key"] != original["index_key"]);
+    assert_eq!(listed_passes(dependency(&new_plan)), 1);
+    assert_eq!(client.tool("code_symbol", json!({"scope":"dependencies","name":"ListedAfterWrite"}), false)["definitions"][0]["absolute_path"], json!(moved));
+}
+
+#[test]
+fn atlas_mcp_listed_reserve_recovers_without_native_events() {
+    let fixture = Fixture::new();
+    let shared = fixture.first.parent().unwrap().join("Missed event headers");
+    fs::create_dir(&shared).unwrap();
+    let header = shared.join("Reserve.hpp");
+    fs::write(&header, "struct BeforeReserve {};").unwrap();
+    msvc_dependencies(&fixture.first.join("build/editor/src.cpp.dep.json"), &fixture.first.join("src/math.cpp"), &[&header]);
+    let mut cmd = fixture.command(&fixture.first);
+    cmd.env("LORE_ATLAS_TEST_LISTED_FALLBACK_SECS", "5").args(["mcp", "serve"]);
+    let mut client = Client::start(cmd, None, false, "2025-11-25");
+    client.tool("code_search", json!({"query":"AlphaFunction","text_only":true}), false);
+    let before = client.wait(|status| dependency(status)["state"] == "ready");
+    assert_eq!(listed_passes(dependency(&before)), 1);
+    fs::write(&header, "struct RescuedByReserve {};").unwrap();
+    let after = client.wait(|status| dependency(status)["revision"].as_u64() > dependency(&before)["revision"].as_u64());
+    assert_eq!(listed_passes(dependency(&after)), 2);
+    assert_eq!(client.tool("code_symbol", json!({"scope":"dependencies","name":"RescuedByReserve"}), false)["definitions"][0]["absolute_path"], json!(header));
+    let status = fixture.command(&fixture.first).args(["atlas", "watch", "status", "--json"]).output().unwrap();
+    assert!(status.status.success(), "{}", String::from_utf8_lossy(&status.stderr));
+    let status: Value = serde_json::from_slice(&status.stdout).unwrap();
+    assert_eq!(status["state"], "ready");
+}
+
 #[test]
 fn atlas_mcp_reuses_observed_dependencies_and_reports_disappearance() {
     use sha2::{Digest, Sha256};

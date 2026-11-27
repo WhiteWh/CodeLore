@@ -1,6 +1,7 @@
 //! Published external source catalogues. Discovery and indexing happen in
 //! the project watcher; readers only load its catalogue and ready databases.
 mod discovery;
+mod listed;
 pub(super) mod named;
 pub(super) use discovery::implementation;
 
@@ -14,6 +15,7 @@ use std::fs;
 use std::io::{self, ErrorKind};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::Arc;
 use std::time::Duration;
 
 const CATALOGUE: &str = "atlas-dependencies.json";
@@ -34,7 +36,7 @@ struct Evidence {
     sha256: String,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub(super) struct Source {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
@@ -104,7 +106,7 @@ impl Source {
     }
 }
 
-#[derive(Default, Deserialize, Serialize)]
+#[derive(Clone, Default, Deserialize, PartialEq, Serialize)]
 pub(super) struct Catalogue {
     pub sources: Vec<Source>,
     pub state: String,
@@ -257,7 +259,7 @@ struct Plan {
 
 #[derive(Clone)]
 pub(in crate::atlas) enum Files {
-    Listed(BTreeSet<PathBuf>),
+    Listed(Arc<BTreeSet<PathBuf>>),
     Tree(AtlasSource),
 }
 
@@ -282,13 +284,14 @@ pub(crate) fn run_worker(root: &Path, dir: &Path) -> Result<(), LoreError> {
     let _ = fs::remove_file(dir.join(STARTING));
     let mut discovery = discovery::Discovery::default();
     let mut trees = named::TreeWatches::default();
+    let mut listed = listed::ListedWatches::default();
     let live = || enabled(dir) && super::watch::enabled(dir);
     while live() {
         let result = super::mcp::project_config(root).and_then(|config| {
             if super::off_reason(&config).is_some() {
                 return Ok(());
             }
-            reconcile(&config, dir, &mut discovery, &mut trees, live)
+            reconcile(&config, dir, &mut discovery, &mut trees, &mut listed, live)
         });
         if let Err(error) = result {
             let mut previous = Catalogue::read(dir);
@@ -301,12 +304,13 @@ pub(crate) fn run_worker(root: &Path, dir: &Path) -> Result<(), LoreError> {
     Ok(())
 }
 
-fn reconcile(config: &Config, dir: &Path, discovery: &mut discovery::Discovery, trees: &mut named::TreeWatches, active: impl Fn() -> bool) -> Result<(), LoreError> {
+fn reconcile(config: &Config, dir: &Path, discovery: &mut discovery::Discovery, trees: &mut named::TreeWatches, listed: &mut listed::ListedWatches, active: impl Fn() -> bool) -> Result<(), LoreError> {
     let previous = Catalogue::read(dir);
     let (mut plans, notes, discovery_error) = match discovery.plans(config) {
         Ok((plans, notes)) => (plans, notes, false),
         Err(error) => (Vec::new(), vec![error.to_string()], true),
     };
+    listed.retain(&plans.iter().map(|plan| plan.source.index_key.as_str()).collect());
     let (configured, failures) = named::plans(config);
     trees.retain(&configured.iter().map(|plan| plan.source.index_key.as_str()).collect());
     plans.extend(configured);
@@ -323,6 +327,8 @@ fn reconcile(config: &Config, dir: &Path, discovery: &mut discovery::Discovery, 
             plan.source.implementation = plan.source.implementation_at(&atlas).to_owned();
             if plan.source.name.is_some() {
                 plan.source.observed_files = atlas.meta("dependency_selected_files").and_then(|count| count.parse().ok()).unwrap_or_default();
+            } else if let Some(missing) = atlas.meta("dependency_listed_missing").and_then(|count| count.parse().ok()) {
+                plan.source.missing_files = missing;
             }
         }
     }
@@ -333,29 +339,51 @@ fn reconcile(config: &Config, dir: &Path, discovery: &mut discovery::Discovery, 
     catalogue.sources = plans.iter().map(|plan| plan.source.clone()).collect();
     catalogue.sources.extend(failures);
     if discovery_error {
-        catalogue.sources.extend(previous.sources.into_iter().filter(|source| source.name.is_none()));
+        catalogue.sources.extend(previous.sources.iter().filter(|source| source.name.is_none()).cloned());
     }
     catalogue.update_state(discovery_error);
-    publish(dir, &catalogue)?;
-    for (plan, source) in plans.iter().zip(&mut catalogue.sources) {
+    let mut published = previous;
+    if catalogue != published {
+        publish(dir, &catalogue)?;
+        published = catalogue.clone();
+    }
+    let mut listed_attempted = false;
+    for i in listed.order(&plans) {
         if !active() {
             return Ok(());
         }
-        let watch = match &plan.files {
+        let plan = &plans[i];
+        let source = &mut catalogue.sources[i];
+        let result = match &plan.files {
             Files::Tree(profile) => match trees.due(source, profile) {
-                Ok(Some(watch)) => Some(watch),
+                Ok(Some(watch)) => {
+                    let result = dependency_store::refresh(source, &plan.files, &active);
+                    watch.finished(matches!(result, Ok(Some(_))));
+                    result
+                }
                 Ok(None) => continue,
                 Err(error) => {
                     refresh_error(source, error);
                     continue;
                 }
             },
-            Files::Listed(_) => None,
+            // Stagger expensive passes when several sources are due at
+            // once. Rotation also gives other sources a turn after a retry.
+            Files::Listed(_) if listed_attempted => continue,
+            Files::Listed(files) => match listed.due(source, files) {
+                Ok(Some(watch)) => {
+                    listed_attempted = true;
+                    let result = dependency_store::refresh(source, &plan.files, &active);
+                    watch.finished(matches!(result, Ok(Some(_))));
+                    result
+                }
+                Ok(None) => continue,
+                Err(error) => {
+                    refresh_error(source, error);
+                    continue;
+                }
+            },
         };
-        let result = dependency_store::refresh(source, &plan.files, &active);
-        if let Some(watch) = watch {
-            watch.finished(matches!(result, Ok(Some(_))));
-        }
         match result {
             Ok(Some(info)) => {
                 source.missing_files = info.missing;
@@ -375,7 +403,7 @@ fn reconcile(config: &Config, dir: &Path, discovery: &mut discovery::Discovery, 
         }
     }
     catalogue.update_state(discovery_error);
-    if active() {
+    if catalogue != published && active() {
         publish(dir, &catalogue)?;
     }
     Ok(())
